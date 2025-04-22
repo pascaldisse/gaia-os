@@ -1,0 +1,101 @@
+# Gaia OS Package List
+# These packages will be included in the custom ISO build
+
+# Base Arch Linux packages
+base
+base-devel
+linux-asahi
+linux-asahi-headers
+networkmanager
+sudo
+vim
+nano
+git
+
+# Core system tools
+devtools
+arch-install-scripts
+archiso
+parted
+gptfdisk
+dosfstools
+mtools
+pacman-contrib
+efibootmgr
+pciutils
+usbutils
+lsof
+dialog
+
+# Boot and virtualization support
+grub
+refind
+os-prober
+qemu-guest-agent
+spice-vdagent
+open-vm-tools
+virtualbox-guest-utils
+
+# Hardware compatibility
+xf86-input-libinput
+xf86-video-fbdev
+xf86-video-vesa
+mesa
+mesa-utils
+
+# Development tools
+python
+python-pip
+rust
+cargo
+clang
+cmake
+gcc
+
+# Desktop environment (choose one or customize)
+gnome
+gnome-tweaks
+gdm
+# kde-applications (alternative desktop environment)
+
+# AI Libraries and dependencies
+python-tensorflow
+python-pytorch
+python-opencv
+python-numpy
+python-pandas
+python-matplotlib
+cuda
+cudnn
+
+# Utilities
+firefox
+htop
+neofetch
+smartmontools
+lm_sensors
+powertop
+thermald
+tlp
+gparted
+dconf-editor
+gnome-disk-utility
+
+# Networking tools
+net-tools
+dhcpcd
+inetutils
+iproute2
+iputils
+nmap
+wget
+rsync
+openssh
+
+# Asahi Linux specific packages
+mesa-asahi-edge
+firmware-asahi
+alsa-ucm-conf-asahi
+
+# Gaia OS specific packages
+# These will be added via our build process
