@@ -1,0 +1,44 @@
+# Minimal CLI Linux Package List
+# These packages will be included in the minimal CLI ISO build
+
+# Base Arch Linux packages
+base
+linux
+networkmanager
+sudo
+vim
+nano
+git
+
+# Core system tools
+arch-install-scripts
+pacman-contrib
+efibootmgr
+pciutils
+usbutils
+lsof
+dialog
+
+# Boot and virtualization support
+grub
+refind
+os-prober
+qemu-guest-agent
+spice-vdagent
+open-vm-tools
+virtualbox-guest-utils
+prl-tools
+
+# Networking tools
+net-tools
+dhcpcd
+inetutils
+iproute2
+iputils
+wget
+rsync
+openssh
+
+# Essential utilities
+htop
+neofetch
