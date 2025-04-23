@@ -1,0 +1,130 @@
+# GAIA-OS .gitignore
+
+# Build and output directories
+/out/
+/build/
+/dist/
+/iso/output/
+/boot/
+
+# Virtual environments
+/venv/
+/.venv/
+/env/
+/.env/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+*.egg
+.eggs/
+*.whl
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# AI model files
+*.onnx
+*.tflite
+*.pb
+*.pt
+*.pth
+*.h5
+*.mlmodel
+*.weights
+/models/downloads/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*~
+.DS_Store
+Thumbs.db
+.directory
+
+# IDE and editor directories
+.idea/
+.vscode/
+*.sublime-project
+*.sublime-workspace
+.atom/
+.project
+.settings/
+.classpath
+*.code-workspace
+
+# Log files
+*.log
+/logs/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Environment-specific configs
+.env
+.env.local
+.env.development
+.env.test
+.env.production
+
+# System-specific files
+/mnt/
+/media/
+/run/
+
+# Archives
+*.zip
+*.tar
+*.gz
+*.bz2
+*.xz
+*.7z
+*.rar
+
+# Large/binary data files
+*.iso
+*.img
+*.qcow2
+*.vdi
+*.vmdk
+*.bin
+/data/large/
+
+# VM and container related
+.vagrant/
+*.box
+docker-compose.override.yml
+
+# Dependency directories
+/node_modules/
+/jspm_packages/
+/bower_components/
+
+# Apple specific
+.AppleDouble
+.LSOverride
+Icon\r\r
+
+# Credentials - NEVER commit these
+*.pem
+*.key
+*.p12
+*.pfx
+*_rsa
+*_dsa
+*_ed25519
+*_ecdsa
+*secret*
+*credential*
+*password*
+*token*
+*auth*
