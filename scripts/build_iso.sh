@@ -87,6 +87,8 @@ open-vm-tools
 virtualbox-guest-utils
 qemu-guest-agent
 spice-vdagent
+# Parallels support
+prl-tools
 EOF
     fi
     
@@ -130,8 +132,14 @@ detect_vm() {
     if grep -q "hypervisor" /proc/cpuinfo || \
        grep -q "VMware" /sys/class/dmi/id/product_name || \
        grep -q "VirtualBox" /sys/class/dmi/id/product_name || \
-       grep -q "QEMU" /sys/class/dmi/id/product_name; then
+       grep -q "QEMU" /sys/class/dmi/id/product_name || \
+       grep -q "Parallels" /sys/class/dmi/id/product_name; then
         echo "vm"
+        return 0
+    fi
+    # Additional check for Parallels
+    if [ -d "/sys/devices/virtual/dmi/id" ] && grep -q "Parallels" /sys/devices/virtual/dmi/id/product_name 2>/dev/null; then
+        echo "parallels"
         return 0
     fi
     return 1
@@ -176,6 +184,13 @@ main() {
         vm)
             echo "Configuring for VM environment..."
             systemctl enable open-vm-tools virtualbox-guest-utils.service qemu-guest-agent
+            ;;
+        parallels)
+            echo "Configuring for Parallels VM environment..."
+            # Enable Parallels specific services if installed
+            if [ -f "/usr/lib/systemd/system/prltoolsd.service" ]; then
+                systemctl enable prltoolsd.service
+            fi
             ;;
         asahi)
             echo "Configuring for Asahi Linux on Apple Silicon..."
@@ -375,6 +390,55 @@ qemu-system-x86_64 \
 echo "VM has been shut down."
 EOF
 
+# Create a Parallels PVM creation script
+cat > "$OUT_DIR/create_parallels_vm.sh" << 'EOF'
+#!/bin/bash
+# Script to create a Parallels VM for Gaia OS
+
+ISO_PATH=$(ls -t *.iso | head -1)
+
+if [ ! -f "$ISO_PATH" ]; then
+    echo "Error: No ISO file found in current directory"
+    exit 1
+fi
+
+# Check if Parallels is installed
+if ! command -v prlctl &> /dev/null; then
+    echo "Error: Parallels Desktop not found. Please make sure it's installed."
+    exit 1
+fi
+
+echo "Creating Parallels VM for Gaia OS using ISO: $ISO_PATH"
+
+# Create a name for the VM
+VM_NAME="GAIA-OS-$(date +%Y%m%d)"
+
+# Create the VM
+echo "Creating VM: $VM_NAME..."
+prlctl create "$VM_NAME" --distribution linux --dst ~/Parallels/
+
+# Set VM configuration
+echo "Configuring VM..."
+prlctl set "$VM_NAME" --cpus 2
+prlctl set "$VM_NAME" --memsize 4096
+prlctl set "$VM_NAME" --device-add cdrom --image "$ISO_PATH"
+prlctl set "$VM_NAME" --device-bootorder "cdrom0 hdd0"
+prlctl set "$VM_NAME" --device-set cdrom0 --connect
+
+# Start the VM
+echo "Starting VM..."
+prlctl start "$VM_NAME"
+
+echo "Parallels Virtual Machine '$VM_NAME' has been created and started."
+echo "Connect to it using Parallels Desktop."
+echo ""
+echo "Notes:"
+echo "1. After installation, use the Devices menu to install Parallels Tools"
+echo "2. Gaia OS will auto-detect Parallels and configure accordingly"
+EOF
+
+chmod +x "$OUT_DIR/create_parallels_vm.sh"
+
 chmod +x "$OUT_DIR/run_in_vm.sh"
 
 echo -e "${GREEN}ISO build complete!${NC}"
@@ -383,6 +447,7 @@ echo
 echo -e "${YELLOW}Deployment Options:${NC}"
 echo -e "1. For Apple Silicon hardware: Use the Asahi Linux installer to deploy this ISO"
 echo -e "2. For external drive boot: Run ${YELLOW}$OUT_DIR/make_bootable_usb.sh /dev/sdX${NC}"
-echo -e "3. For VM testing: Run ${YELLOW}$OUT_DIR/run_in_vm.sh${NC}"
+echo -e "3. For QEMU VM testing: Run ${YELLOW}$OUT_DIR/run_in_vm.sh${NC}"
+echo -e "4. For Parallels Desktop: Run ${YELLOW}$OUT_DIR/create_parallels_vm.sh${NC}"
 echo
 echo -e "${GREEN}Done!${NC}"

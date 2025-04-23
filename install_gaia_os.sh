@@ -41,7 +41,10 @@ check_environment() {
     
     # Check macOS version (13.5 or higher)
     os_version=$(sw_vers -productVersion)
-    if [[ $(echo "$os_version < 13.5" | bc) -eq 1 ]]; then
+    major_version=$(echo "$os_version" | cut -d. -f1)
+    minor_version=$(echo "$os_version" | cut -d. -f2)
+    
+    if [[ "$major_version" -lt 13 || ("$major_version" -eq 13 && "$minor_version" -lt 5) ]]; then
         print_error "macOS 13.5 or later is required. Current version: $os_version"
     fi
     
