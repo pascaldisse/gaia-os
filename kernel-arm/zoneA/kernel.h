@@ -20,3 +20,6 @@ void TaskInit(void);
 void Spawn(void (*fn)(void), const char *name);
 void Yield(void);
 extern volatile u64 ticks;
+
+// shell.c
+void shell_task(void);

@@ -125,10 +125,8 @@ void kmain(void) {
     Spawn(ebrietas, "Ebrietas");
     Spawn(maiden, "Maiden");
     puts("tasks: Adam + Ebrietas + Maiden in the ring\n");
+    while (ticks < 2) Yield();   // demo pass under the heartbeat
 
-    while (ticks < 2) Yield();   // let the ring run under the heartbeat
-
-    puts("M2 CORE COMPLETE — MAlloc, tasks, Yield: the Temple breathes in rounds.\n");
-    puts("An idiot admires complexity, a genius admires simplicity.\n");
-    for (;;) asm volatile("wfi");
+    Spawn(shell_task, "Shell");
+    for (;;) Yield();            // Adam keeps the ring turning
 }
