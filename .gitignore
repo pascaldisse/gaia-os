@@ -1,0 +1,8 @@
+aiwnios/
+shrine/
+zealos/
+.gaia/
+*.o
+*.elf
+*.img
+.DS_Store
