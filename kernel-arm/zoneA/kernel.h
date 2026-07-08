@@ -2,6 +2,7 @@
 #pragma once
 typedef unsigned long long u64;
 typedef unsigned int u32;
+typedef unsigned short u16;
 
 #define MMIO32(a) (*(volatile u32 *)(u64)(a))
 
@@ -23,3 +24,7 @@ extern volatile u64 ticks;
 
 // shell.c
 void shell_task(void);
+
+// virtio.c — virtio-mmio blk, polled
+u64 BlkInit(void);
+int BlkRW(u64 sector, void *buf, int write);

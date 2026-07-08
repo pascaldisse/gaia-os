@@ -121,6 +121,10 @@ void kmain(void) {
     Free(a); Free(b);
     puts("  freed both, free "); putdec(MemFreeBytes() / 1024 / 1024); puts("MB\n");
 
+    u64 cap = BlkInit();
+    if (cap) { puts("virtio-blk: "); putdec(cap); puts(" sectors ("); putdec(cap / 2048); puts("MB)\n"); }
+    else puts("virtio-blk: no device\n");
+
     TaskInit();
     Spawn(ebrietas, "Ebrietas");
     Spawn(maiden, "Maiden");
