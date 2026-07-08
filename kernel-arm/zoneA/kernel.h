@@ -28,3 +28,10 @@ void shell_task(void);
 // virtio.c — virtio-mmio blk, polled
 u64 BlkInit(void);
 int BlkRW(u64 sector, void *buf, int write);
+
+// fs.c — RedSea-spirit contiguous FS
+int FsMount(void);
+int FsFormat(u64 disk_secs);
+int FsWrite(const char *name, const void *buf, u64 len);
+long FsRead(const char *name, void *buf, u64 maxlen);
+void FsLs(void);

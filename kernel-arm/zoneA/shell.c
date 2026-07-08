@@ -29,6 +29,10 @@ static void cmd_help(void) {
     puts("  uptime     seconds since boot\n");
     puts("  dr <sec>   read disk sector, hexdump first 128B\n");
     puts("  dw <sec> <text>  write text to disk sector\n");
+    puts("  format     make RedSea-spirit fs\n");
+    puts("  ls         list files\n");
+    puts("  wr <name> <text>   write file\n");
+    puts("  cat <name> read file\n");
     puts("  reboot     PSCI system reset\n");
 }
 
@@ -77,6 +81,27 @@ static void run_cmd(const char *line) {
     if (streq(line, "uptime")){ putdec(ticks / 4); puts("s\n"); return; }
     if (line[0] == 'd' && line[1] == 'r' && line[2] == ' ') { cmd_dr(line + 3); return; }
     if (line[0] == 'd' && line[1] == 'w' && line[2] == ' ') { cmd_dw(line + 3); return; }
+    if (streq(line, "format")) { puts(FsFormat(8192) ? "format failed\n" : "formatted: RedSea-spirit, 4MB\n"); return; }
+    if (streq(line, "ls")) { FsLs(); return; }
+    if (line[0] == 'c' && line[1] == 'a' && line[2] == 't' && line[3] == ' ') {
+        static char fbuf[4096];
+        long n = FsRead(line + 4, fbuf, 4095);
+        if (n < 0) puts("no such file\n");
+        else { fbuf[n] = 0; puts(fbuf); puts("\n"); }
+        return;
+    }
+    if (line[0] == 'w' && line[1] == 'r' && line[2] == ' ') {   // wr <name> <text>
+        const char *p = line + 3;
+        char name[39]; int i = 0;
+        while (*p && *p != ' ' && i < 38) name[i++] = *p++;
+        name[i] = 0;
+        while (*p == ' ') p++;
+        u64 len = 0; const char *q = p;
+        while (*q++) len++;
+        if (FsWrite(name, p, len)) puts("write failed\n");
+        else { puts("wrote "); puts(name); puts("\n"); }
+        return;
+    }
     if (streq(line, "reboot")) {
         puts("resetting...\n");
         asm volatile("mov x0, %0\n hvc #0" :: "r"(0x84000009ULL) : "x0"); // PSCI SYSTEM_RESET
@@ -89,6 +114,8 @@ void shell_task(void) {
     char line[128];
     int n = 0;
     puts("\nGAIA-OS shell — 'help' for commands\n");
+    if (FsMount() == 0) puts("T:/ mounted (RedSea-spirit)\n");
+    else puts("T:/ unformatted — run 'format'\n");
     puts("T:/> ");
     for (;;) {
         int c = getc_nb();
