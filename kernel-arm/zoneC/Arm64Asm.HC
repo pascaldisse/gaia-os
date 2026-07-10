@@ -36,29 +36,30 @@
       throw('Asm');                                                  \
   }
 // https://github.com/fujitsu/xbyak_aarch64
-typedef struct {
+// (HolyC: 'class', not C 'typedef struct' — converted for the host parser)
+class CARMAdrRegReg {
   I64 n, m;
   I64 type;
   I64 shift;
   I64 init_sh;
-} CARMAdrRegReg;
-typedef struct {
+};
+class CARMAdrRegImm {
   I64 n;
   I64 off;
-} CARMAdrRegImm;
-typedef struct {
+};
+class CARMAdrPostImm {
   I64 n;
   I64 off;
-} CARMAdrPostImm;
-typedef struct {
+};
+class CARMAdrPreImm {
   I64 n;
   I64 off;
-} CARMAdrPreImm;
-typedef struct {
+};
+class CARMAdrScImm {
   I64 n;
   I64 off;
   I64 ext;
-} CARMAdrScImm;
+};
 
 I64 LdStRegExt(I64 sz, I64 opc, I64 rt, I64 n,
                           I64 m, I64 mod) {
