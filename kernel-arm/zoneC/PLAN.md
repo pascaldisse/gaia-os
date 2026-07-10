@@ -1,6 +1,6 @@
-# Zone C — the Keystone: ZealC/HolyC compiler → aarch64
+# Zone C — the Keystone: HolyC (Shrine) compiler → aarch64
 
-**Goal:** the ZealC compiler emits aarch64, so GAIA-OS grows in HolyC and the
+**Goal:** Terry's HolyC compiler (as carried in `shrine/Compiler/`) emits aarch64, so GAIA-OS grows in HolyC and the
 C bootstrap scaffolding melts away. Self-hosting inside the OS = milestone M4.
 
 ## Anatomy of the 22,067 lines (measured)
@@ -19,21 +19,23 @@ C bootstrap scaffolding melts away. Self-hosting inside the OS = milestone M4.
   `ARM_addImmX`, `ARM_adrX`, `ARM_cmpImmX`, ... One function per instruction form.
 - `c/arm_backend.c` (5,322 ln): IR→encoder lowering patterns, prolog/epilog,
   calling convention, register mapping. Our lowering *reference*, not a copy-paste
-  (Aiwnios IR ≠ ZealC IC), but every hard decision has a worked example here.
+  (Aiwnios IR ≠ HolyC IC), but every hard decision has a worked example here.
 
 ## Phases
-- **C0 — encoders:** port `arm64_asm.c` → `Arm64Asm.ZC`. Mechanical 1:1
-  translation, testable standalone (emit bytes, compare against clang -c output).
-- **C1 — IC audit:** document ZealC's intermediate code ops (OpCodes.DD,
-  CompilerB.HH) — the contract the new backend must honor.
-- **C2 — backend:** new `BackA64*.ZC` lowering IC→encoders. Register model:
-  map ZealC's virtual regs onto x19-x28 (callee-saved) + x0-x17 scratch;
+- **C0 — encoders:** port `arm64_asm.c` → `Arm64Asm.HC`. Mechanical 1:1
+  translation, testable standalone. **DONE** (b2f4234, 221 encoders).
+- **C1 — IC audit:** document HolyC's intermediate code ops (shrine
+  `CInit.HC`/`KernelA.HH`) — the contract the new backend must honor.
+  **DONE** — canonical: `IC-HolyC.md` (7fa63b2); `IC-ZealC.md` is cross-ref only.
+- **C2 — backend:** new `BackA64*.HC` lowering IC→encoders. Design:
+  `BACKA64-DESIGN.md`. Register model:
+  map OptPass3's reg-allocated locals onto x19-x28 (callee-saved) + x0-x17 scratch;
   keep HolyC's own calling convention (stack args, like Aiwnios TOS mode) for
   compatibility with existing HolyC code idioms.
-- **C3 — inline asm:** x86 `Asm*.ZC` excluded from the ARM build; ARM asm
+- **C3 — inline asm:** x86 `Asm*.HC` excluded from the ARM build; ARM asm
   syntax is a later luxury. Kernel asm needs are already covered by Zone A stubs.
 - **C4 — bootstrap chain:**
-  1. Run ZealC front end + new ARM backend *hosted inside Aiwnios* on this Mac
+  1. Run the HolyC front end + new ARM backend *hosted inside Aiwnios* on this Mac
      (Aiwnios runs HolyC natively on Apple Silicon today).
   2. Cross-compile HolyC modules → flat binary linked into the Zone A kernel.
   3. M4: compiler runs *inside* GAIA-OS, compiles itself. Self-hosting. Temple.
