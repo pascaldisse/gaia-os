@@ -16,7 +16,14 @@
 #include "A64Defs.HH"		// aarch64 REG_* — shadows x86 values
 #include "CompilerA.HH"		// Shrine's compiler header, verbatim
 
-#include "Templates.HC"
+// Templates.HC CUT (x86 F64 op templates in inline asm; sole reader is
+// BackFA.HC, itself cut in C3 — verified by grep). These five globals
+// satisfy CExts.HC's _extern CMP_TEMPLATES* binds by name; never read.
+U32 CMP_TEMPLATES[1];
+U32 CMP_TEMPLATES_DONT_POP[1];
+U32 CMP_TEMPLATES_DONT_PUSH2[1];
+U32 CMP_TEMPLATES_DONT_PUSH[1];
+U32 CMP_TEMPLATES_DONT_PUSH_POP[1];
 #include "CExts.HC"
 CCmpGlbls	cmp;
 #include "CInit.HC"

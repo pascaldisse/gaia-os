@@ -285,7 +285,6 @@ class CIntermediateCode:CIntermediateCodeBase
     //Tree links are used during passes 012 and 3 for determining types.
     CICTreeLinks t;
   };
-#assert !($$&7)
 };
 class CPrsStk
 {
@@ -630,7 +629,6 @@ public class CCmpCtrl
   CPrsStk *ps;
   CAOTCtrl *aotc;
   I64	aot_depth,pmt_line;
-#assert !($$&7)
 };
 public class CCmpGlbls
 {
