@@ -111,7 +111,9 @@ I64 FpDataProc1Reg(U32 M, U32 S, U32 type,
 I64 LdStRegPairPostImm(I64 opc, I64 l, I64 r, I64 r2,
                                   CARMAdrPostImm *pre) {
   I64 imm = pre->off;
-  I64 times = (opc == 2) ? 2 : 1;
+  I64 times = 1;
+  if (opc == 2)
+    times = 2;
   ARM_FORCE_ALIGN(imm, 7, times + 1);
   I64 imm7 = MASKn(imm >> (times + 1), 7, 15);
   return (opc << 30) | (0x5 << 27) | (1 << 23) | (l << 22) | imm7 | (r2 << 10) |
@@ -120,7 +122,9 @@ I64 LdStRegPairPostImm(I64 opc, I64 l, I64 r, I64 r2,
 I64 LdStRegPairPre(I64 opc, I64 L, I64 rt1, I64 rt2,
                               CARMAdrPreImm *adr) {
   I64 imm = adr->off;
-  I64 times = (opc == 2) ? 2 : 1;
+  I64 times = 1;
+  if (opc == 2)
+    times = 2;
   ARM_FORCE_ALIGN(imm, 7, times + 1);
   U32 imm7 = MASKn(imm >> (times + 1), 7, 15);
   return (opc << 30) | (0x5 << 27) | (3 << 23) | (L << 22) | imm7 |
@@ -275,7 +279,9 @@ I64 AddSubExtReg(I64 opc, I64 s, I64 d, I64 n,
 
 I64 AddSubExtRegX(I64 opc, I64 s, I64 d, I64 n,
                              I64 m, I64 emod, I64 sh) {
-  U32 option = (emod == 12) ? 3 : emod;
+  U32 option = emod;
+  if (emod == 12)
+    option = 3;
   return (1 << 31) | (opc << 30) | (s << 29) | (0xb << 24) | (1 << 21) |
          (m << 16) | (option << 13) | MASKn(sh, 3, 10) | (n << 5) | d;
 }

@@ -203,13 +203,44 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     scale = (a->reg >> 14) & 3;
     if (scale == 0 || scale == log) {
       switch (rt) {
-      case RT_I8:  A64W(tmpi, scale ? ARM_ldrsbRegRegShiftX(rx, base, index) : ARM_ldrsbRegRegX(rx, base, index)); break;
-      case RT_U8:  A64W(tmpi, scale ? ARM_ldrbRegReg(rx, base, index) : ARM_ldrbRegReg(rx, base, index)); break;
-      case RT_I16: A64W(tmpi, scale ? ARM_ldrshRegRegShiftX(rx, base, index) : ARM_ldrshRegRegX(rx, base, index)); break;
-      case RT_U16: A64W(tmpi, scale ? ARM_ldrhRegRegShift(rx, base, index) : ARM_ldrhRegReg(rx, base, index)); break;
-      case RT_I32: A64W(tmpi, scale ? ARM_ldrswRegRegShiftX(rx, base, index) : ARM_ldrswRegRegX(rx, base, index)); break;
-      case RT_U32: A64W(tmpi, scale ? ARM_ldrRegRegShift(rx, base, index) : ARM_ldrRegReg(rx, base, index)); break;
-      default:     A64W(tmpi, scale ? ARM_ldrRegRegShiftX(rx, base, index) : ARM_ldrRegRegX(rx, base, index));
+      case RT_I8:
+	if (scale)
+	  A64W(tmpi, ARM_ldrsbRegRegShiftX(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrsbRegRegX(rx, base, index));
+	break;
+      case RT_U8:
+	A64W(tmpi, ARM_ldrbRegReg(rx, base, index)); //both ?: arms were identical
+	break;
+      case RT_I16:
+	if (scale)
+	  A64W(tmpi, ARM_ldrshRegRegShiftX(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrshRegRegX(rx, base, index));
+	break;
+      case RT_U16:
+	if (scale)
+	  A64W(tmpi, ARM_ldrhRegRegShift(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrhRegReg(rx, base, index));
+	break;
+      case RT_I32:
+	if (scale)
+	  A64W(tmpi, ARM_ldrswRegRegShiftX(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrswRegRegX(rx, base, index));
+	break;
+      case RT_U32:
+	if (scale)
+	  A64W(tmpi, ARM_ldrRegRegShift(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrRegReg(rx, base, index));
+	break;
+      default:
+	if (scale)
+	  A64W(tmpi, ARM_ldrRegRegShiftX(rx, base, index));
+	else
+	  A64W(tmpi, ARM_ldrRegRegX(rx, base, index));
       }
     } else {
       A64W(tmpi, ARM_addShiftRegX(scratch, base, index, scale));
@@ -302,9 +333,23 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     if (scale == 0 || scale == log) {
       switch (sz) {
       case 1: A64W(tmpi, ARM_strbRegReg(rx, base, index)); break;
-      case 2: A64W(tmpi, scale ? ARM_strhRegRegShift(rx, base, index) : ARM_strhRegReg(rx, base, index)); break;
-      case 4: A64W(tmpi, scale ? ARM_strRegRegShift(rx, base, index) : ARM_strRegReg(rx, base, index)); break;
-      default:A64W(tmpi, scale ? ARM_strRegRegShiftX(rx, base, index) : ARM_strRegRegX(rx, base, index));
+      case 2:
+	if (scale)
+	  A64W(tmpi, ARM_strhRegRegShift(rx, base, index));
+	else
+	  A64W(tmpi, ARM_strhRegReg(rx, base, index));
+	break;
+      case 4:
+	if (scale)
+	  A64W(tmpi, ARM_strRegRegShift(rx, base, index));
+	else
+	  A64W(tmpi, ARM_strRegReg(rx, base, index));
+	break;
+      default:
+	if (scale)
+	  A64W(tmpi, ARM_strRegRegShiftX(rx, base, index));
+	else
+	  A64W(tmpi, ARM_strRegRegX(rx, base, index));
       }
     } else {
       A64W(tmpi, ARM_addShiftRegX(scratch, base, index, scale));
