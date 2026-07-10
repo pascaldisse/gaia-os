@@ -46,6 +46,20 @@ awk '
   !skip {print}
 ' "$DST/CMisc.HC" > "$DST/CMisc.HC.tmp" && mv "$DST/CMisc.HC.tmp" "$DST/CMisc.HC"
 
+# CMisc.HC: CmdLinePmt is Shrine's interactive shell prompt (RawDr, GetStr,
+# DirCur, debug redraw...) — hosted mode never enters LEXF_CMD_LINE (the
+# sole consumer, Lex.HC:227, only takes its pointer; we drive CCmpCtrl
+# programmatically). Replace the whole function (last in the file) with a
+# stub so none of its UI symbols ever need resolving.
+sed -i '' '/^U8 \*CmdLinePmt()/,$d' "$DST/CMisc.HC"
+cat >> "$DST/CMisc.HC" <<'EOF'
+U8 *CmdLinePmt()
+{//zoneC C4 hosted stub: no interactive lexer input in hosted mode.
+  PrintErr("CmdLinePmt: hosted stub (LEXF_CMD_LINE not supported)\n");
+  return StrNew("\n");
+}
+EOF
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do
