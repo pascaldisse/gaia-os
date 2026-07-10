@@ -47,6 +47,17 @@ U0 Dbg(U8 *msg=NULL,...)
 // image, so back it with a zeroed CBinFile: an accidental hit reports 0.
 U8 *mem_boot_base;
 mem_boot_base=CAlloc(sizeof(CBinFile))+sizeof(CBinFile);
+// MHeapCtrl: TempleOS returns the owning CHeapCtrl of an allocation; absent
+// hosted (HCRT2.BIN count 0) and Aiwnios's allocator header is C-side,
+// opaque to HolyC. Sole KEEP-set caller is PrsStmt.HC:381's same-heap
+// alias check on unresolved globals; hosted there IS only one heap, so
+// report one shared heap ctrl — equality holds, matching TempleOS's
+// common path (both allocs from the same task heap).
+U8 *MHeapCtrl(U8 *ptr)
+{
+  no_warn ptr;
+  return NULL;
+}
 
 // Templates.HC CUT (x86 F64 op templates in inline asm; sole reader is
 // BackFA.HC, itself cut in C3 — verified by grep). CExts.HC's five
