@@ -12,12 +12,6 @@
 #define A64_CC_GT 12
 #define A64_CC_LE 13
 
-#define A64_BR2_ILT 0x8F
-#define A64_BR2_ILE 0x90
-#define A64_BR2_IGT 0x91
-#define A64_BR2_IGE 0x92
-#define A64_BR2_IEQ 0x93
-#define A64_BR2_INE 0x94
 #define A64_BR_AND_ZERO_CODE 0x95
 #define A64_BR_AND_NOT_ZERO_CODE 0x96
 #define A64_BR_MM_ZERO_CODE 0x97
@@ -92,7 +86,7 @@ U0 A64EmitTbz(CIntermediateCode *tmpi, I64 r, I64 bit, Bool not_zero, I64 delta)
 }
 
 I64 A64CmpCodeForBr2(I64 code) {
-  return IC_BR_ILT + (code - A64_BR2_ILT);
+  return IC_BR_EQU_EQU + (code - IC_BR_EQU_EQU2); //2-form (0x8F-0x94) -> base (0x89-0x8E)
 }
 
 I64 A64FrameLocals(CIntermediateCode *tmpi) {
@@ -243,21 +237,21 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64EmitCbz(tmpi, 0, TRUE, delta);
       return TRUE;
 
-    case IC_BR_ILT:
-    case IC_BR_ILE:
-    case IC_BR_IGT:
-    case IC_BR_IGE:
-    case IC_BR_IEQ:
-    case IC_BR_INE:
+    case IC_BR_EQU_EQU:
+    case IC_BR_NOT_EQU:
+    case IC_BR_LESS:
+    case IC_BR_GREATER_EQU:
+    case IC_BR_GREATER:
+    case IC_BR_LESS_EQU:
       A64EmitCmpBr(tmpi, tmpi->ic_code, delta);
       return TRUE;
 
-    case A64_BR2_ILT:
-    case A64_BR2_ILE:
-    case A64_BR2_IGT:
-    case A64_BR2_IGE:
-    case A64_BR2_IEQ:
-    case A64_BR2_INE:
+    case IC_BR_EQU_EQU2:
+    case IC_BR_NOT_EQU2:
+    case IC_BR_LESS2:
+    case IC_BR_GREATER_EQU2:
+    case IC_BR_GREATER2:
+    case IC_BR_LESS_EQU2:
       A64EmitCmpChain(tmpi, A64CmpCodeForBr2(tmpi->ic_code));
       return TRUE;
 

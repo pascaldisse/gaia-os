@@ -7,12 +7,12 @@ Bool A64ICIsBranch(CIntermediateCode *tmpi)
     case IC_BR:
     case IC_BR_ZERO:
     case IC_BR_NOT_ZERO:
-    case IC_BR_ILT:
-    case IC_BR_ILE:
-    case IC_BR_IGT:
-    case IC_BR_IGE:
-    case IC_BR_IEQ:
-    case IC_BR_INE:
+    case IC_BR_EQU_EQU:
+    case IC_BR_NOT_EQU:
+    case IC_BR_LESS:
+    case IC_BR_GREATER_EQU:
+    case IC_BR_GREATER:
+    case IC_BR_LESS_EQU:
     case 0x8F:
     case 0x90:
     case 0x91:
