@@ -60,6 +60,12 @@ U8 *CmdLinePmt()
 }
 EOF
 
+# Signature drift: Aiwnios's SysSymImportsResolve(U8*,I64 ld_flags) lost
+# TempleOS's ld_flags=0 default (KLoadARM.HC:101). Four KEEP call sites all
+# pass only the string -> append explicit ,0 at stage time.
+sed -i '' 's/SysSymImportsResolve(\([^),]*\));/SysSymImportsResolve(\1,0);/' \
+  "$DST/CMain.HC" "$DST/PrsStmt.HC"
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do
