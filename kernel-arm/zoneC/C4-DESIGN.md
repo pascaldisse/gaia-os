@@ -76,14 +76,23 @@ a **self-contained cross-compiler**:
 - **SHADOW set** (Shrine layouts, from the extract): the compiler
   contract — CICType, CICArg, CIntermediateCode(Base), CCodeCtrl,
   CCmpCtrl, CDbgInfo, CCodeMisc, CAOTCtrl, CAOTAbsAddr, CAsmArg, lexer
-  state classes, and all IC_/MDG_/RT_/RTF_/CCF_/CMT_/CMF_ defines. Plus
-  Shrine's own CHash* + hash functions so the compiler owns a private
-  symbol universe (AOT symbols go into cc->htc tables under
-  CCF_AOT_COMPILE, never the host table — TempleOS kernel-build style).
+  state classes, and all IC_/MDG_/RT_/RTF_/CCF_/CMT_/CMF_ defines.
 - **ALIAS set** (do NOT shadow; compile against the host's live defs):
-  CTask and anything host services create/consume. Field-name
-  compatibility for the `Fs->` accesses the KEEP set makes is the one
-  open audit (in flight).
+  CTask AND the whole CHash family + CMemberLst(Meta). AUDIT PASSED
+  (2026-07-10): all 7 used `Fs->` fields and every used CHash-family
+  member exist by exact name in Aiwnios's KernelA.HH; HTT_/HTF_/HTG_
+  flag VALUES verified byte-identical between the trees (direct diff).
+  Consequence: no private hash universe needed — the Shrine world uses
+  the host's HashFind/HashAdd on the shared Fs->hash_table, and JIT
+  compilation resolves host symbols (Print, MAlloc…) natively. Shrine's
+  KHashA/KHashB are NOT loaded. AOT still targets cc->htc private
+  tables under CCF_AOT_COMPILE.
+- REVISION to the extract (delta atom once it lands): CHash, CHashTable,
+  CHashSrcSym, CHashFun, CHashClass, CHashDefineStr, CHashGlblVar,
+  CHashExport, CHashImport, CMemberLst, CMemberLstMeta move from the
+  extract into the ALIASED list; also rescan the five KEEP files the
+  original consumer set missed (Templates, CExcept, LexLib, CHash.HC,
+  CMisc — surfaced by Compiler.PRJ, see LoadA64.HC).
 - CDbgInfo.body: DECIDED — widen `U32 body[1]` → `U8 *body[1]` in the
   extract (we control it; OptPass789A64 stores full pointers; Aiwnios
   made the same widening).
