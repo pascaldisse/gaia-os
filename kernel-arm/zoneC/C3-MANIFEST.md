@@ -15,15 +15,18 @@ outside it, 104 with zero outside references).
 | `Asm.HC` `AsmInit.HC` | x86 inline assembler + opcode tables |
 | `UAsm.HC` | x86 unassembler (disassembly listings) |
 
-## Kept, pending symbol-dependency check
+## Kept whole — dependency check PASSED (2026-07-10)
 
 | file | why kept |
 |---|---|
-| `AsmLib.HC` | `AOTStoreCodeU8/U64/U8At` called from arch-neutral CMain/PrsStmt/PrsVar (AOT byte-storage, arch-neutral machinery) |
+| `AsmLib.HC` | `AOTStoreCodeU8/U32/U64/U8At` called from arch-neutral CMain/PrsStmt/PrsVar (AOT byte-storage, arch-neutral machinery) |
 | `AsmResolve.HC` | `AOTGlblsResolve` called from arch-neutral code |
 
-Condition: neither file may reference symbols defined only in the cut files.
-If either does, extract just the outside-called functions into the shim.
+Verified: none of the 88 functions defined in the 10 cut files — nor
+`inst_hash`/`uasm_hash`/`asm_hash`/any `*_tbl` — appears in either file.
+AsmLib defines `AOTStoreCodeU8/U32/U64/U8At, AsmLexExpression, AsmLineLst`;
+AsmResolve defines `AsmResolve, AOTLocalsResolve, AOTGlblsResolve,
+AsmUnresolvedAdd`. Fully self-contained.
 
 ## The 9 outside-referenced symbols — resolution via `A64Stubs.HC`
 
@@ -44,8 +47,9 @@ original names:
   Compiler dir), used by arch-neutral OptPass3/4/5/6, CInit, PrsLib, OptLib,
   PrsExp. ARM build supplies `A64Defs.HH` **instead of** the x86 values
   (REG_RAX=0, REG_RBP=29, REG_RSP=31, REG_REGS_NUM=32; pool x19-x28).
-- `CMP_TEMPLATE_*` (`CompilerA.HH:315-333`): usage sweep pending — if only
-  the cut files consume them, the defines stay as dead-but-harmless.
+- `CMP_TEMPLATE_*` (`CompilerA.HH:315-333`): sweep done — all 27 uses are
+  inside cut files (BackFA.HC ×3, BackFB.HC ×6, OptPass789A.HC ×18). The
+  defines stay as dead-but-harmless.
 - `REGS_NUM` (unprefixed): zero occurrences — nothing to do.
 
 ## Open items carried to C4
