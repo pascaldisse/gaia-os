@@ -3,11 +3,12 @@
  * zoneC C4 hosted extract of Shrine kernel definitions.
  * Generated mechanically from shrine/Kernel/KernelA.HH, KernelB.HH, KernelC.HH.
  */
-// ALIASED (host definitions): CTask, CDocEntry, CDoc
+// ALIASED (host definitions): CTask, CDocEntry, CDoc, CHash, CHashTable, CHashSrcSym, CHashFun, CHashClass, CHashDefineStr, CHashGlblVar, CHashExport, CMemberLst, CMemberLstMeta
 // --- from KernelA.HH ---
 #define NULL	0
 #define TRUE	1
 #define FALSE	0
+#define ON	1
 #define I8_MIN (-0x80)
 #define I8_MAX 0x7F
 #define I16_MIN (-0x8000)
@@ -20,6 +21,14 @@
 #define U64_MAX 0xFFFFFFFFFFFFFFFF
 #define INVALID_PTR	I64_MAX
 #define STR_LEN 144
+public class CD3I32 //Three dimensional I32 pt
+{
+  I32	x,y,z;
+};
+public class CD2I32 //Two dimensional I32 pt
+{
+  I32	x,y;
+};
 public class CQueVectU8
 {
   CQueVectU8	*next,*last;
@@ -57,24 +66,19 @@ class CBinFile
 #define IET_DATA_HEAP		23
 #define IET_MAIN		25
 #define RLf_DOC			13
-public class CHash
-{//See $LK,"Hash",A="HI:Hash"$
-  CHash	*next;
-  U8	*str;
-  U32	type,
-	use_cnt; // inc'ed every time search found, never dec'ed.
-};
-public class CHashTable
-{
-  CHashTable *next;
-  I64	mask,locked_flags;
-  CHash	**body;
-};
+#define RLf_ADAM_SERVER		18
+#define SF_ARG1	0x10
+#define SF_ARG2	0x18
 #define HTt_EXPORT_SYS_SYM	0
+#define HTt_DEFINE_STR		2
 #define HTt_GLBL_VAR		3
 #define HTt_CLASS		4
+#define HTt_INTERNAL_TYPE	5
 #define HTt_FUN			6
+#define HTt_WORD		7
 #define HTt_KEYWORD		9
+#define HTt_FILE		13
+#define HTt_MODULE		14
 #define HTf_PUBLIC		24
 #define HTT_EXPORT_SYS_SYM	0x00001 //CHashExport
 #define HTT_IMPORT_SYS_SYM	0x00002 //CHashImport
@@ -83,11 +87,15 @@ public class CHashTable
 #define HTT_CLASS		0x00010 //CHashClass
 #define HTT_INTERNAL_TYPE	0x00020 //CHashClass
 #define HTT_FUN			0x00040 //CHashFun
+#define HTT_DICT_WORD		0x00100 //CHashGeneric only in AutoComplete tbl
 #define HTT_KEYWORD		0x00200 //CHashGeneric $LK,"KEYWORD",A="FF:::/Compiler/OpCodes.DD,KEYWORD"$
 #define HTT_ASM_KEYWORD		0x00400 //CHashGeneric $LK,"ASM_KEYWORD",A="FF:::/Compiler/OpCodes.DD,ASM_KEYWORD"$
 #define HTT_OPCODE		0x00800 //CHashOpcode
+#define HTT_FILE		0x02000 //CHashGeneric
+#define HTT_MODULE		0x04000 //CHashGeneric
 #define HTT_HELP_FILE		0x08000 //CHashSrcSym
 #define HTG_TYPE_MASK		0x1FFFF
+#define HTF_PRIVATE		0x00800000
 #define HTF_PUBLIC		0x01000000
 #define HTF_EXPORT		0x02000000
 #define HTF_IMPORT		0x04000000
@@ -96,27 +104,18 @@ public class CHashTable
 #define HTF_RESOLVE		0x20000000
 #define HTF_UNRESOLVED		0x40000000
 #define HTF_LOCAL		0x80000000
+#define HTG_SRC_SYM	(HTT_DEFINE_STR|HTT_GLBL_VAR|HTT_FUN|HTT_CLASS|\
+			HTT_EXPORT_SYS_SYM|HTT_HELP_FILE)
 #define HTG_ALL 		-1
+#define KERNEL_MODULE_NAME	"/Kernel/Kernel"
 class CDbgInfo
 {
   U32	min_line,max_line;
   U8 *body[1]; // zoneC C4: widened from U32 for 64-bit hosted heap
 };
-public class CHashSrcSym:CHash
-{
-  U8	*src_link,
-	*idx;
-  CDbgInfo *dbg_info;
-  U8	*import_name;
-  CAOTImportExport *ie_lst;
-};
 public class CHashGeneric:CHash
 {
   I64	user_data0,user_data1,user_data2;
-};
-public class CHashExport:CHashSrcSym
-{
-  I64	val;
 };
 #define PTR_STARS_NUM	4
 #define MLF_DFT_AVAILABLE	1
@@ -132,56 +131,13 @@ public class CArrayDim
   I64	cnt,total_cnt;
 };
 #define MLMF_IS_STR	1
-public class CMemberLstMeta
-{
-  CMemberLstMeta *next;
-  U8	*str;
-  I64	flags,
-	user_data;
-};
-public class CMemberLst
-{
-  CMemberLst *next,*left,*right,
-	*left_class_base,*right_class_base; //For finding dup class local vars.
-  U8	*str;
-  CHashClass *member_class,*member_class_base;
-  CMemberLstMeta *meta;
-  U32	use_cnt;
-  U16	flags;
-  I8	reg,pad;
-  I64	offset,size;
-  CArrayDim dim;
-  U8	*static_data;
-  union {
-    I64	static_data_rip;
-    I64 dft_val;
-  }
-  CHashFun *fun_ptr;
-};
 class CExternUsage
 {
   CExternUsage *next;
   I64	rip;
 };
-public class CHashDefineStr:CHashSrcSym
-{
-  U8	*data,**sub_idx;
-  I64	cnt;
-};
 #define Cf_EXTERN		0
 #define Cf_INTERNAL_TYPE	1
-public class CHashClass:CHashSrcSym
-{//See $LK,"PrsClassNew",A="MN:PrsClassNew"$(). base_class of $LK,"CHashFun",A="MN:CHashFun"$
-  I64	size,neg_offset;
-  U32	member_cnt;
-  U8	ptr_stars_cnt,raw_type;
-  U16	flags;
-  CMemberLst *member_lst_and_root, //Head of linked list and head of tree.
-	*member_class_base_root, //For finding dup class local vars.
-	*last_in_member_lst;
-  CHashClass	*base_class,
-	*fwd_class;
-};
 #define Ff_INTERRUPT		8
 #define Ff_HASERRCODE		9
 #define Ff_ARGPOP		10
@@ -190,32 +146,12 @@ public class CHashClass:CHashSrcSym
 #define Ff__EXTERN		13
 #define Ff_DOT_DOT_DOT		14
 #define Ff_RET1			15
-public class CHashFun:CHashClass
-{//See $LK,"PrsFunNew",A="MN:PrsFunNew"$().
-  CHashClass *return_class;
-  U32	arg_cnt,pad,
-	used_reg_mask,clobbered_reg_mask;
-  U8	*exe_addr;
-  CExternUsage *ext_lst;
-};
 #define GVF_FUN		1
 #define GVF_IMPORT	2
 #define GVF_EXTERN	4
 #define GVF_DATA_HEAP	8
 #define GVF_ALIAS	16
 #define GVF_ARRAY	32
-public class CHashGlblVar:CHashSrcSym
-{
-  I64	size,flags;
-  CHashClass *var_class;
-  CHashFun *fun_ptr;
-  CArrayDim dim;
-  U8	*data_addr;
-  union {
-    I64	data_addr_rip;
-    CAOTHeapGlbl *heap_glbl;
-  }
-};
 #define DOCT_TEXT		0
 #define DOCT_NEW_LINE		1
 #define DOCT_TAB		3
@@ -233,10 +169,13 @@ public class CHashGlblVar:CHashSrcSym
 #define DOCEF_FILTER_SKIP	0x200000000000000
 #define DOCEF_HIGHLIGHT		0x4000000
 #define DOCEF_WORD_WRAP		0x8000000
+#define DOCF_NO_CURSOR		0x8
 #define DOCF_DBL_DOLLARS	0x20
+#define OPTf_ECHO		0x00
 #define OPTf_TRACE		0x01
 #define OPTf_WARN_UNUSED_VAR	0x10 //Applied to funs, not stmts
 #define OPTf_WARN_PAREN		0x11 //Warn unnecessary parens
+#define OPTf_WARN_DUP_TYPES	0x12 //Warn dup local var type stmts
 #define OPTf_WARN_HEADER_MISMATCH 0x13
 #define OPTf_EXTERNS_TO_IMPORTS	0x20
 #define OPTf_KEEP_PRIVATE	0x21
@@ -258,6 +197,12 @@ public class CHashGlblVar:CHashSrcSym
 #define RT_F64		14
 #define RTF_UNSIGNED	1
 #define RTG_MASK	0xFF
+#define MDf_STK		8
+#define MDf_IMM		9
+#define MDf_REG		10
+#define MDf_DISP	11
+#define MDf_SIB		12
+#define MDf_RIP_DISP32	13
 #define MDF_NULL	0x0000
 #define MDF_STK		0x0100
 #define MDF_IMM		0x0200
@@ -287,8 +232,12 @@ public class CHashGlblVar:CHashSrcSym
 #define ICF_POP_CMP			0x000080000 //for 50<i<j<=100 exps
 #define ICF_SWAP			0x000100000
 #define ICf_DONT_PUSH_FLOAT0		21 // 3bits
+#define ICf_DONT_POP_FLOAT0		24 // 3bits
+#define ICF_ALT_TEMPLATE		0x008000000
 #define ICF_LOCK			0x010000000
 #define ICF_NO_RIP			0x020000000
+#define ICF_DEL_PREV_INS		0x040000000
+#define ICF_PREV_DELETED		0x080000000
 #define ICG_NO_CVT_MASK			0x1FFFFFF00
 #define IC_BODY_SIZE			0x83
 #define ECF_HAS_PUSH_CMP		0x01 //for 50<i<j<=100 exps
@@ -336,6 +285,8 @@ class CIntermediateCode:CIntermediateCodeBase
     //Tree links are used during passes 012 and 3 for determining types.
     CICTreeLinks t;
   };
+#assert !($$&7)
+};
 class CPrsStk
 {
   I64	ptr,
@@ -377,6 +328,7 @@ class CCodeMisc
     CArrayDim *dim;
     CHash *h;
   };
+};
 class CInst
 {
   U8	ins_entry_num, //This entry num in opcode hash entry
@@ -702,14 +654,22 @@ class CUAsmGlbls
 	signed_arg_mask,
 	mem_arg_mask;
 };
+#define GREEN			2
+#define PURPLE			5
+#define BROWN			6
+#define LTBLUE			9
 class CExcept
 {
   CExcept *next,*last;
   I64	hndlr_catch,hndlr_untry,
 	rsp,rbp,rflags,rsi,rdi,r10,r11,r12,r13,r14,r15;
 };
+#define TASKf_CMD_LINE_PMT	4
+#define ans	(Fs->answer)
+#define ansf	(Fs->answer(F64))
 #define CH_CURSOR	0x05
 #define CH_SHIFT_SPACE	0x1F
 #define CH_SPACE	0x20
+#define GSF_SHIFT_ESC_EXIT	1 //This kills task on <SHIFT-ESC>
 // --- from KernelB.HH ---
 // --- from KernelC.HH ---
