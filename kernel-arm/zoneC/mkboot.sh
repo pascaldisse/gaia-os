@@ -66,6 +66,13 @@ EOF
 sed -i '' 's/SysSymImportsResolve(\([^),]*\));/SysSymImportsResolve(\1,0);/' \
   "$DST/CMain.HC" "$DST/PrsStmt.HC"
 
+# CMain.HC CInit: AsmHashLoad/UAsmHashLoad load Terry's x86 assembler
+# opcode tables — cut with the x86 assembler in C3; our A64Stubs versions
+# are deliberate no-ops AND load after CMain. Worse, bare 'AsmHashLoad'
+# here binds to the HOST's aarch64 table loader (present in HCRT2.BIN),
+# which must not be re-run into the shared hash. Delete both calls.
+sed -i '' '/^  AsmHashLoad;$/d; /^  UAsmHashLoad;$/d' "$DST/CMain.HC"
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do
