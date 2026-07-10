@@ -771,42 +771,58 @@ I64 ARM_ldrLabelF64(I64 d, I64 label) {
 }
 
 I64 ARM_strPostImm(I64 r, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPostImm(2, 0, r, &adr);
 }
 
 I64 ARM_ldrPostImm(I64 r, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPostImm(2, 1, r, &adr);
 }
 
 I64 ARM_strPreImm(I64 r, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPre(2, 0, r, &adr);
 }
 
 I64 ARM_ldrPreImm(I64 r, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPre(2, 1, r, &adr);
 }
 
 I64 ARM_strPostImmX(I64 r, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPostImm(3, 0, r, &adr);
 }
 
 I64 ARM_ldrPostImmX(I64 r, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPostImm(3, 1, r, &adr);
 }
 
 I64 ARM_strPreImmX(I64 r, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPre(3, 0, r, &adr);
 }
 
 I64 ARM_ldrPreImmX(I64 r, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPre(3, 1, r, &adr);
 }
 
@@ -816,42 +832,58 @@ I64 ARM_ldrPreImmX(I64 r, I64 b, I64 off) {
 //
 
 I64 ARM_stpPreImm(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPre(0, 0, r, r2, &adr);
 }
 
 I64 ARM_stpPreImmX(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPre(2, 0, r, r2, &adr);
 }
 
 I64 ARM_ldpPreImm(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPre(0, 1, r, r2, &adr);
 }
 
 I64 ARM_ldpPreImmX(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPreImm adr = {b, off};
+  CARMAdrPreImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPre(2, 1, r, r2, &adr);
 }
 
 I64 ARM_stpPostImm(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPostImm(0, 0, r, r2, &adr);
 }
 
 I64 ARM_stpPostImmX(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPostImm(2, 0, r, r2, &adr);
 }
 
 I64 ARM_ldpPostImm(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPostImm(0, 1, r, r2, &adr);
 }
 
 I64 ARM_ldpPostImmX(I64 r, I64 r2, I64 b, I64 off) {
-  CARMAdrPostImm adr = {b, off};
+  CARMAdrPostImm adr;
+  adr.n = b;
+  adr.off = off;
   return LdStRegPairPostImm(2, 1, r, r2, &adr);
 }
 
@@ -1191,15 +1223,21 @@ I64 ARM_ldur(I64 r, I64 a, I64 off) {
 }
 
 I64 ARM_ldrsbX(I64 r, I64 a, I64 off) {
-  CARMAdrRegImm addr = {a, off};
+  CARMAdrRegImm addr;
+  addr.n = a;
+  addr.off = off;
   return LdStRegUnImm(0, 2, r, &addr);
 }
 I64 ARM_ldrshX(I64 r, I64 a, I64 off) {
-  CARMAdrRegImm addr = {a, off};
+  CARMAdrRegImm addr;
+  addr.n = a;
+  addr.off = off;
   return LdStRegUnImm(1, 2, r, &addr);
 }
 I64 ARM_ldrswX(I64 r, I64 a, I64 off) {
-  CARMAdrRegImm addr = {a, off};
+  CARMAdrRegImm addr;
+  addr.n = a;
+  addr.off = off;
   return LdStRegUnImm(2, 2, r, &addr);
 }
 
