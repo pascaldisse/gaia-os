@@ -860,6 +860,14 @@ I64 ARM_fmovReg(I64 d, I64 s) {
   return FpDataProc1Reg(0, 0, 1, 0, d, s);
 }
 
+I64 ARM_fabsReg(I64 d, I64 s) {   //A1 amendment (BACKA64-DESIGN.md 8): IC_ABS
+  return FpDataProc1Reg(0, 0, 1, 1, d, s);
+}
+
+I64 ARM_fsqrtReg(I64 d, I64 s) {  //A1 amendment (BACKA64-DESIGN.md 8): IC_SQRT
+  return FpDataProc1Reg(0, 0, 1, 3, d, s);
+}
+
 I64 ARM_fcmp(I64 a, I64 b) {
   return FpComp(0, 0, 1, 0, 0, a, b);
 }
