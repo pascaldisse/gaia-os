@@ -671,7 +671,6 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
     }
     case IC_LBTR: {
-      I64 loop_start;
       rt = tmpi->ic_class->raw_type;
       A64Deref(tmpi, 2, &tmpi->arg1);
       A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
@@ -690,7 +689,6 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
     }
     case IC_LBTC: {
-      I64 loop_start;
       rt = tmpi->ic_class->raw_type;
       A64Deref(tmpi, 2, &tmpi->arg1);
       A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
