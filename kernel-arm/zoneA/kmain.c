@@ -125,12 +125,17 @@ void kmain(void) {
     if (cap) { puts("virtio-blk: "); putdec(cap); puts(" sectors ("); putdec(cap / 2048); puts("MB)\n"); }
     else puts("virtio-blk: no device\n");
 
+    int net_ok = (NetInit() == 0);
+    if (net_ok) NetInfo();
+    else puts("virtio-net: no device\n");
+
     TaskInit();
     Spawn(ebrietas, "Ebrietas");
     Spawn(maiden, "Maiden");
     puts("tasks: Adam + Ebrietas + Maiden in the ring\n");
     while (ticks < 2) Yield();   // demo pass under the heartbeat
 
+    if (net_ok) Spawn(NetRxTask, "NetRx");
     Spawn(shell_task, "Shell");
     for (;;) Yield();            // Adam keeps the ring turning
 }

@@ -35,6 +35,9 @@ static void cmd_help(void) {
     puts("  cat <name> read file\n");
     puts("  hc <file>  compile+run HolyC file (SeedC JIT)\n");
     puts("  hcl <code> compile+run HolyC one-liner\n");
+    puts("  ip         network info\n");
+    puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
+    puts("  dns <name> resolve via 10.0.2.3\n");
     puts("  reboot     PSCI system reset\n");
 }
 
@@ -114,6 +117,23 @@ static void run_cmd(const char *line) {
         if (n < 0) { puts("no such file\n"); return; }
         hbuf[n] = 0;
         HcRun(hbuf);
+        return;
+    }
+    if (streq(line, "ip")) { NetInfo(); return; }
+    if (line[0] == 'p' && line[1] == 'i' && line[2] == 'n' && line[3] == 'g' && line[4] == ' ') {
+        const char *p = line + 5;
+        u32 ip = 0;
+        for (int i = 0; i < 4; i++) {
+            ip = (ip << 8) | (u32)parsedec(&p);
+            if (i < 3) { if (*p != '.') { puts("usage: ping a.b.c.d\n"); return; } p++; }
+        }
+        NetPing(ip, 3);
+        return;
+    }
+    if (line[0] == 'd' && line[1] == 'n' && line[2] == 's' && line[3] == ' ') {
+        u32 ip;
+        if (NetDns(line + 4, &ip)) puts("dns: no answer\n");
+        else { puts(line + 4); puts(" -> "); NetPrintIp(ip); puts("\n"); }
         return;
     }
     if (streq(line, "reboot")) {

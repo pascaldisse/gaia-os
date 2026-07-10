@@ -32,6 +32,14 @@ int BlkRW(u64 sector, void *buf, int write);
 // hc.c — SeedC: HolyC-subset JIT compiler (Zone C seed)
 void HcRun(const char *src);
 
+// net.c — virtio-net + ARP/IPv4/ICMP/UDP/DNS, polled
+int NetInit(void);
+void NetRxTask(void);
+void NetInfo(void);
+void NetPing(u32 dst, int count);
+int NetDns(const char *name, u32 *out);
+void NetPrintIp(u32 ip);
+
 // fs.c — RedSea-spirit contiguous FS
 int FsMount(void);
 int FsFormat(u64 disk_secs);
