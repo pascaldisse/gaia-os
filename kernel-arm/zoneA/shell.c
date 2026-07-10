@@ -38,6 +38,7 @@ static void cmd_help(void) {
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
+    puts("  wget <host> [path]  HTTP GET (TCP)\n");
     puts("  reboot     PSCI system reset\n");
 }
 
@@ -134,6 +135,18 @@ static void run_cmd(const char *line) {
         u32 ip;
         if (NetDns(line + 4, &ip)) puts("dns: no answer\n");
         else { puts(line + 4); puts(" -> "); NetPrintIp(ip); puts("\n"); }
+        return;
+    }
+    if (line[0] == 'w' && line[1] == 'g' && line[2] == 'e' && line[3] == 't' && line[4] == ' ') {
+        const char *p = line + 5;
+        char name[64]; int i = 0;
+        while (*p && *p != ' ' && i < 63) name[i++] = *p++;
+        name[i] = 0;
+        while (*p == ' ') p++;
+        const char *path = *p ? p : "/";
+        u32 ip;
+        if (NetDns(name, &ip)) puts("dns: no answer\n");
+        else NetHttpGet(ip, name, path);
         return;
     }
     if (streq(line, "reboot")) {

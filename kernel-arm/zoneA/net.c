@@ -52,8 +52,10 @@ static unsigned char rxbuf[QSZ][BUFSZ] __attribute__((aligned(16)));
 static unsigned char txbuf[BUFSZ] __attribute__((aligned(16)));
 
 static unsigned char my_mac[6];
-static u32 my_ip  = 0x0A00020F;         // 10.0.2.15
+u32 my_ip  = 0x0A00020F;                // 10.0.2.15 (not static: tcp.c needs it)
 static u32 dns_ip = 0x0A000203;         // 10.0.2.3
+
+void TcpRx(const unsigned char *ipkt, int iplen);   // tcp.c
 
 #define REG(b, o) MMIO32((b) + (o))
 
@@ -189,9 +191,10 @@ static int arp_resolve(u32 ip, unsigned char *mac_out) {
 // ----------------------------------------------------------------- IPv4 ----
 static u32 ip_ident = 0x4749;                       // "GI"
 
-static void ip_send(u32 dst, int proto, const unsigned char *payload, int plen) {
+void ip_send(u32 dst, int proto, const unsigned char *payload, int plen) {   // not static: tcp.c needs it
     unsigned char dmac[6];
-    if (arp_resolve(dst, dmac)) { puts("net: arp timeout\n"); return; }
+    u32 nexthop = ((dst ^ my_ip) & 0xFFFFFF00) ? 0x0A000202 : dst;   // off-subnet -> via gw 10.0.2.2
+    if (arp_resolve(nexthop, dmac)) { puts("net: arp timeout\n"); return; }
     unsigned char *p = eth_hdr(dmac, 0x0800);
     p[0] = 0x45; p[1] = 0;
     put16(p + 2, 20 + plen);
@@ -276,6 +279,9 @@ static void handle_frame(unsigned char *f, int flen) {
             for (int i = 0; i < dl; i++) udp_rx[i] = pl[8 + i];
             udp_rx_len = dl;
         }
+    }
+    else if (proto == 6) {                          // TCP
+        TcpRx(ip, (int)get16(ip + 2));
     }
 }
 

@@ -40,6 +40,9 @@ void NetPing(u32 dst, int count);
 int NetDns(const char *name, u32 *out);
 void NetPrintIp(u32 ip);
 
+// tcp.c — minimal blocking single-connection TCP client
+int NetHttpGet(u32 ip, const char *host, const char *path);
+
 // fs.c — RedSea-spirit contiguous FS
 int FsMount(void);
 int FsFormat(u64 disk_secs);
