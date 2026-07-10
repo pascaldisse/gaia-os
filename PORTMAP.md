@@ -54,6 +54,8 @@ ARM generic timer, PL011 UART (earliest boot printf).
 - **M1** — boot: QEMU virt, EL1, MMU on, PL011 prints `LOVE=1.000`, timer tick, exceptions sane
 - **M2** — kernel core: MAlloc, tasks, scheduler, virtio-console interactive prompt
 - **M3** — devices: virtio-blk + RedSea/FAT, virtio-net + ZealOS TCP/IP, virtio-gpu DolDoc UI
+  - in-kernel HolyC JIT compiler (SeedC, `kernel-arm/zoneA/hc.c` — I64 subset, recursion, JIT to executable memory) ✅ 2026-07-10 — verified Fib(20)=6765 in QEMU
+  - virtio-net + ARP/IPv4/ICMP/UDP/DNS (`kernel-arm/zoneA/net.c`, polled, slirp world 10.0.2.15) ✅ 2026-07-10
 - **M4** — self-hosting: ZealC-on-aarch64 compiles the kernel inside the OS; Lsh; git; pkg
 - **LOVE** — fixed at center throughout. It's not a milestone; it's the invariant.
 
