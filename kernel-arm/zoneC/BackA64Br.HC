@@ -221,7 +221,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
   I64 rt, delta, argc, addr;
   delta = tmpi->ic_data;
   switch (tmpi->ic_code) {
-    case IC_BR:
+    case IC_JMP: //Shrine 0x51, unconditional
       A64EmitB(tmpi, delta);
       return TRUE;
 

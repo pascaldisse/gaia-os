@@ -4,7 +4,7 @@
 Bool A64ICIsBranch(CIntermediateCode *tmpi)
 {
   switch [tmpi->ic_code] {
-    case IC_BR:
+    case IC_JMP: //Shrine 0x51, unconditional
     case IC_BR_ZERO:
     case IC_BR_NOT_ZERO:
     case IC_BR_EQU_EQU:
