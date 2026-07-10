@@ -25,7 +25,11 @@
 // atomic-loop status). x2 holds a synthesized effective address when a
 // lowering needs one (A64Deref output).
 
-#define A64_FLOATY(rt) (((rt) == RT_F64) || ((rt) == RT_F32))
+// (HolyC: parameterized macros are not supported — real function, same name)
+Bool A64_FLOATY(I64 rt)
+{
+  return rt == RT_F64 || rt == RT_F32;
+}
 
 // --- Local plumbing: load/store a raw_type-sized value through an
 // address already sitting in a register (offset 0). This is NOT one of

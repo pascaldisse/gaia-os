@@ -15,26 +15,30 @@
 //      operand to the register-shift encoders below.
 #define LSL 0
 
-#define MASKn(v, bits, off) (((v) & ((1 << (bits)) - 1)) << (off))
+// (HolyC: parameterized macros are not supported — real functions, same names)
+I64 MASKn(I64 v, I64 bits, I64 off)
+{
+  return (v & ((1 << bits) - 1)) << off;
+}
 
 // https://math.stackexchange.com/questions/490813/range-twos-complement
-#define ARM_FORCE_ALIGN(v, bits, chop)                                         \
-  {                                                                            \
-    if ((v) & ((1 << (chop)) - 1))                                             \
-      throw('Asm');                                                  \
-    if ((v) >= 0) {                                                            \
-      if (((v) >> chop) > (1 << ((bits) - 1)) - 1)                            \
-        throw('Asm');                                                \
-    } else if ((-(v) >> chop) > (1 << ((bits) - 1)))                          \
-      throw('Asm');                                                  \
-  }
-#define ARM_FORCE_REG(r)                                                       \
-  {                                                                            \
-    if ((r) < 0)                                                               \
-      throw('Asm');                                                  \
-    if ((r) > 32)                                                              \
-      throw('Asm');                                                  \
-  }
+U0 ARM_FORCE_ALIGN(I64 v, I64 bits, I64 chop)
+{
+  if (v & ((1 << chop) - 1))
+    throw('Asm');
+  if (v >= 0) {
+    if ((v >> chop) > (1 << (bits - 1)) - 1)
+      throw('Asm');
+  } else if ((-v >> chop) > (1 << (bits - 1)))
+    throw('Asm');
+}
+U0 ARM_FORCE_REG(I64 r)
+{
+  if (r < 0)
+    throw('Asm');
+  if (r > 32)
+    throw('Asm');
+}
 // https://github.com/fujitsu/xbyak_aarch64
 // (HolyC: 'class', not C 'typedef struct' — converted for the host parser)
 class CARMAdrRegReg {
@@ -1015,9 +1019,8 @@ I64 GenNImmSImmR(I64 imm) {
   // TODO write this stuff in assemblt
   if (imm == 0 || ~imm == 0)
     throw('Asm');
-  I64 consec = 0, idx, zero_gap = 0, first_zeros, width, x;
+  I64 consec = 0, idx, zero_gap = 0, first_zeros, width, x, n;
   U64 pattern;
-#define ROT(x, n) ((x) >> n) | ((x) << (64 - n))
   // Find first 1
   zero_gap = Bsf(imm);
   // Count consecitive bits for the pattern
@@ -1038,49 +1041,27 @@ I64 GenNImmSImmR(I64 imm) {
   }
   // Our pattern size is zero_gap+consec
   width = zero_gap + consec;
-  switch (width) {
-#define MAKE_PATT                                                              \
-  x = consec - 1;                                                              \
-  pattern = 0;                                                                 \
-  for (idx = 0; idx != 64 / width; idx++)                                      \
-    if (!idx)                                                                  \
-      pattern |= (1 << consec) - 1;                                          \
-    else                                                                       \
+  // (Was the MAKE_PATT/CHECK_PATT macro switch — inlined: HolyC has no
+  // parameterized macros. Build the repeating pattern, rotate-search it.)
+  if (width != 2 && width != 4 && width != 8 && width != 16 &&
+      width != 32 && width != 64)
+    throw('Asm');
+  x = consec - 1;
+  pattern = 0;
+  for (idx = 0; idx != 64 / width; idx++)
+    if (!idx)
+      pattern |= (1 << consec) - 1;
+    else
       pattern |= ((1 << consec) - 1) << (width * idx);
-
-#define CHECK_PATT(n)                                                          \
-  for (idx = 0; idx != width; idx++)                                           \
-    if (pattern == imm)                                                        \
-      return (n << 12) | (idx << 6) | x;                                       \
-    else                                                                       \
-      pattern = ROT(pattern, 1);
-    break;
-  case 2:
-    MAKE_PATT;
-    CHECK_PATT(0);
-    break;
-  case 4:
-    MAKE_PATT;
-    CHECK_PATT(0);
-    break;
-  case 8:
-    MAKE_PATT;
-    CHECK_PATT(0);
-    break;
-  case 16:
-    MAKE_PATT;
-    CHECK_PATT(0);
-    break;
-  case 32:
-    MAKE_PATT;
-    CHECK_PATT(0);
-    break;
-  case 64:
-    MAKE_PATT;
-    CHECK_PATT(1);
-    break;
-  default:;
-  }
+  if (width == 64)
+    n = 1;
+  else
+    n = 0;
+  for (idx = 0; idx != width; idx++)
+    if (pattern == imm)
+      return (n << 12) | (idx << 6) | x;
+    else
+      pattern = (pattern >> 1) | (pattern << 63); //ROT(pattern,1), pattern is U64
   throw('Asm');
 }
 
