@@ -98,10 +98,28 @@ CUAsmGlbls	uasm;		// only cut files use it; kept for decl parity
 
 "zoneC: Shrine compiler + BackA64 loaded\n";
 
-// C4 JIT smoke: one statement through the LOADED Shrine front end + BackA64
-// codegen (ExePutS was shadowed newest-wins by CMain.HC above), executed via
-// the host's Call() (aiwnios main.c TempleOS_Call). The Print call inside the
-// JIT'd code resolves through the shared Fs->hash_table (ALIAS set).
+// C4 JIT smoke (diagnostic form): compile one statement through the LOADED
+// Shrine front end + BackA64, but do NOT execute the buffer — the exec form
+// faulted at frame 0 inside the anonymous JIT buffer (smoke23). Dump the
+// emitted machine code as hex words for offline disassembly instead.
 "zoneC: JIT hello begins\n";
-ExePutS("\"Hello GAIA\\n\";");
+CCmpCtrl *jcc;
+U8 *jbuf;
+U32 *jp;
+I64 jtype,ji,jn;
+jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
+QueIns(jcc,Fs->last_cc);
+Lex(jcc);
+jbuf=LexStmt2Bin(jcc,&jtype);
+if (jbuf && jbuf!=INVALID_PTR) {
+  jn=MSize(jbuf);
+  "zoneC: JIT buf=%X size=%d type=%d\n",jbuf,jn,jtype;
+  if (jn>256) jn=256;
+  jp=jbuf;
+  for (ji=0;ji<(jn+3)>>2;ji++)
+    "zoneC HEX %08X\n",jp[ji];
+} else
+  "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
+QueRem(jcc);
+CmpCtrlDel(jcc);
 "zoneC: JIT hello returned\n";
