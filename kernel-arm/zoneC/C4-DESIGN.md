@@ -53,15 +53,42 @@ Why this is sound:
   newest-wins for subsequent lookups; the host keeps its own already-
   resolved addresses and stays alive.
 
-## GATE (recon pending): class/#define shadow semantics
+## GATE: PASSED (recon 2026-07-10)
 
-The design assumes the C-side parser shadows CLASS definitions and
-#define redefinitions as silently as functions. If class redefinition
-errors instead → fallback: rename-prefix Shrine's diverging container
-classes (mechanical batch rename in the extract + front end, ghoulable).
-If #define redefinition errors → wrap the extract's defines or boot with
-a trimmed bootstrap; note IC_ICS_NUM and the 18 extra opcodes are the
-only value conflicts.
+Both redefinition kinds are silent shadows, same newest-wins pattern as
+functions:
+- CLASS: c/parser.c:4003-4043 — existing full class discarded
+  (`bungis=NULL`), fresh CHashClass HashAdd'd, no duplicate abort.
+- #define: c/lex.c:800-829 — fresh CHashDefineStr HashAdd'd
+  unconditionally, no check at all. No #undef in HolyC lexer.
+- `#assert` is a warned no-op (lex.c:642). Sized-class prefix
+  (`U16 class`) IS supported despite no PRSF_ flag: Aiwnios's own
+  Src/KernelA.HH:1612 uses `U16 class CICType` and bootstraps.
+
+## Refinement: cross-compiler frame (shadow vs alias partition)
+
+The naive shadow breaks at the host boundary: Shrine's front end reads
+`Fs->hash_table` and walks CHash* entries that the HOST created with
+Aiwnios layouts. Shadowing CTask/CHash* with Shrine layouts would apply
+Shrine offsets to host objects. Resolution — the loaded Shrine world is
+a **self-contained cross-compiler**:
+
+- **SHADOW set** (Shrine layouts, from the extract): the compiler
+  contract — CICType, CICArg, CIntermediateCode(Base), CCodeCtrl,
+  CCmpCtrl, CDbgInfo, CCodeMisc, CAOTCtrl, CAOTAbsAddr, CAsmArg, lexer
+  state classes, and all IC_/MDG_/RT_/RTF_/CCF_/CMT_/CMF_ defines. Plus
+  Shrine's own CHash* + hash functions so the compiler owns a private
+  symbol universe (AOT symbols go into cc->htc tables under
+  CCF_AOT_COMPILE, never the host table — TempleOS kernel-build style).
+- **ALIAS set** (do NOT shadow; compile against the host's live defs):
+  CTask and anything host services create/consume. Field-name
+  compatibility for the `Fs->` accesses the KEEP set makes is the one
+  open audit (in flight).
+- CDbgInfo.body: DECIDED — widen `U32 body[1]` → `U8 *body[1]` in the
+  extract (we control it; OptPass789A64 stores full pointers; Aiwnios
+  made the same widening).
+- JIT smoke's calls into host services (Print) get patched as scalar
+  addresses — safe across the boundary.
 
 ## Runbook (M4 path)
 
