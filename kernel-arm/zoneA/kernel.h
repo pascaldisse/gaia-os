@@ -29,6 +29,9 @@ void shell_task(void);
 u64 BlkInit(void);
 int BlkRW(u64 sector, void *buf, int write);
 
+// hc.c — SeedC: HolyC-subset JIT compiler (Zone C seed)
+void HcRun(const char *src);
+
 // fs.c — RedSea-spirit contiguous FS
 int FsMount(void);
 int FsFormat(u64 disk_secs);

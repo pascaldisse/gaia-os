@@ -33,6 +33,8 @@ static void cmd_help(void) {
     puts("  ls         list files\n");
     puts("  wr <name> <text>   write file\n");
     puts("  cat <name> read file\n");
+    puts("  hc <file>  compile+run HolyC file (SeedC JIT)\n");
+    puts("  hcl <code> compile+run HolyC one-liner\n");
     puts("  reboot     PSCI system reset\n");
 }
 
@@ -102,6 +104,18 @@ static void run_cmd(const char *line) {
         else { puts("wrote "); puts(name); puts("\n"); }
         return;
     }
+    if (line[0] == 'h' && line[1] == 'c' && line[2] == 'l' && line[3] == ' ') {
+        HcRun(line + 4);
+        return;
+    }
+    if (line[0] == 'h' && line[1] == 'c' && line[2] == ' ') {
+        static char hbuf[8192];
+        long n = FsRead(line + 3, hbuf, 8191);
+        if (n < 0) { puts("no such file\n"); return; }
+        hbuf[n] = 0;
+        HcRun(hbuf);
+        return;
+    }
     if (streq(line, "reboot")) {
         puts("resetting...\n");
         asm volatile("mov x0, %0\n hvc #0" :: "r"(0x84000009ULL) : "x0"); // PSCI SYSTEM_RESET
@@ -111,7 +125,7 @@ static void run_cmd(const char *line) {
 }
 
 void shell_task(void) {
-    char line[128];
+    char line[256];
     int n = 0;
     puts("\nGAIA-OS shell — 'help' for commands\n");
     if (FsMount() == 0) puts("T:/ mounted (RedSea-spirit)\n");
@@ -128,7 +142,7 @@ void shell_task(void) {
             puts("T:/> ");
         } else if (c == 127 || c == 8) {
             if (n > 0) { n--; puts("\b \b"); }
-        } else if (n < 127 && c >= 32) {
+        } else if (n < 255 && c >= 32) {
             line[n++] = (char)c;
             putc((char)c);
         }

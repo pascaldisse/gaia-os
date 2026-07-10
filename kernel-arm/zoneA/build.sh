@@ -12,7 +12,8 @@ clang $CFLAGS -c task.c -o task.o
 clang $CFLAGS -c shell.c -o shell.o
 clang $CFLAGS -c virtio.c -o virtio.o
 clang $CFLAGS -c fs.c -o fs.o
-aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o virtio.o fs.o -o gaia-os.elf
+clang $CFLAGS -c hc.c -o hc.o
+aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o virtio.o fs.o hc.o -o gaia-os.elf
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 
