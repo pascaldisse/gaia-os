@@ -98,19 +98,22 @@ CUAsmGlbls	uasm;		// only cut files use it; kept for decl parity
 
 "zoneC: Shrine compiler + BackA64 loaded\n";
 
-// C4 JIT smoke (diagnostic form): compile one statement through the LOADED
-// Shrine front end + BackA64, but do NOT execute the buffer — the exec form
-// faulted at frame 0 inside the anonymous JIT buffer (smoke23). Dump the
-// emitted machine code as hex words for offline disassembly instead.
+// C4 JIT smoke (bisect form): step prints around each call — both prior
+// forms faulted into Dbg between CmpCtrlNew and LexStmt2Bin with no
+// compiler ERROR output. QueIns on the host task cc queue dropped
+// (prime suspect: aiwnios never initializes Fs->next_cc/last_cc).
 "zoneC: JIT hello begins\n";
 CCmpCtrl *jcc;
 U8 *jbuf;
 U32 *jp;
 I64 jtype,ji,jn;
+"zoneC: step 1 Fs=%X last_cc=%X code_heap=%X\n",Fs,Fs->last_cc,Fs->code_heap;
 jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
-QueIns(jcc,Fs->last_cc);
+"zoneC: step 2 CmpCtrlNew ok jcc=%X\n",jcc;
 Lex(jcc);
+"zoneC: step 3 Lex ok token=%d\n",jcc->token;
 jbuf=LexStmt2Bin(jcc,&jtype);
+"zoneC: step 4 LexStmt2Bin ok\n";
 if (jbuf && jbuf!=INVALID_PTR) {
   jn=MSize(jbuf);
   "zoneC: JIT buf=%X size=%d type=%d\n",jbuf,jn,jtype;
@@ -120,6 +123,5 @@ if (jbuf && jbuf!=INVALID_PTR) {
     "zoneC HEX %08X\n",jp[ji];
 } else
   "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
-QueRem(jcc);
 CmpCtrlDel(jcc);
 "zoneC: JIT hello returned\n";
