@@ -19,6 +19,12 @@ for f in CompilerA.HH CExts.HC CInit.HC CExcept.HC LexLib.HC \
   cp "$REPO/shrine/Compiler/$f" "$DST/"
 done
 
+# hosted-mode patches: strip redundant import decls (host symbols resolve natively)
+sed -i '' '/^import /d' "$DST/CExts.HC"
+# _extern needs a system sym in Aiwnios; CMP_TEMPLATES* are Templates.HC
+# labels (cut with it) and nothing in the KEEP set reads cmp_templates*.
+sed -i '' '/^_extern CMP_TEMPLATES/d' "$DST/CExts.HC"
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do

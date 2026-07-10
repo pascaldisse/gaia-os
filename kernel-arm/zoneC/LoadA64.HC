@@ -16,14 +16,42 @@
 #include "A64Defs.HH"		// aarch64 REG_* — shadows x86 values
 #include "CompilerA.HH"		// Shrine's compiler header, verbatim
 
+// Hosted shims — Shrine kernel names absent from the Aiwnios runtime hash
+// (probed 2026-07-10 against aiwnios/Src FULL_PACKAGE set):
+//   sys_run_level: global in Shrine, class member in Aiwnios. Adam-server
+//     bit SET = "system up", so LexExcept skips Raw(ON) boot-phase paths.
+//   sys_var_init_flag/val: compiler-owned globals, absent (comments only).
+//   BEqu: absent (Bt/Bts/Btr resolve C-side; BEqu was never ported).
+//   Dbg: no hosted debugger (0 hits in HCRT2.BIN symbol strings) — report
+//     and return; only reached on LexExcept's boot-phase branch anyway.
+U32 sys_run_level = 1<<RLf_ADAM_SERVER;
+U8  sys_var_init_flag = 0;
+U8  sys_var_init_val  = 0;
+Bool BEqu(U8 *bit_field,I64 bit_num,Bool val)
+{
+  Bool old=Bt(bit_field,bit_num);
+  if (val)
+    Bts(bit_field,bit_num);
+  else
+    Btr(bit_field,bit_num);
+  return old;
+}
+U0 Dbg(U8 *msg=NULL,...)
+{
+  if (msg)
+    PrintErr("Dbg(hosted no-op): %s\n",msg);
+}
+// mem_boot_base: Shrine kernel image base. Sole KEEP-set reader is
+// HashEntrySize's KERNEL_MODULE_NAME branch (CHash.HC:24), which subtracts
+// sizeof(CBinFile) and reads ->file_size. Hosted there is no kernel bin
+// image, so back it with a zeroed CBinFile: an accidental hit reports 0.
+U8 *mem_boot_base;
+mem_boot_base=CAlloc(sizeof(CBinFile))+sizeof(CBinFile);
+
 // Templates.HC CUT (x86 F64 op templates in inline asm; sole reader is
-// BackFA.HC, itself cut in C3 — verified by grep). These five globals
-// satisfy CExts.HC's _extern CMP_TEMPLATES* binds by name; never read.
-U32 CMP_TEMPLATES[1];
-U32 CMP_TEMPLATES_DONT_POP[1];
-U32 CMP_TEMPLATES_DONT_PUSH2[1];
-U32 CMP_TEMPLATES_DONT_PUSH[1];
-U32 CMP_TEMPLATES_DONT_PUSH_POP[1];
+// BackFA.HC, itself cut in C3 — verified by grep). CExts.HC's five
+// _extern CMP_TEMPLATES* binds are stripped at stage time by mkboot.sh:
+// Aiwnios's _extern requires a system sym, and nothing reads cmp_templates*.
 #include "CExts.HC"
 CCmpGlbls	cmp;
 #include "CInit.HC"
