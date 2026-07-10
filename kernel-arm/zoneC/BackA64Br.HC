@@ -104,7 +104,7 @@ I64 A64FrameMask(CIntermediateCode *tmpi) {
 }
 
 U0 A64SubSP(CIntermediateCode *tmpi, I64 bytes) {
-  //Register-form add/sub treats reg 31 as XZR, not SP —
+  //Register-form add/sub treats rg 31 as XZR, not SP —
   //only the immediate form addresses SP. Chunk large frames.
   if (!bytes) return;
   while (bytes > 4095) {

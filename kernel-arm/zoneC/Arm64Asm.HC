@@ -221,9 +221,9 @@ I64 UncondBrImm(I64 op, I64 label) {
   return (op << 31) | (5 << 26) | MASKn(label >> 2, 26, 0);
 }
 
-I64 UncondBr1Reg(I64 opc, I64 op2, I64 op3, I64 reg,
+I64 UncondBr1Reg(I64 opc, I64 op2, I64 op3, I64 rg,
                             I64 op4) {
-  return (0x6b << 25) | (opc << 21) | (op2 << 16) | (op3 << 10) | (reg << 5) |
+  return (0x6b << 25) | (opc << 21) | (op2 << 16) | (op3 << 10) | (rg << 5) |
          op4;
 }
 

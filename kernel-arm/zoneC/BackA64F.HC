@@ -260,7 +260,7 @@ Bool A64GenF(CCmpCtrl *cc, CIntermediateCode *tmpi)
   case IC_CARRY:
     // Materializes NZCV.C as 0/1. Assumes NZCV.C is still live from
     // whichever preceding op set it — same caveat section 5(d) documents
-    // for IC_BR_CARRY (our BT lowering sets a value reg, not C; audited
+    // for IC_BR_CARRY (our BT lowering sets a value rg, not C; audited
     // at the call sites that actually produce this pairing).
     A64W(tmpi, ARM_csetX(0, 2));	// cset x0, cs  (CS/HS == carry set)
     if (tmpi->res.type.mode)

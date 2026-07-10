@@ -148,7 +148,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     // ADD/SUB dual-dispatch with float per IC-HolyC.md ("ICAddEct int /
     // ICFAdd float", per ICF_USE_INT). Binary-op idiom exactly as given:
-    // load both operands to x0/x1, reg-reg op, store res.
+    // load both operands to x0/x1, rg-rg op, store res.
     case IC_ADD: {
       if (!(tmpi->ic_flags & ICF_USE_INT)) return FALSE;
       rt = tmpi->ic_class->raw_type;
@@ -170,7 +170,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     // IC_ADD_CONST/IC_SUB_CONST: folded single-arg form, constant lives in
     // ic_data (no arg2 CICArg to load) — materialize via A64MovImm, then
-    // the same reg-reg op.
+    // the same rg-rg op.
     case IC_ADD_CONST: {
       rt = tmpi->ic_class->raw_type;
       A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
