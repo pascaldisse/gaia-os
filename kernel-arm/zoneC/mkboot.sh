@@ -25,6 +25,27 @@ sed -i '' '/^import /d' "$DST/CExts.HC"
 # labels (cut with it) and nothing in the KEEP set reads cmp_templates*.
 sed -i '' '/^_extern CMP_TEMPLATES/d' "$DST/CExts.HC"
 
+# CMisc.HC: the x86 _LAST_FUN asm trampoline (lines 11-48, the ONLY asm
+# block in the KEEP set) -> hosted HolyC shim over C-registered CallArgs
+# (signature pinned: aiwnios KernelA.HH:4028 I64 CallArgs(U8*,I64,I64*);
+# same pattern as aiwnios Src/KUtils.HC:4). Aiwnios CTask HAS last_fun
+# (KernelA.HH:3305), so Fs->last_fun compiles against the ALIAS CTask.
+awk '
+  /^asm \{/ && !done {skip=1}
+  skip && /^_extern _LAST_FUN/ {
+    skip=0; done=1
+    print "// zoneC C4: x86 _LAST_FUN trampoline replaced for hosted mode."
+    print "I64 LastFun(I64 argc,I64 *argv)"
+    print "{//Execute last fun with args (CallArgs shim)."
+    print "  CHashFun *f=Fs->last_fun;"
+    print "  if (!f || !f->exe_addr) return 0;"
+    print "  return CallArgs(f->exe_addr,argc,argv);"
+    print "}"
+    next
+  }
+  !skip {print}
+' "$DST/CMisc.HC" > "$DST/CMisc.HC.tmp" && mv "$DST/CMisc.HC.tmp" "$DST/CMisc.HC"
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do
