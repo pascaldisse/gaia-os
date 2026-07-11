@@ -179,6 +179,19 @@ U0 A64EmitCallAbs(CIntermediateCode *tmpi, I64 addr) {
   A64W(tmpi, ARM_blr(16));
 }
 
+//C4 IC_CALL_INDIRECT2: the callee address lives IN the slot at addr
+//(Terry x86: mov rbx,imm64; call [rbx] — OptPass789A.HC:345). Deref at
+//call time so JIT patching of exe_addr stays live. Fixed emission size
+//per node (pass-stable while addresses settle), same rule as CallAbs.
+U0 A64EmitCallSlot(CIntermediateCode *tmpi, I64 addr) {
+  A64W(tmpi, ARM_movzImmX(16, addr & 0xFFFF, 0));
+  A64W(tmpi, ARM_movkImmX(16, (addr >> 16) & 0xFFFF, 16));
+  A64W(tmpi, ARM_movkImmX(16, (addr >> 32) & 0xFFFF, 32));
+  A64W(tmpi, ARM_movkImmX(16, (addr >> 48) & 0xFFFF, 48));
+  A64W(tmpi, ARM_ldrRegImmX(16, 16, 0));
+  A64W(tmpi, ARM_blr(16));
+}
+
 U0 A64LoadCmpArgs(CIntermediateCode *tmpi, I64 rt) {
   A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
   A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
@@ -331,6 +344,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64W(tmpi, ARM_strPreImmX(0, 31, -16));
       return TRUE;
 
+    case IC_CALL_INDIRECT2: //callee = *ic_data slot; only the callee emit differs
     case IC_CALL:
       //Terry OptPass789A.HC:323 — ic_data IS the absolute callee address.
       //aiwnios host ABI adapter (arm_backend.c __ICFCallTOS): callees take
@@ -367,7 +381,10 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       //blr clobbers x30 — save/restore so IC_RET returns to OUR caller.
       //Fixed emission size per argc: pass-stable while addresses settle.
       A64W(tmpi, ARM_strPreImmX(30, 31, -16));
-      A64EmitCallAbs(tmpi, tmpi->ic_data);
+      if (tmpi->ic_code==IC_CALL)
+        A64EmitCallAbs(tmpi, tmpi->ic_data);
+      else //IC_CALL_INDIRECT2: deref the slot at call time
+        A64EmitCallSlot(tmpi, tmpi->ic_data);
       A64W(tmpi, ARM_ldrPostImmX(30, 31, 16));
       if (a64_arg_sp)
         a64_arg_cnt = a64_arg_stk[--a64_arg_sp];

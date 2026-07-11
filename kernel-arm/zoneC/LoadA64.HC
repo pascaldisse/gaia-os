@@ -227,6 +227,30 @@ U0 ZoneCJitSmoke()
       "zoneC: exec2 done res=%X\n",ji;
     } else
       "zoneC: exec2 compile failed\n";
+    //C4 IC_CALL_INDIRECT2 smoke: try/catch — PrsStmt compiles the try body
+    //as a sub-fun and calls it through IC_CALL_INDIRECT2 (&tmp_try->exe_addr,
+    //PrsStmt.HC:866). No exception is thrown, so the catch body must not run.
+    jcc=CmpCtrlNew("try {\"Try OK\\n\";} catch {\"NOCATCH\\n\";}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec3 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec3 done res=%X\n",ji;
+    } else
+      "zoneC: exec3 compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);

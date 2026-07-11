@@ -90,6 +90,8 @@ sed -i '' '/^  AsmHashLoad;$/d; /^  UAsmHashLoad;$/d' "$DST/CMain.HC"
 # the high bits of ic_flags instead: (F+1)<<ICF_A64_VARG_SHIFT (F = fixed
 # arg cnt; defines in ShrineHost.HH). Passes only |= / &=~ low ICF bits.
 # BackA64Br's IC_CALL reads the marker to build aiwnios's (argc,argv) pair.
+# The JIT extern site (IC_CALL_INDIRECT2, non-AOT Cf_EXTERN) gets the same
+# marker: BackA64Br shares one marshal for both call forms.
 python3 - "$DST/PrsExp.HC" <<'PYPRSEXP'
 import re,sys
 p=sys.argv[1]; s=open(p).read()
@@ -98,6 +100,15 @@ m=list(pat.finditer(s)); assert len(m)==1, 'PrsExp IC_CALL anchor drift: %d'%len
 g1,g2=m[0].group(1),m[0].group(2)
 new=(g1+'} else {\n'
  +g2+'ICAdd(cc,IC_CALL,tmpf->exe_addr,tmpf->return_class);\n'
+ +g2+'if (tmpm && tmpm->flags&MLF_DOT_DOT_DOT) //bug#8 variadic marker for BackA64\n'
+ +g2+'  cc->coc.coc_head.last->ic_flags|=(tmpf->arg_cnt+1)<<ICF_A64_VARG_SHIFT;\n'
+ +g1+'}')
+s=s[:m[0].start()]+new+s[m[0].end():]
+pat2=re.compile(r'(?m)^([ \t]+)\} else\n([ \t]+)ICAdd\(cc,IC_CALL_INDIRECT2,&tmpf->exe_addr,tmpf->return_class\);$')
+m=list(pat2.finditer(s)); assert len(m)==1, 'PrsExp IC_CALL_INDIRECT2 anchor drift: %d'%len(m)
+g1,g2=m[0].group(1),m[0].group(2)
+new=(g1+'} else {\n'
+ +g2+'ICAdd(cc,IC_CALL_INDIRECT2,&tmpf->exe_addr,tmpf->return_class);\n'
  +g2+'if (tmpm && tmpm->flags&MLF_DOT_DOT_DOT) //bug#8 variadic marker for BackA64\n'
  +g2+'  cc->coc.coc_head.last->ic_flags|=(tmpf->arg_cnt+1)<<ICF_A64_VARG_SHIFT;\n'
  +g1+'}')
