@@ -149,7 +149,7 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     A64MovImm(tmpi, rx, disp);
     break;
   case MDF_STK:
-    A64W(tmpi, ARM_ldrPostImmX(rx, 31, 8));
+    A64W(tmpi, ARM_ldrPostImmX(rx, 31, 16));
     break;
   case MDF_RIP_DISP32:
     A64MovImm(tmpi, scratch, disp);
@@ -288,7 +288,7 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
       A64W(tmpi, ARM_movRegX(base, rx));
     break;
   case MDF_STK:
-    A64W(tmpi, ARM_strPreImmX(rx, 31, -8));
+    A64W(tmpi, ARM_strPreImmX(rx, 31, -16));
     break;
   case MDF_RIP_DISP32:
     A64MovImm(tmpi, scratch, disp);
@@ -410,7 +410,7 @@ U0 A64LoadArgF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     A64W(tmpi, ARM_fmovF64I64(dreg, a->reg & 0xFF));
     break;
   case MDF_STK:
-    A64W(tmpi, ARM_ldrPostImmX(9, 31, 8));
+    A64W(tmpi, ARM_ldrPostImmX(9, 31, 16));
     A64W(tmpi, ARM_fmovF64I64(dreg, 9));
     break;
   case MDF_RIP_DISP32:
@@ -456,7 +456,7 @@ U0 A64StoreResF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     break;
   case MDF_STK:
     A64W(tmpi, ARM_fmovI64F64(9, dreg));
-    A64W(tmpi, ARM_strPreImmX(9, 31, -8));
+    A64W(tmpi, ARM_strPreImmX(9, 31, -16));
     break;
   case MDF_RIP_DISP32:
     A64MovImm(tmpi, 10, disp);

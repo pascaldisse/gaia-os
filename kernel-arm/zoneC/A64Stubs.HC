@@ -7,7 +7,11 @@
 // optimizer/backend pass with the identical signature.
 I64 OptPass789A(CCmpCtrl *cc,COptReg *reg_offsets,U8 *buf,CDbgInfo **_dbg)
 {
-  return OptPass789A64(cc,reg_offsets,buf,_dbg);
+  I64 fwd_res; // TEMP-PROBE bug#5
+  "zoneC 789A fwd in pass=%d\n",cc->pass;
+  fwd_res=OptPass789A64(cc,reg_offsets,buf,_dbg);
+  "zoneC 789A fwd out res=%d\n",fwd_res;
+  return fwd_res;
 }
 
 // Replaces UAsm.HC's I64 Un(...): x86 unassembler is unavailable on aarch64.
@@ -24,11 +28,36 @@ U0 PrsAsmBlk(CCmpCtrl *cc,I64 cmp_flags)
 }
 
 // Replaces AsmInit.HC's U0 AsmHashLoad(): no x86 asm hash table on aarch64.
+// BUT the tail of the original also registered the 17 internal types
+// (I0..F64) into cmp.internal_types[] -- the compiler cannot type a single
+// expression without them (IC_STR_CONST stores internal_types[RT_U8]+1;
+// with a NULL table that is 0x88 = sizeof(CHashClass), a garbage class ptr).
+// Keep the registration verbatim, drop only the x86 opcode-table parsing.
+// (HashAdd into cmp.asm_hash omitted: that table is never created on
+// aarch64; by-name lookup of internal types is a later concern.)
 U0 AsmHashLoad()
 {
+  I64 i;
+  CInternalType *tmpit;
+  CHashClass *tmpc;
+  for (i=0;i<INTERNAL_TYPES_NUM;i++) {
+    tmpit=&internal_types_table[i];
+    tmpc=PrsClassNew;
+    tmpc->type=HTT_INTERNAL_TYPE;
+    tmpc->raw_type=tmpit->type;
+    Bts(&tmpc->flags,Cf_INTERNAL_TYPE);
+    tmpc->size=tmpit->size;
+    tmpc->str=AStrNew(tmpit->name);
+    cmp.internal_types[tmpc->raw_type]=tmpc;
+  }
 }
 
 // Replaces UAsm.HC's U0 UAsmHashLoad(): no x86 unassembler hash table on aarch64.
 U0 UAsmHashLoad()
 {
 }
+
+// Run the registration at include time: the Zone C boot may never reach a
+// CInit call with this stub in scope. A second run (if CInit does fire)
+// only leaks a few small allocs -- it cannot corrupt the table.
+AsmHashLoad;

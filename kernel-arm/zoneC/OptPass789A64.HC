@@ -3,7 +3,7 @@
 
 Bool A64ICIsBranch(CIntermediateCode *tmpi)
 {
-  switch [tmpi->ic_code] {
+  switch (tmpi->ic_code) { // bug#5: bounded — sparse cases, ic_code may be any opcode
     case IC_JMP: //Shrine 0x51, unconditional
     case IC_BR_ZERO:
     case IC_BR_NOT_ZERO:
@@ -63,6 +63,8 @@ cc->pass==10 is final pass, code is placed into buf.
   CAOTCtrl *aotc=cc->aotc;
   CAOTAbsAddr *tmpa;
 
+  a64_str_buf=buf; a64_arg_cnt=0; a64_arg_sp=0; //A64GenBr pass-entry state
+  "zoneC 789A64 in pass=%d buf=%X\n",cc->pass,buf; // TEMP-PROBE bug#5
   if (_dbg) {
     *_dbg=dbg_info=CAlloc(offset(CDbgInfo.body)+sizeof(U32)*(num_lines+1));
     dbg_info->min_line=cc->min_line;
@@ -74,6 +76,7 @@ cc->pass==10 is final pass, code is placed into buf.
   } else
     dbg_info=NULL;
 
+  "zoneC 789A64 p1\n"; // TEMP-PROBE bug#5
   while (TRUE) {
     rip=0;
     tmpi=&cc->coc.coc_head;
@@ -87,7 +90,7 @@ cc->pass==10 is final pass, code is placed into buf.
       tmpi->ic_cnt=0;
 
       saved_ic_data=tmpi->ic_data;
-      switch [tmpi->ic_code] {
+      switch (tmpi->ic_code) { // bug#5: bounded — only NOP/LABEL cased, rest hits default
 	case IC_NOP1:
 	case IC_NOP2:
 	  cnt=0;
@@ -107,8 +110,13 @@ cc->pass==10 is final pass, code is placed into buf.
 	    else
 	      tmpi->ic_data=0;
 	  }
-	  if (!A64GenIC(cc,tmpi))
+	  "zoneC ic=%02X\n",tmpi->ic_code; // TEMP-PROBE bug#7
+	  if (!A64GenIC(cc,tmpi)) {
+	    "zoneC UNHANDLED ic=%02X\n",tmpi->ic_code; // TEMP-PROBE bug#7
 	    throw('BackA64');
+	  }
+	  if (tmpi->ic_flags & ICF_PUSH_RES)
+	    a64_arg_cnt++; //bug#7d: explicit-call args ride ICF_PUSH_RES/MDF_STK stores (A64StoreRes), not IC_PUSH
 	  tmpi->ic_data=saved_ic_data;
 	  cnt=tmpi->ic_cnt;
       }

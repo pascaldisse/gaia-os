@@ -130,7 +130,7 @@ I64 ZoneCChain(I64 x)
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
-  U8 *jbuf;
+  U8 *jbuf,*xbuf;
   U32 *jp;
   I64 jtype,ji,jn;
   I64 *jsl;
@@ -150,7 +150,7 @@ U0 ZoneCJitSmoke()
   "zoneC: step 4 LexGetChar=%d\n",LexGetChar(jcc);
   CmpCtrlDel(jcc);
   "zoneC: step 5 probe cc deleted\n";
-  jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
+  jcc=CmpCtrlNew("PutS(\"Hello GAIA\\n\");",CCF_DONT_FREE_BUF);
   Lex(jcc);
   "zoneC: step 6 Lex ok token=%d\n",jcc->token;
   // Inline LexStmt2Bin (CMain.HC:1) with phase prints — smoke29 faulted
@@ -185,6 +185,24 @@ U0 ZoneCJitSmoke()
   "zoneC SYM StrNew=%X\n",&StrNew;
   "zoneC SYM StrLen=%X\n",&StrLen;
   "zoneC SYM PrsFunCall=%X\n",&PrsFunCall;
+  "zoneC SYM OptPass789A=%X\n",&OptPass789A;
+  "zoneC SYM OptPass789A64=%X\n",&OptPass789A64;
+  "zoneC SYM COCCompile=%X\n",&COCCompile;
+  // TEMP-PROBE bug#5: dump every import slot in COCCompile's code. Pattern =
+  // movz/movk/movk x2 building the slot address, then ldr x17,[x2]. Slots for
+  // OptPass3..6 should hold their SYM addresses (patched); an OptPass789A
+  // slot still holding 0 is the k=7 NULL call.
+  jp=&COCCompile;
+  for (ji=0;ji<4096;ji++) {
+    if ((jp[ji]&0xFFE0001F)==0xD2800002 &&
+        (jp[ji+1]&0xFFE0001F)==0xF2A00002 &&
+        (jp[ji+2]&0xFFE0001F)==0xF2C00002 &&
+        jp[ji+3]==0xF9400051) {
+      jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
+      jsl=jn;
+      "zoneC CSLOT off=%X addr=%X val=%X\n",ji*4,jn,*jsl;
+    }
+  }
   jp=&PrsFunCall;
   for (ji=0;ji<2032;ji++) {
     if ((jp[ji]&0xFFE0001F)==0xD2800002 &&
@@ -199,9 +217,14 @@ U0 ZoneCJitSmoke()
   }
   "zoneC: step 6p HashFind Print=%X\n",
 	HashFind("Print",jcc->htc.hash_table_lst,HTT_FUN);
-  "zoneC: step 6q PrsFunCall begins\n";
-  PrsFunCall(jcc,NULL,FALSE,NULL);
-  "zoneC: step 6r PrsFunCall ok token=%d\n",jcc->token;
+  //bug#7e decisive probe: &PutS resolved by LIVE aiwnios = ground truth.
+  //Compare against the movz/movk-decoded x16 in this run's hex dump: match
+  //=> callee resolution good; mismatch => CHashFun layout drift in the
+  //staged shrine headers misreads exe_addr.
+  "zoneC: step 6s &PutS=%X\n",&PutS;
+  // (PrsFunCall(NULL) scaffold removed: it was the naked-string->Print
+  // wrapper, which turned the input into Print(PutS(...)) = Print(garbage
+  // U0 return) -> runtime fault. PrsStmt below owns the whole statement.)
   ji=PrsStmt(jcc,,,0);
   "zoneC: step 6b PrsStmt=%d\n",ji;
   jbuf=NULL;
@@ -220,6 +243,38 @@ U0 ZoneCJitSmoke()
     jp=jbuf;
     for (ji=0;ji<(jn+3)>>2;ji++)
       "zoneC HEX %08X\n",jp[ji];
+    //icache flush: the staged HolyC backend writes code with plain stores
+    //and never invalidates; Apple Silicon then executes stale bytes (wild
+    //PC in heap, smoke59). aiwnios's C backend flushes at arm_backend.c:5312
+    //- our staged path bypasses it. WriteProtectMemCpy = memcpy +
+    //sys_icache_invalidate (main.c:1514), exported at main.c:1672.
+    //bug#7e: hosted W^X. Data-heap pages (where the passes write) are
+    //PROT_READ|PROT_WRITE - never executable (mem.c:679); code-heap pages
+    //are execute-mode per thread (MAP_JIT) - plain stores into them fault
+    //(smoke63: fault in A64W writing buf). aiwnios's own pattern (mem.c:452):
+    //compile into data memory, then WriteProtectMemCpy into code memory -
+    //it toggles pthread_jit_write_protect_np around the copy + icache flush.
+    //Baked STR_CONST addresses still point into jbuf (readable data) - fine.
+    "zoneC: step 6t0\n";
+    "zoneC: step 6t1 Fs=%X\n",Fs;
+    "zoneC: step 6t2 ch=%X\n",Fs->code_heap;
+    "zoneC: step 6t3 sz=%d\n",MSize(jbuf);
+    "zoneC: step 6t4 dh=%X\n",Fs->data_heap;
+    jp=Fs->data_heap; "zoneC: step 6t5 dsig=%08X\n",jp[0];
+    jp=Fs->code_heap; "zoneC: step 6t6 csig=%08X\n",jp[0];
+    xbuf=MAlloc(72,Fs->data_heap);
+    "zoneC: step 6t7 dalloc=%X\n",xbuf;
+    //bug#7f: the HolyC MAlloc wrapper stores m[-1].caller1/2 AFTER
+    //__MAlloc restores exec-mode on the MAP_JIT page (FULL_PACKAGE.HC:46)
+    //- a plain store into an exec-mode code-heap page faults on Apple
+    //Silicon. __MAlloc writes its header inside the SetWriteNP(0) window,
+    //so call the C export directly and skip the caller-trace writeback.
+    xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+    "zoneC: step 6u xbuf=%X\n",xbuf;
+    WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+    "zoneC: exec begins\n";
+    ji=Call(xbuf);
+    "zoneC: exec done res=%X\n",ji;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);

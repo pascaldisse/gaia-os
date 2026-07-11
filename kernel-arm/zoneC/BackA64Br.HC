@@ -25,6 +25,18 @@
 #define A64_BR_BTC_ZERO_CODE 0xA3
 #define A64_BR_BTC_NOT_ZERO_CODE 0xA4
 
+//Set by OptPass789A64 at each pass entry: output buffer base for
+//IC_STR_CONST/IC_GET_LABEL absolute-address materialization.
+I64 a64_str_buf = 0;
+
+//aiwnios host ABI passes args in x0-x7 (arm_backend.c __ICFCallTOS) while
+//Terry streams push args on the stack. IC_PUSH counts arg slots, IC_CALL
+//marshals them into regs. Reset at each pass entry by OptPass789A64
+//(pass-size stability); IC_CALL_START saves counts across nested calls.
+I64 a64_arg_cnt = 0;
+I64 a64_arg_sp = 0;
+I64 a64_arg_stk[16];
+
 Bool A64IsUnsignedRaw(I64 rt) {
   return rt == RT_U8 || rt == RT_U16 || rt == RT_U32 || rt == RT_U64;
 }
@@ -131,7 +143,7 @@ U0 A64PushMask(CIntermediateCode *tmpi, I64 mask) {
         mask &= ~(1 << r);
         mask &= ~(1 << r2);
       } else {
-        A64W(tmpi, ARM_strPreImmX(r, 31, -8));
+        A64W(tmpi, ARM_strPreImmX(r, 31, -16));
         mask &= ~(1 << r);
       }
     }
@@ -151,7 +163,7 @@ U0 A64PopMask(CIntermediateCode *tmpi, I64 mask) {
         mask &= ~(1 << r);
         mask &= ~(1 << r2);
       } else {
-        A64W(tmpi, ARM_ldrPostImmX(r, 31, 8));
+        A64W(tmpi, ARM_ldrPostImmX(r, 31, 16));
         mask &= ~(1 << r);
       }
     }
@@ -185,7 +197,7 @@ U0 A64EmitCmpChain(CIntermediateCode *tmpi, I64 cmp_code) {
   rt = tmpi->ic_class->raw_type;
   A64LoadCmpArgs(tmpi, rt);
   A64W(tmpi, ARM_csetX(0, A64CC(cmp_code, A64IsUnsignedRaw(rt))));
-  A64W(tmpi, ARM_ldrPostImmX(9, 31, 8));
+  A64W(tmpi, ARM_ldrPostImmX(9, 31, 16));
   A64W(tmpi, ARM_andRegX(0, 0, 9));
   A64StoreRes(tmpi, 0, &tmpi->res, rt);
 }
@@ -218,7 +230,8 @@ U0 A64EmitBitBranch(CIntermediateCode *tmpi, Bool rmw, I64 op, Bool not_zero, I6
 }
 
 Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
-  I64 rt, delta, argc, addr;
+  I64 rt, delta, argc, addr, i;
+  CCodeMisc *lb;
   delta = tmpi->ic_data;
   switch (tmpi->ic_code) {
     case IC_JMP: //Shrine 0x51, unconditional
@@ -315,19 +328,34 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
 
     case IC_PUSH_CMP:
-      A64W(tmpi, ARM_strPreImmX(0, 31, -8));
+      A64W(tmpi, ARM_strPreImmX(0, 31, -16));
       return TRUE;
 
     case IC_CALL:
-      addr = tmpi->arg1.disp;
-      if (delta && A64BrFits(delta, 26))
-        A64W(tmpi, ARM_bl(delta));
+      //Terry OptPass789A.HC:323 — ic_data IS the absolute callee address.
+      //aiwnios host ABI adapter (arm_backend.c __ICFCallTOS): callees take
+      //args in x0-x7, but the Terry stream passed them on the stack. Load
+      //the slots into regs — top of stack = first arg (observed order:
+      //variadic argc pushed first, landing in x1 = aiwnios argc position).
+      //Variadic argv (x2) is NOT wired yet: non-variadic callees only.
+      argc = a64_arg_cnt;
+      if (argc > 8) argc = 8;
+      "zoneC IC_CALL argc=%d sp=%d\n",argc,a64_arg_sp; // TEMP-PROBE bug#7
+      for (i = 0; i < argc; i++)
+        A64W(tmpi, ARM_ldrRegImmX(i, 31, i * 16)); //16B slots (bug#7c: Apple SP-SA)
+      //blr clobbers x30 — save/restore so IC_RET returns to OUR caller.
+      //Fixed emission size per argc: pass-stable while addresses settle.
+      A64W(tmpi, ARM_strPreImmX(30, 31, -16));
+      A64EmitCallAbs(tmpi, tmpi->ic_data);
+      A64W(tmpi, ARM_ldrPostImmX(30, 31, 16));
+      if (a64_arg_sp)
+        a64_arg_cnt = a64_arg_stk[--a64_arg_sp];
       else
-        A64EmitCallAbs(tmpi, addr);
+        a64_arg_cnt = 0;
       return TRUE;
 
     case IC_RET:
-      argc = tmpi->ic_data * 8;
+      argc = tmpi->ic_data * 16; //16B slots (bug#7c)
       A64AddSP(tmpi, argc);
       if (tmpi->ic_flags & Ff_INTERRUPT)
         A64W(tmpi, ARM_eret());
@@ -336,8 +364,8 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
 
     case IC_ENTER:
-      A64W(tmpi, ARM_strPreImmX(30, 31, -8));
-      A64W(tmpi, ARM_strPreImmX(29, 31, -8));
+      A64W(tmpi, ARM_strPreImmX(30, 31, -16));
+      A64W(tmpi, ARM_strPreImmX(29, 31, -16));
       A64W(tmpi, ARM_addImmX(29, 31, 0));
       A64SubSP(tmpi, A64FrameLocals(tmpi));
       A64PushMask(tmpi, A64FrameMask(tmpi));
@@ -346,20 +374,28 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_LEAVE:
       A64PopMask(tmpi, A64FrameMask(tmpi));
       A64W(tmpi, ARM_addImmX(31, 29, 0));
-      A64W(tmpi, ARM_ldrPostImmX(29, 31, 8));
-      A64W(tmpi, ARM_ldrPostImmX(30, 31, 8));
+      A64W(tmpi, ARM_ldrPostImmX(29, 31, 16));
+      A64W(tmpi, ARM_ldrPostImmX(30, 31, 16));
       return TRUE;
 
     case IC_PUSH:
       rt = tmpi->ic_class->raw_type;
       A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64W(tmpi, ARM_strPreImmX(0, 31, -8));
+      A64W(tmpi, ARM_strPreImmX(0, 31, -16));
+      a64_arg_cnt++; //arg slot for the next IC_CALL's register marshal
       return TRUE;
 
     case IC_POP:
       rt = tmpi->ic_class->raw_type;
-      A64W(tmpi, ARM_ldrPostImmX(0, 31, 8));
+      A64W(tmpi, ARM_ldrPostImmX(0, 31, 16));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
+      return TRUE;
+
+    case IC_CALL_START: //Terry OptPass789A.HC:1022 — push regs, open arg count
+      if (a64_arg_sp < 16)
+        a64_arg_stk[a64_arg_sp++] = a64_arg_cnt;
+      a64_arg_cnt = 0;
+      A64PushMask(tmpi, tmpi->ic_data);
       return TRUE;
 
     case IC_PUSH_REGS:
@@ -368,6 +404,42 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     case IC_POP_REGS:
       A64PopMask(tmpi, tmpi->ic_data);
+      return TRUE;
+
+    case IC_CALL_END: //Terry OptPass789A.HC:1026 — pop regs, res <- return reg
+      A64PopMask(tmpi, tmpi->ic_data);
+      if (tmpi->res.type.mode)
+        A64StoreRes(tmpi, 0, &tmpi->res, RT_I64);
+      return TRUE;
+
+    case IC_CALL_END2:    //Terry OptPass789A.HC:1036 — no emission
+    case IC_RETURN_VAL2:  //Terry OptPass789A.HC:784 — result already in return reg
+      return TRUE;
+
+    case IC_ADD_RSP1:
+    //Terry PrsExp.HC:583 - emitted when callee is Ff_RET1/Ff_ARGPOP
+    //(callee pops own args; x86 emits nothing, OptPass789A.HC:1038).
+    //Our callees are aiwnios HOST fns which never pop the caller's
+    //stack, so WE clean here. ic_data is already bytes ((cnt)<<3).
+    //FUTURE bug#7d: a JIT'd callee whose IC_RET pops argc would
+    //double-pop - unify convention when JIT->JIT calls exist.
+    A64AddSP(tmpi, tmpi->ic_data*2); //ic_data counts 8B slots; ours are 16B (bug#7c: Apple hw-enforces 16-aligned SP on every SP-based access)
+    return TRUE;
+  case IC_ADD_RSP: //Terry ICAddRSP (BackLib.HC:59) — ic_data already in BYTES
+      A64AddSP(tmpi, tmpi->ic_data*2); //ic_data counts 8B slots; ours are 16B (bug#7c: Apple hw-enforces 16-aligned SP on every SP-based access)
+      return TRUE;
+
+    case IC_STR_CONST: //Terry OptPass789A.HC:296 — res <- lb->addr + buf
+    case IC_GET_LABEL:
+      lb = tmpi->ic_data;
+      addr = lb->addr + a64_str_buf;
+      //Fixed 4-instruction materialization: lb->addr moves between passes,
+      //emitted size must NOT change (pass-size stability).
+      A64W(tmpi, ARM_movzImmX(0, addr & 0xFFFF, 0));
+      A64W(tmpi, ARM_movkImmX(0, (addr >> 16) & 0xFFFF, 16));
+      A64W(tmpi, ARM_movkImmX(0, (addr >> 32) & 0xFFFF, 32));
+      A64W(tmpi, ARM_movkImmX(0, (addr >> 48) & 0xFFFF, 48));
+      A64StoreRes(tmpi, 0, &tmpi->res, RT_I64);
       return TRUE;
   }
   return FALSE;
