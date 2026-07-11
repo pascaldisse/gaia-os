@@ -25,6 +25,16 @@ sed -i '' '/^import /d' "$DST/CExts.HC"
 # labels (cut with it) and nothing in the KEEP set reads cmp_templates*.
 sed -i '' '/^_extern CMP_TEMPLATES/d' "$DST/CExts.HC"
 
+# Lex.HC: the aiwnios host front end MISCOMPILES assignment-expression
+# switch heads — smoke28 disasm proved `switch [cc->last_U16=*src++]`
+# emits NO byte load and dispatches the jump table on a stale pointer
+# temp (wild jump on first LexGetChar call). Only two heads in the KEEP
+# set carry assignments (Lex.HC:119 and :450); hoist both at stage time.
+# (Plain heads — locals, member loads, array indexes — emit correctly:
+# proven by smoke27 SwTest and smoke28's inner doc_e->type_u8 dispatch.)
+perl -pi -e 's/^(\s*)switch \[cc->last_U16=\*src\+\+\] \{/$1cc->last_U16=*src++;\n$1switch [cc->last_U16] {/' "$DST/Lex.HC"
+perl -pi -e 's/^(\s*)switch \[ch=LexGetChar\(cc\)\] \{/$1ch=LexGetChar(cc);\n$1switch [ch] {/' "$DST/Lex.HC"
+
 # CMisc.HC: the x86 _LAST_FUN asm trampoline (lines 11-48, the ONLY asm
 # block in the KEEP set) -> hosted HolyC shim over C-registered CallArgs
 # (signature pinned: aiwnios KernelA.HH:4028 I64 CallArgs(U8*,I64,I64*);
