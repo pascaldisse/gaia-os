@@ -83,6 +83,29 @@ sed -i '' 's/SysSymImportsResolve(\([^),]*\));/SysSymImportsResolve(\1,0);/' \
 # which must not be re-run into the shared hash. Delete both calls.
 sed -i '' '/^  AsmHashLoad;$/d; /^  UAsmHashLoad;$/d' "$DST/CMain.HC"
 
+# PrsExp.HC bug#8: variadic call marker. OptPass6 overwrites IC_CALL_START's
+# ic_data (fun ptr -> clobber mask, OptPass6.HC:52) and the mid passes scrub
+# arg2 of the IC_CALL node itself (proven: disp set at parse time reads 0 at
+# pass-7 entry, same node address — smoke76 zc4/zc5), so the marker rides
+# the high bits of ic_flags instead: (F+1)<<ICF_A64_VARG_SHIFT (F = fixed
+# arg cnt; defines in ShrineHost.HH). Passes only |= / &=~ low ICF bits.
+# BackA64Br's IC_CALL reads the marker to build aiwnios's (argc,argv) pair.
+python3 - "$DST/PrsExp.HC" <<'PYPRSEXP'
+import re,sys
+p=sys.argv[1]; s=open(p).read()
+pat=re.compile(r'(?m)^([ \t]+)\} else\n([ \t]+)ICAdd\(cc,IC_CALL,tmpf->exe_addr,tmpf->return_class\);$')
+m=list(pat.finditer(s)); assert len(m)==1, 'PrsExp IC_CALL anchor drift: %d'%len(m)
+g1,g2=m[0].group(1),m[0].group(2)
+new=(g1+'} else {\n'
+ +g2+'ICAdd(cc,IC_CALL,tmpf->exe_addr,tmpf->return_class);\n'
+ +g2+'if (tmpm && tmpm->flags&MLF_DOT_DOT_DOT) //bug#8 variadic marker for BackA64\n'
+ +g2+'  cc->coc.coc_head.last->ic_flags|=(tmpf->arg_cnt+1)<<ICF_A64_VARG_SHIFT;\n'
+ +g1+'}')
+s=s[:m[0].start()]+new+s[m[0].end():]
+open(p,'w').write(s)
+print('PrsExp bug#8 transform applied')
+PYPRSEXP
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do

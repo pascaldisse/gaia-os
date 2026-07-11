@@ -133,7 +133,6 @@ U0 ZoneCJitSmoke()
   U8 *jbuf,*xbuf;
   U32 *jp;
   I64 jtype,ji,jn;
-  I64 *jsl;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
@@ -159,30 +158,6 @@ U0 ZoneCJitSmoke()
   // wild jump lands at a STABLE &__Gs+4 every run, and PrsFunCall's call
   // sites are movz/movk-built absolute constants — if one decoded target
   // equals __Gs+4, the front end mis-resolved that callee at emit time.
-  // TEMP-PROBE bug#5: dump every import slot in COCCompile's code. Pattern =
-  // movz/movk/movk x2 building the slot address, then ldr x17,[x2]. Slots for
-  // OptPass3..6 should hold their SYM addresses (patched); an OptPass789A
-  // slot still holding 0 is the k=7 NULL call.
-  jp=&COCCompile;
-  for (ji=0;ji<4096;ji++) {
-    if ((jp[ji]&0xFFE0001F)==0xD2800002 &&
-        (jp[ji+1]&0xFFE0001F)==0xF2A00002 &&
-        (jp[ji+2]&0xFFE0001F)==0xF2C00002 &&
-        jp[ji+3]==0xF9400051) {
-      jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
-      jsl=jn;
-    }
-  }
-  jp=&PrsFunCall;
-  for (ji=0;ji<2032;ji++) {
-    if ((jp[ji]&0xFFE0001F)==0xD2800002 &&
-        (jp[ji+1]&0xFFE0001F)==0xF2A00002 &&
-        (jp[ji+2]&0xFFE0001F)==0xF2C00002 &&
-        jp[ji+3]==0xF9400051) {
-      jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
-      jsl=jn;
-    }
-  }
   //bug#7e decisive probe: &PutS resolved by LIVE aiwnios = ground truth.
   //Compare against the movz/movk-decoded x16 in this run's hex dump: match
   //=> callee resolution good; mismatch => CHashFun layout drift in the
@@ -227,6 +202,31 @@ U0 ZoneCJitSmoke()
     "zoneC: exec begins\n";
     ji=Call(xbuf);
     "zoneC: exec done res=%X\n",ji;
+    //bug#8 smoke: variadic Print through the staged pipeline. Print
+    //resolves to the LIVE aiwnios Print (extern U0 Print(U8*,...),
+    //FULL_PACKAGE.HC:121) from the shared task hash - the same binding
+    //mechanism that carried PutS for smoke68.
+    jcc=CmpCtrlNew("Print(\"Val=%d\\n\",42);",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec2 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec2 done res=%X\n",ji;
+    } else
+      "zoneC: exec2 compile failed\n";
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);

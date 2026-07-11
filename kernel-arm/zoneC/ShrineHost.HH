@@ -671,3 +671,8 @@ class CExcept
 #define GSF_SHIFT_ESC_EXIT	1 //This kills task on <SHIFT-ESC>
 // --- from KernelB.HH ---
 // --- from KernelC.HH ---
+
+//bug#8: IC_CALL variadic marker — (F+1)<<SHIFT smuggled in ic_flags high
+//bits (passes assign only low ICF bits); F = fixed arg cnt. 0 = not variadic.
+#define ICF_A64_VARG_SHIFT 48
+#define ICF_A64_VARG_MASK  0xFF

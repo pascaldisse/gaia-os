@@ -337,11 +337,33 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       //args in x0-x7, but the Terry stream passed them on the stack. Load
       //the slots into regs — top of stack = first arg (observed order:
       //variadic argc pushed first, landing in x1 = aiwnios argc position).
-      //Variadic argv (x2) is NOT wired yet: non-variadic callees only.
+      //bug#8 variadic: the stage-time PrsExp transform (mkboot.sh) stashes
+      //F+1 in ic_flags high bits ((F+1)<<ICF_A64_VARG_SHIFT, ShrineHost.HH)
+      //of DOT_DOT_DOT IC_CALLs — passes 0-6 scrub arg2 in place but touch
+      //ic_flags only via low ICF bits (smoke76/77). Terry slot layout here:
+      //slots 0..F-1 fixed args, slot F = vararg count (PrsExp argc imm),
+      //slots F+1.. = varargs, first vararg lowest, 16B stride (bug#7c).
+      //Aiwnios variadic callees (parser.c CLSF_VARGS, arm_backend.c
+      //__IC_VARGS) take (fixed...,argc,argv) as plain reg args, argv an
+      //8B-stride array: compact vararg slots to 8B in place (lower halves
+      //are dead after this marshal), then x_{F+1} = &slot(F+1). Marker 0
+      //(non-variadic: no high bits) takes the plain branch; range-guarded.
       argc = a64_arg_cnt;
       if (argc > 8) argc = 8;
-      for (i = 0; i < argc; i++)
-        A64W(tmpi, ARM_ldrRegImmX(i, 31, i * 16)); //16B slots (bug#7c: Apple SP-SA)
+      delta = (tmpi->ic_flags>>ICF_A64_VARG_SHIFT)&ICF_A64_VARG_MASK;
+      if (0 < delta && delta <= 8 && a64_arg_cnt >= delta) {
+        rt = a64_arg_cnt - delta; //vararg count
+        for (i = 0; i < rt; i++) {
+          A64W(tmpi, ARM_ldrRegImmX(9, 31, (delta + i) * 16));
+          A64W(tmpi, ARM_strRegImmX(9, 31, delta * 16 + i * 8));
+        }
+        for (i = 0; i < delta; i++) //x0..x_F: fixed args + vararg count
+          A64W(tmpi, ARM_ldrRegImmX(i, 31, i * 16));
+        A64W(tmpi, ARM_addImmX(delta, 31, delta * 16)); //x_{F+1} = argv
+      } else {
+        for (i = 0; i < argc; i++)
+          A64W(tmpi, ARM_ldrRegImmX(i, 31, i * 16)); //16B slots (bug#7c: Apple SP-SA)
+      }
       //blr clobbers x30 — save/restore so IC_RET returns to OUR caller.
       //Fixed emission size per argc: pass-stable while addresses settle.
       A64W(tmpi, ARM_strPreImmX(30, 31, -16));
