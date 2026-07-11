@@ -147,8 +147,25 @@ U0 ZoneCJitSmoke()
   jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
   Lex(jcc);
   "zoneC: step 6 Lex ok token=%d\n",jcc->token;
-  jbuf=LexStmt2Bin(jcc,&jtype);
-  "zoneC: step 7 LexStmt2Bin ok\n";
+  // Inline LexStmt2Bin (CMain.HC:1) with phase prints — smoke29 faulted
+  // between Lex and LexStmt2Bin's return (wild jump, frame symbolized to
+  // host primitive &__Gs+4). First-ever execution of the parse pipeline
+  // and the BackA64 passes; this pins which phase dies. Non-AOT path only.
+  jtype=0;
+  Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+  COCInit(jcc);
+  "zoneC: step 6a COCInit ok\n";
+  ji=PrsStmt(jcc,,,0);
+  "zoneC: step 6b PrsStmt=%d\n",ji;
+  jbuf=NULL;
+  if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+    jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+    ICAdd(jcc,IC_RETURN_VAL2,0,0);
+    ICAdd(jcc,IC_RET,0,0);
+    "zoneC: step 6c ICAdd ok\n";
+    jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    "zoneC: step 7 COCCompile=%X size=%d type=%d\n",jbuf,jn,jtype;
+  }
   if (jbuf && jbuf!=INVALID_PTR) {
     jn=MSize(jbuf);
     "zoneC: JIT buf=%X size=%d type=%d\n",jbuf,jn,jtype;
