@@ -133,6 +133,7 @@ U0 ZoneCJitSmoke()
   U8 *jbuf;
   U32 *jp;
   I64 jtype,ji,jn;
+  I64 *jsl;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   "zoneC: step 1b SwTest('A')=%d\n",ZoneCSwTest('A');
@@ -185,11 +186,17 @@ U0 ZoneCJitSmoke()
   "zoneC SYM StrLen=%X\n",&StrLen;
   "zoneC SYM PrsFunCall=%X\n",&PrsFunCall;
   jp=&PrsFunCall;
-  for (ji=0;ji<2048;ji++)
-    "zoneC PFC %08X\n",jp[ji];
-  jp=&PrsExpression;
-  for (ji=0;ji<4096;ji++)
-    "zoneC PEX %08X\n",jp[ji];
+  for (ji=0;ji<2032;ji++) {
+    if ((jp[ji]&0xFFE0001F)==0xD2800002 &&
+        (jp[ji+1]&0xFFE0001F)==0xF2A00002 &&
+        (jp[ji+2]&0xFFE0001F)==0xF2C00002 &&
+        jp[ji+3]==0xF9400051) {
+      jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
+      "zoneC SLOT off=%X addr=%X\n",ji*4,jn;
+      jsl=jn;
+      "zoneC SLOTVAL %X\n",*jsl;
+    }
+  }
   "zoneC: step 6p HashFind Print=%X\n",
 	HashFind("Print",jcc->htc.hash_table_lst,HTT_FUN);
   "zoneC: step 6q PrsFunCall begins\n";
