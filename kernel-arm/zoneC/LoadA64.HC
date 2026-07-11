@@ -98,30 +98,44 @@ CUAsmGlbls	uasm;		// only cut files use it; kept for decl parity
 
 "zoneC: Shrine compiler + BackA64 loaded\n";
 
-// C4 JIT smoke (bisect form): step prints around each call — both prior
-// forms faulted into Dbg between CmpCtrlNew and LexStmt2Bin with no
-// compiler ERROR output. QueIns on the host task cc queue dropped
-// (prime suspect: aiwnios never initializes Fs->next_cc/last_cc).
+// C4 JIT smoke (bisect 2): smoke25 pinned the fault at Lex(jcc) — step 2
+// printed, step 3 never did, fault PC in ANONYMOUS code (&Dbg+0x9000,
+// shifting with our edits = a wild jump, not a data fault inside a named
+// fn). This form: (a) prints the bound address of every symbol in the
+// fault path — which world each resolved to; (b) probes LexGetChar on a
+// throwaway cc BEFORE running Lex; (c) runs inside a NAMED function so
+// fault frames symbolize.
+U0 ZoneCJitSmoke()
+{
+  CCmpCtrl *jcc;
+  U8 *jbuf;
+  U32 *jp;
+  I64 jtype,ji,jn;
+  "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
+	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
+  jcc=CmpCtrlNew("ABC",CCF_DONT_FREE_BUF);
+  "zoneC: step 2 probe jcc=%X buf=%s\n",jcc,jcc->cur_buf_ptr;
+  "zoneC: step 3 LexGetChar=%d\n",LexGetChar(jcc);
+  "zoneC: step 4 LexGetChar=%d\n",LexGetChar(jcc);
+  CmpCtrlDel(jcc);
+  "zoneC: step 5 probe cc deleted\n";
+  jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
+  Lex(jcc);
+  "zoneC: step 6 Lex ok token=%d\n",jcc->token;
+  jbuf=LexStmt2Bin(jcc,&jtype);
+  "zoneC: step 7 LexStmt2Bin ok\n";
+  if (jbuf && jbuf!=INVALID_PTR) {
+    jn=MSize(jbuf);
+    "zoneC: JIT buf=%X size=%d type=%d\n",jbuf,jn,jtype;
+    if (jn>256) jn=256;
+    jp=jbuf;
+    for (ji=0;ji<(jn+3)>>2;ji++)
+      "zoneC HEX %08X\n",jp[ji];
+  } else
+    "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
+  CmpCtrlDel(jcc);
+}
+
 "zoneC: JIT hello begins\n";
-CCmpCtrl *jcc;
-U8 *jbuf;
-U32 *jp;
-I64 jtype,ji,jn;
-"zoneC: step 1 Fs=%X last_cc=%X code_heap=%X\n",Fs,Fs->last_cc,Fs->code_heap;
-jcc=CmpCtrlNew("\"Hello GAIA\\n\";",CCF_DONT_FREE_BUF);
-"zoneC: step 2 CmpCtrlNew ok jcc=%X\n",jcc;
-Lex(jcc);
-"zoneC: step 3 Lex ok token=%d\n",jcc->token;
-jbuf=LexStmt2Bin(jcc,&jtype);
-"zoneC: step 4 LexStmt2Bin ok\n";
-if (jbuf && jbuf!=INVALID_PTR) {
-  jn=MSize(jbuf);
-  "zoneC: JIT buf=%X size=%d type=%d\n",jbuf,jn,jtype;
-  if (jn>256) jn=256;
-  jp=jbuf;
-  for (ji=0;ji<(jn+3)>>2;ji++)
-    "zoneC HEX %08X\n",jp[ji];
-} else
-  "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
-CmpCtrlDel(jcc);
+ZoneCJitSmoke;
 "zoneC: JIT hello returned\n";
