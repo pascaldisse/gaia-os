@@ -165,9 +165,31 @@ U0 ZoneCJitSmoke()
   // naked-string -> Print conversion). Dump its emitted code BEFORE calling,
   // then call it directly — PrsStmt afterwards degenerates to the ';'
   // branch and returns 0, so the IC stream is identical to LexStmt2Bin's.
+  // Symbol table for cross-referencing blr targets in the code dumps: the
+  // wild jump lands at a STABLE &__Gs+4 every run, and PrsFunCall's call
+  // sites are movz/movk-built absolute constants — if one decoded target
+  // equals __Gs+4, the front end mis-resolved that callee at emit time.
+  "zoneC SYM __Gs=%X\n",&__Gs;
+  "zoneC SYM HashFind=%X\n",&HashFind;
+  "zoneC SYM Lex=%X\n",&Lex;
+  "zoneC SYM LexExcept=%X\n",&LexExcept;
+  "zoneC SYM ICAdd=%X\n",&ICAdd;
+  "zoneC SYM COCPush=%X\n",&COCPush;
+  "zoneC SYM COCPop=%X\n",&COCPop;
+  "zoneC SYM COCInit=%X\n",&COCInit;
+  "zoneC SYM COCMiscNew=%X\n",&COCMiscNew;
+  "zoneC SYM PrsExpression=%X\n",&PrsExpression;
+  "zoneC SYM OptPass012=%X\n",&OptPass012;
+  "zoneC SYM OptClassFwd=%X\n",&OptClassFwd;
+  "zoneC SYM StrNew=%X\n",&StrNew;
+  "zoneC SYM StrLen=%X\n",&StrLen;
+  "zoneC SYM PrsFunCall=%X\n",&PrsFunCall;
   jp=&PrsFunCall;
   for (ji=0;ji<2048;ji++)
     "zoneC PFC %08X\n",jp[ji];
+  jp=&PrsExpression;
+  for (ji=0;ji<4096;ji++)
+    "zoneC PEX %08X\n",jp[ji];
   "zoneC: step 6p HashFind Print=%X\n",
 	HashFind("Print",jcc->htc.hash_table_lst,HTT_FUN);
   "zoneC: step 6q PrsFunCall begins\n";
