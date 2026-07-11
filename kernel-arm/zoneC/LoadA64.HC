@@ -105,6 +105,20 @@ CUAsmGlbls	uasm;		// only cut files use it; kept for decl parity
 // fault path — which world each resolved to; (b) probes LexGetChar on a
 // throwaway cc BEFORE running Lex; (c) runs inside a NAMED function so
 // fault frames symbolize.
+// Unbounded-switch probe: same construct as Lex.HC:119 (`switch [x]` with
+// a case 0xFF table-span idiom). 'A'=65 is a GAP value — it must fall to
+// the end of the switch and return 3. A fault or wrong value here confirms
+// the host front end mis-emits unbounded-switch jump tables.
+I64 ZoneCSwTest(I64 ch)
+{
+  switch [ch] {
+    case 0:    return 1;
+    case '\n': return 2;
+    case 0xFF: break; //nobound switch
+  }
+  return 3;
+}
+
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
@@ -113,6 +127,9 @@ U0 ZoneCJitSmoke()
   I64 jtype,ji,jn;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
+  "zoneC: step 1b SwTest('A')=%d\n",ZoneCSwTest('A');
+  "zoneC: step 1c SwTest(0)=%d SwTest(10)=%d SwTest(300)=%d\n",
+	ZoneCSwTest(0),ZoneCSwTest(10),ZoneCSwTest(300);
   jcc=CmpCtrlNew("ABC",CCF_DONT_FREE_BUF);
   "zoneC: step 2 probe jcc=%X buf=%s\n",jcc,jcc->cur_buf_ptr;
   "zoneC: step 3 LexGetChar=%d\n",LexGetChar(jcc);
