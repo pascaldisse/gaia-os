@@ -128,8 +128,16 @@ U0 ZoneCJitSmoke()
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   "zoneC: step 1b SwTest('A')=%d\n",ZoneCSwTest('A');
-  "zoneC: step 1c SwTest(0)=%d SwTest(10)=%d SwTest(300)=%d\n",
-	ZoneCSwTest(0),ZoneCSwTest(10),ZoneCSwTest(300);
+  // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
+  // not evidence — *src++ in LexGetChar is a U8 deref, always 0..255.)
+  "zoneC: step 1c SwTest(0)=%d SwTest(10)=%d\n",
+	ZoneCSwTest(0),ZoneCSwTest(10);
+  jp=&ZoneCSwTest;
+  for (ji=0;ji<64;ji++)
+    "zoneC SWT %08X\n",jp[ji];
+  jp=&LexGetChar;
+  for (ji=0;ji<512;ji++)
+    "zoneC LGC %08X\n",jp[ji];
   jcc=CmpCtrlNew("ABC",CCF_DONT_FREE_BUF);
   "zoneC: step 2 probe jcc=%X buf=%s\n",jcc,jcc->cur_buf_ptr;
   "zoneC: step 3 LexGetChar=%d\n",LexGetChar(jcc);
