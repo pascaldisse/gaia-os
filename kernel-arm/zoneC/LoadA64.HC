@@ -119,6 +119,14 @@ I64 ZoneCSwTest(I64 ch)
   return 3;
 }
 
+// Chained-comparison probe: PrsFunCall's first fresh construct class
+// (PrsExp.HC:415 `IC_SQR<=tmpf->exe_addr<=IC_ATAN`). Expect 0 1 0.
+I64 ZoneCChain(I64 x)
+{
+  if (5<=x<=10) return 1;
+  return 0;
+}
+
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
@@ -132,12 +140,9 @@ U0 ZoneCJitSmoke()
   // not evidence — *src++ in LexGetChar is a U8 deref, always 0..255.)
   "zoneC: step 1c SwTest(0)=%d SwTest(10)=%d\n",
 	ZoneCSwTest(0),ZoneCSwTest(10);
-  jp=&ZoneCSwTest;
-  for (ji=0;ji<64;ji++)
-    "zoneC SWT %08X\n",jp[ji];
-  jp=&LexGetChar;
-  for (ji=0;ji<512;ji++)
-    "zoneC LGC %08X\n",jp[ji];
+  // (SwTest/LexGetChar dumps removed — lexer proven good since 1863d98.)
+  "zoneC: step 1d Chain(4)=%d Chain(7)=%d Chain(11)=%d\n",
+	ZoneCChain(4),ZoneCChain(7),ZoneCChain(11);
   jcc=CmpCtrlNew("ABC",CCF_DONT_FREE_BUF);
   "zoneC: step 2 probe jcc=%X buf=%s\n",jcc,jcc->cur_buf_ptr;
   "zoneC: step 3 LexGetChar=%d\n",LexGetChar(jcc);
@@ -155,6 +160,19 @@ U0 ZoneCJitSmoke()
   Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
   COCInit(jcc);
   "zoneC: step 6a COCInit ok\n";
+  // smoke30 pinned the fault inside PrsStmt; for input `"...";` PrsStmt's
+  // entire work is PrsFunCall(cc,NULL,FALSE,NULL) (PrsStmt.HC:1202, the
+  // naked-string -> Print conversion). Dump its emitted code BEFORE calling,
+  // then call it directly — PrsStmt afterwards degenerates to the ';'
+  // branch and returns 0, so the IC stream is identical to LexStmt2Bin's.
+  jp=&PrsFunCall;
+  for (ji=0;ji<2048;ji++)
+    "zoneC PFC %08X\n",jp[ji];
+  "zoneC: step 6p HashFind Print=%X\n",
+	HashFind("Print",jcc->htc.hash_table_lst,HTT_FUN);
+  "zoneC: step 6q PrsFunCall begins\n";
+  PrsFunCall(jcc,NULL,FALSE,NULL);
+  "zoneC: step 6r PrsFunCall ok token=%d\n",jcc->token;
   ji=PrsStmt(jcc,,,0);
   "zoneC: step 6b PrsStmt=%d\n",ji;
   jbuf=NULL;
