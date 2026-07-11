@@ -127,6 +127,12 @@ I64 ZoneCChain(I64 x)
   return 0;
 }
 
+//C4 IC_CALL_INDIRECT smoke rig: a REAL fn-ptr global in the live hash table,
+//host-compiled and host-assigned by aiwnios. The staged compiler then only
+//compiles the CALL through it — pure indirect path, no decl machinery.
+U0 (*zc_fp)(U8 *st);
+zc_fp=&PutS;
+
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
@@ -251,6 +257,30 @@ U0 ZoneCJitSmoke()
       "zoneC: exec3 done res=%X\n",ji;
     } else
       "zoneC: exec3 compile failed (%X)\n",jbuf;
+    //C4 IC_CALL_INDIRECT smoke: call through the zc_fp global. PrsExp's
+    //indirect path: IC_PUSH_REGS(1<<REG_RAX) stashes the ptr below the args,
+    //then IC_CALL_INDIRECT with ic_data=(slots)<<3 (PrsExp.HC:558).
+    jcc=CmpCtrlNew("zc_fp(\"Ind OK\\n\");",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec4 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec4 done res=%X\n",ji;
+    } else
+      "zoneC: exec4 compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);

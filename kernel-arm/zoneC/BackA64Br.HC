@@ -344,6 +344,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64W(tmpi, ARM_strPreImmX(0, 31, -16));
       return TRUE;
 
+    case IC_CALL_INDIRECT: //callee ptr in a stack slot; shares the marshal too
     case IC_CALL_INDIRECT2: //callee = *ic_data slot; only the callee emit differs
     case IC_CALL:
       //Terry OptPass789A.HC:323 — ic_data IS the absolute callee address.
@@ -383,8 +384,17 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64W(tmpi, ARM_strPreImmX(30, 31, -16));
       if (tmpi->ic_code==IC_CALL)
         A64EmitCallAbs(tmpi, tmpi->ic_data);
-      else //IC_CALL_INDIRECT2: deref the slot at call time
+      else if (tmpi->ic_code==IC_CALL_INDIRECT2) //deref the slot at call time
         A64EmitCallSlot(tmpi, tmpi->ic_data);
+      else {
+        //IC_CALL_INDIRECT: Terry CALL disp[RSP] (OptPass789A.HC:723). ic_data
+        //= (total arg slots)<<3 from parse (PrsExp.HC:558). IC_PUSH_REGS put
+        //the fn ptr BELOW the args and does not bump a64_arg_cnt, so slot
+        //index ic_data>>3 IS the ptr: 8B->16B slots = *2 (bug#7c), +16 for
+        //the x30 push just above. Variadic-through-ptr: no bug#8 marker yet.
+        A64W(tmpi, ARM_ldrRegImmX(16, 31, tmpi->ic_data*2+16));
+        A64W(tmpi, ARM_blr(16));
+      }
       A64W(tmpi, ARM_ldrPostImmX(30, 31, 16));
       if (a64_arg_sp)
         a64_arg_cnt = a64_arg_stk[--a64_arg_sp];
@@ -452,6 +462,11 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     case IC_CALL_END2:    //Terry OptPass789A.HC:1036 — no emission
     case IC_RETURN_VAL2:  //Terry OptPass789A.HC:784 — result already in return reg
+      return TRUE;
+
+    case IC_SET_RAX: //PrsExp indirect-call callee into the register save slot
+      A64LoadArg(tmpi, 0, &tmpi->arg1, RT_I64);
+      A64W(tmpi, ARM_ldrRegImmX(0, 0, 0));
       return TRUE;
 
     case IC_ADD_RSP1:
