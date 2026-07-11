@@ -8,7 +8,6 @@
 I64 OptPass789A(CCmpCtrl *cc,COptReg *reg_offsets,U8 *buf,CDbgInfo **_dbg)
 {
   I64 fwd_res; // TEMP-PROBE bug#5
-  "zoneC 789A fwd in pass=%d\n",cc->pass;
   fwd_res=OptPass789A64(cc,reg_offsets,buf,_dbg);
   "zoneC 789A fwd out res=%d\n",fwd_res;
   return fwd_res;

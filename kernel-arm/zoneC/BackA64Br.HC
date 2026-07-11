@@ -340,7 +340,6 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       //Variadic argv (x2) is NOT wired yet: non-variadic callees only.
       argc = a64_arg_cnt;
       if (argc > 8) argc = 8;
-      "zoneC IC_CALL argc=%d sp=%d\n",argc,a64_arg_sp; // TEMP-PROBE bug#7
       for (i = 0; i < argc; i++)
         A64W(tmpi, ARM_ldrRegImmX(i, 31, i * 16)); //16B slots (bug#7c: Apple SP-SA)
       //blr clobbers x30 — save/restore so IC_RET returns to OUR caller.

@@ -136,23 +136,13 @@ U0 ZoneCJitSmoke()
   I64 *jsl;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
-  "zoneC: step 1b SwTest('A')=%d\n",ZoneCSwTest('A');
   // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
   // not evidence — *src++ in LexGetChar is a U8 deref, always 0..255.)
-  "zoneC: step 1c SwTest(0)=%d SwTest(10)=%d\n",
-	ZoneCSwTest(0),ZoneCSwTest(10);
   // (SwTest/LexGetChar dumps removed — lexer proven good since 1863d98.)
-  "zoneC: step 1d Chain(4)=%d Chain(7)=%d Chain(11)=%d\n",
-	ZoneCChain(4),ZoneCChain(7),ZoneCChain(11);
   jcc=CmpCtrlNew("ABC",CCF_DONT_FREE_BUF);
-  "zoneC: step 2 probe jcc=%X buf=%s\n",jcc,jcc->cur_buf_ptr;
-  "zoneC: step 3 LexGetChar=%d\n",LexGetChar(jcc);
-  "zoneC: step 4 LexGetChar=%d\n",LexGetChar(jcc);
   CmpCtrlDel(jcc);
-  "zoneC: step 5 probe cc deleted\n";
   jcc=CmpCtrlNew("PutS(\"Hello GAIA\\n\");",CCF_DONT_FREE_BUF);
   Lex(jcc);
-  "zoneC: step 6 Lex ok token=%d\n",jcc->token;
   // Inline LexStmt2Bin (CMain.HC:1) with phase prints — smoke29 faulted
   // between Lex and LexStmt2Bin's return (wild jump, frame symbolized to
   // host primitive &__Gs+4). First-ever execution of the parse pipeline
@@ -160,7 +150,6 @@ U0 ZoneCJitSmoke()
   jtype=0;
   Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
   COCInit(jcc);
-  "zoneC: step 6a COCInit ok\n";
   // smoke30 pinned the fault inside PrsStmt; for input `"...";` PrsStmt's
   // entire work is PrsFunCall(cc,NULL,FALSE,NULL) (PrsStmt.HC:1202, the
   // naked-string -> Print conversion). Dump its emitted code BEFORE calling,
@@ -170,24 +159,6 @@ U0 ZoneCJitSmoke()
   // wild jump lands at a STABLE &__Gs+4 every run, and PrsFunCall's call
   // sites are movz/movk-built absolute constants — if one decoded target
   // equals __Gs+4, the front end mis-resolved that callee at emit time.
-  "zoneC SYM __Gs=%X\n",&__Gs;
-  "zoneC SYM HashFind=%X\n",&HashFind;
-  "zoneC SYM Lex=%X\n",&Lex;
-  "zoneC SYM LexExcept=%X\n",&LexExcept;
-  "zoneC SYM ICAdd=%X\n",&ICAdd;
-  "zoneC SYM COCPush=%X\n",&COCPush;
-  "zoneC SYM COCPop=%X\n",&COCPop;
-  "zoneC SYM COCInit=%X\n",&COCInit;
-  "zoneC SYM COCMiscNew=%X\n",&COCMiscNew;
-  "zoneC SYM PrsExpression=%X\n",&PrsExpression;
-  "zoneC SYM OptPass012=%X\n",&OptPass012;
-  "zoneC SYM OptClassFwd=%X\n",&OptClassFwd;
-  "zoneC SYM StrNew=%X\n",&StrNew;
-  "zoneC SYM StrLen=%X\n",&StrLen;
-  "zoneC SYM PrsFunCall=%X\n",&PrsFunCall;
-  "zoneC SYM OptPass789A=%X\n",&OptPass789A;
-  "zoneC SYM OptPass789A64=%X\n",&OptPass789A64;
-  "zoneC SYM COCCompile=%X\n",&COCCompile;
   // TEMP-PROBE bug#5: dump every import slot in COCCompile's code. Pattern =
   // movz/movk/movk x2 building the slot address, then ldr x17,[x2]. Slots for
   // OptPass3..6 should hold their SYM addresses (patched); an OptPass789A
@@ -200,7 +171,6 @@ U0 ZoneCJitSmoke()
         jp[ji+3]==0xF9400051) {
       jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
       jsl=jn;
-      "zoneC CSLOT off=%X addr=%X val=%X\n",ji*4,jn,*jsl;
     }
   }
   jp=&PrsFunCall;
@@ -210,31 +180,23 @@ U0 ZoneCJitSmoke()
         (jp[ji+2]&0xFFE0001F)==0xF2C00002 &&
         jp[ji+3]==0xF9400051) {
       jn=((jp[ji]>>5)&0xFFFF)+(((jp[ji+1]>>5)&0xFFFF)<<16)+(((jp[ji+2]>>5)&0xFFFF)<<32);
-      "zoneC SLOT off=%X addr=%X\n",ji*4,jn;
       jsl=jn;
-      "zoneC SLOTVAL %X\n",*jsl;
     }
   }
-  "zoneC: step 6p HashFind Print=%X\n",
-	HashFind("Print",jcc->htc.hash_table_lst,HTT_FUN);
   //bug#7e decisive probe: &PutS resolved by LIVE aiwnios = ground truth.
   //Compare against the movz/movk-decoded x16 in this run's hex dump: match
   //=> callee resolution good; mismatch => CHashFun layout drift in the
   //staged shrine headers misreads exe_addr.
-  "zoneC: step 6s &PutS=%X\n",&PutS;
   // (PrsFunCall(NULL) scaffold removed: it was the naked-string->Print
   // wrapper, which turned the input into Print(PutS(...)) = Print(garbage
   // U0 return) -> runtime fault. PrsStmt below owns the whole statement.)
   ji=PrsStmt(jcc,,,0);
-  "zoneC: step 6b PrsStmt=%d\n",ji;
   jbuf=NULL;
   if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
     jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
     ICAdd(jcc,IC_RETURN_VAL2,0,0);
     ICAdd(jcc,IC_RET,0,0);
-    "zoneC: step 6c ICAdd ok\n";
     jbuf=COCCompile(jcc,&jn,NULL,&jtype);
-    "zoneC: step 7 COCCompile=%X size=%d type=%d\n",jbuf,jn,jtype;
   }
   if (jbuf && jbuf!=INVALID_PTR) {
     jn=MSize(jbuf);
@@ -255,22 +217,12 @@ U0 ZoneCJitSmoke()
     //compile into data memory, then WriteProtectMemCpy into code memory -
     //it toggles pthread_jit_write_protect_np around the copy + icache flush.
     //Baked STR_CONST addresses still point into jbuf (readable data) - fine.
-    "zoneC: step 6t0\n";
-    "zoneC: step 6t1 Fs=%X\n",Fs;
-    "zoneC: step 6t2 ch=%X\n",Fs->code_heap;
-    "zoneC: step 6t3 sz=%d\n",MSize(jbuf);
-    "zoneC: step 6t4 dh=%X\n",Fs->data_heap;
-    jp=Fs->data_heap; "zoneC: step 6t5 dsig=%08X\n",jp[0];
-    jp=Fs->code_heap; "zoneC: step 6t6 csig=%08X\n",jp[0];
-    xbuf=MAlloc(72,Fs->data_heap);
-    "zoneC: step 6t7 dalloc=%X\n",xbuf;
     //bug#7f: the HolyC MAlloc wrapper stores m[-1].caller1/2 AFTER
     //__MAlloc restores exec-mode on the MAP_JIT page (FULL_PACKAGE.HC:46)
     //- a plain store into an exec-mode code-heap page faults on Apple
     //Silicon. __MAlloc writes its header inside the SetWriteNP(0) window,
     //so call the C export directly and skip the caller-trace writeback.
     xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
-    "zoneC: step 6u xbuf=%X\n",xbuf;
     WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
     "zoneC: exec begins\n";
     ji=Call(xbuf);
