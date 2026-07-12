@@ -281,6 +281,41 @@ U0 ZoneCJitSmoke()
       "zoneC: exec4 done res=%X\n",ji;
     } else
       "zoneC: exec4 compile failed (%X)\n",jbuf;
+    //C5 fn-def smoke A: PrsStmt hits the U0 decl, PrsFun compiles ZC5's
+    //body through the FULL backend (IC_ENTER/IC_LEAVE) and stores exe_addr
+    //in the live hash table. Fs-heap buffers execute under aiwnios hosting
+    //(proven: round 3 ran the try-body sub-fun straight from COCCompile).
+    //The def leaves the top-level COC empty - no exec block for this one.
+    jcc=CmpCtrlNew("U0 ZC5() {PutS(\"Def OK\\n\");}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def5 done err=%X\n",ji;
+    //C5 fn-def smoke B: call it - IC_CALL through ZC5's fresh exe_addr:
+    //the first JIT-compiled HolyC fn called from JIT-compiled code.
+    jcc=CmpCtrlNew("ZC5;",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec5 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec5 done res=%X\n",ji;
+    } else
+      "zoneC: exec5 compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);

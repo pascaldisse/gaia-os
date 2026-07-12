@@ -676,3 +676,17 @@ class CExcept
 //bits (passes assign only low ICF bits); F = fixed arg cnt. 0 = not variadic.
 #define ICF_A64_VARG_SHIFT 48
 #define ICF_A64_VARG_MASK  0xFF
+
+//zoneC: PrsFunJoin calls HashSrcFileSet, which otherwise binds to the HOST
+//aiwnios implementation - the host reads ITS OWN CCmpCtrl layout, not
+//Shrine's, so the field offsets are garbage and it faults (proven by
+//smoke81c bracket markers: FJ-b printed, FJ-c never did). Doc src-links
+//are dead weight in hosted staging: stub them to NULL. PrsFunJoin Free()s
+//these on fn redefinition - NULL is safe there.
+U0 HashSrcFileSet(CCmpCtrl *cc,CHashSrcSym *tmph,I64 cnt=0)
+{//Shrine calls this with 2 OR 3 args (PrsStmt.HC:41 passes -1): default it.
+  no_warn cc;
+  no_warn cnt;
+  tmph->src_link=NULL;
+  tmph->idx=NULL;
+}

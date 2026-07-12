@@ -117,6 +117,43 @@ open(p,'w').write(s)
 print('PrsExp bug#8 transform applied')
 PYPRSEXP
 
+# zoneC W^X: COCCompile returns plain Fs-heap MAlloc memory - not executable
+# under macOS arm64 hosting (the round-3 "proof" was false evidence: try
+# bodies are compiled INLINE, labels passed to host SysTry - no sub-fun ever
+# ran from an Fs-heap buffer; every round-1..4 buffer ran from the harness's
+# code_heap copy). PrsFun's non-AOT branch must copy the compiled body to
+# code_heap exactly like the harness does, or calling any self-compiled fn
+# faults on instruction fetch (smoke83/84 exec5).
+python3 - "$DST/PrsStmt.HC" <<'PYPRSFUN'
+import sys
+p=sys.argv[1]; s=open(p).read()
+old=(
+'    old_trace=Btr(&cc->opts,OPTf_TRACE);\n'
+'    cc->htc.fun->exe_addr=COCCompile(\n'
+'\t  cc,&size,&cc->htc.fun->dbg_info,NULL);\n'
+'    if (old_trace) {\n'
+'      Bts(&cc->opts,OPTf_TRACE);\n'
+'      Un(cc->htc.fun->exe_addr,size,64);\n'
+'    }\n'
+'    SysSymImportsResolve(cc->htc.fun->str,0);\n'
+)
+assert s.count(old)==1, 'PrsFun W^X anchor drift: %d'%s.count(old)
+add=(
+'    //zoneC W^X: COCCompile output is Fs-heap MAlloc memory - not\n'
+'    //executable under macOS arm64 hosting. Copy to code_heap like the\n'
+'    //harness does (absolute label refs keep the original base; empirically\n'
+'    //fine - the harness has copied every buffer since round 1).\n'
+'    r=__MAlloc(size,Fs->code_heap);\n'
+'    WriteProtectMemCpy(r,cc->htc.fun->exe_addr,size);\n'
+'    Free(cc->htc.fun->exe_addr);\n'
+'    cc->htc.fun->exe_addr=r;\n'
+)
+i=s.index(old)+old.index('    SysSymImportsResolve')
+s=s[:i]+add+s[i:]
+open(p,'w').write(s)
+print('PrsFun W^X transform applied')
+PYPRSFUN
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do

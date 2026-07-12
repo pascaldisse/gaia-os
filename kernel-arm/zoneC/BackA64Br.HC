@@ -424,6 +424,15 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64W(tmpi, ARM_addImmX(31, 29, 0));
       A64W(tmpi, ARM_ldrPostImmX(29, 31, 16));
       A64W(tmpi, ARM_ldrPostImmX(30, 31, 16));
+      //x86 LEAVE's RET/RET1 lives inside IC_LEAVE: PrsFun never ICAdds an
+      //IC_RET, so the epilogue must emit the return itself or execution
+      //falls off the end of the buffer (smoke83's exec5 fault). Terry's
+      //RET1 convention: callee pops its own args (Ff_RET1 set by
+      //PrsFunJoin when 0<arg_cnt<<3<=I16_MAX and not variadic). Our
+      //IC_PUSH slots are 16B (bug#7c), so pop arg_cnt*16, not <<3.
+      if (cc->htc.fun && Bt(&cc->htc.fun->flags, Ff_RET1))
+        A64AddSP(tmpi, cc->htc.fun->arg_cnt * 16);
+      A64W(tmpi, ARM_ret());
       return TRUE;
 
     case IC_PUSH:
