@@ -154,6 +154,17 @@ open(p,'w').write(s)
 print('PrsFun W^X transform applied')
 PYPRSFUN
 
+# zoneC round6: retain CCF_NO_REG_OPT so function vars stay frame-resident.
+python3 - "$DST/PrsStmt.HC" <<'PYNOREGOPT'
+import sys
+p=sys.argv[1]; s=open(p).read()
+old='cc->flags&=~CCF_NO_REG_OPT;'
+new='cc->flags|=CCF_NO_REG_OPT; //A64 round6: frame-only vars; x86 reg-var pool (RSI/RDI/R10-R15) collides with AAPCS caller-saved regs and our x9/x10 scratches - arm64 pool is a later round'
+assert s.count(old)==1, s.count(old)
+open(p,'w').write(s.replace(old,new))
+print('NoRegOpt transform applied')
+PYNOREGOPT
+
 # zoneC: hosted extract + aarch64 back end + loader
 for f in ShrineHost.HH A64Defs.HH Arm64Asm.HC BackA64Lib.HC BackA64.HC \
          BackA64Br.HC BackA64F.HC OptPass789A64.HC A64Stubs.HC LoadA64.HC; do

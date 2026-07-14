@@ -1,5 +1,7 @@
 # GAIA-OS
 
+> **WIP: not yet running.** This is a work in progress and does not currently boot end-to-end. See `Status` below for what's actually working.
+
 A TempleOS-descended, aarch64-native operating system for the agent era: the
 whole source is kept small enough to fit inside a single model context
 window, so a resident AI can read, understand, and rewrite the kernel live.

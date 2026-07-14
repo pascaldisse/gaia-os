@@ -118,6 +118,18 @@ I64 A64CC(I64 ic_code, Bool is_unsigned)
   }
 }
 
+U0 A64FrameRef(I64 *base, I64 *disp)
+{//x86 frame ref -> arm64 frame. REG_RBP(5) always means the frame ptr (x86 never
+ //allocates RBP as a var reg). Locals: disp<0 (PrsVar grows down), maps 1:1 below x29.
+ //Args: x86 [RBP+16+8k] -> [x29+32+16k]; 16-byte stack slots, and the saved-x30 slot
+ //at [x29+16] stands in for the x86 return-address slot.
+  if (*base == REG_RBP) {
+    *base = 29;
+    if (*disp >= 16)
+      *disp = 32 + (*disp - 16) * 2;
+  }
+}
+
 U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
 {
   I64 mode,rt,base,index,scale,disp,sz,log,scratch;
@@ -165,6 +177,7 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     break;
   case MDF_DISP:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     if (0 <= disp && disp <= 4095 * sz && !(disp & (sz - 1))) {
       switch (rt) {
       case RT_I8:  A64W(tmpi, ARM_ldrsbX(rx, base, disp)); break;
@@ -199,6 +212,7 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     break;
   case MDF_SIB:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     index = (a->reg >> 8) & 0x3F;
     scale = (a->reg >> 14) & 3;
     if (scale == 0 || scale == log) {
@@ -301,6 +315,7 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     break;
   case MDF_DISP:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     if (0 <= disp && disp <= 4095 * sz && !(disp & (sz - 1))) {
       switch (sz) {
       case 1: A64W(tmpi, ARM_strbRegImm(rx, base, disp)); break;
@@ -328,6 +343,7 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     break;
   case MDF_SIB:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     index = (a->reg >> 8) & 0x3F;
     scale = (a->reg >> 14) & 3;
     if (scale == 0 || scale == log) {
@@ -379,6 +395,7 @@ U0 A64Deref(CIntermediateCode *tmpi, I64 rx, CICArg *a)
     break;
   case MDF_DISP:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     if (0 <= disp && disp <= 4095)
       A64W(tmpi, ARM_addImmX(rx, base, disp));
     else {
@@ -388,6 +405,7 @@ U0 A64Deref(CIntermediateCode *tmpi, I64 rx, CICArg *a)
     break;
   case MDF_SIB:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     index = (a->reg >> 8) & 0x3F;
     scale = (a->reg >> 14) & 3;
     A64W(tmpi, ARM_addShiftRegX(rx, base, index, scale));
@@ -419,6 +437,7 @@ U0 A64LoadArgF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     break;
   case MDF_DISP:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     if (0 <= disp && disp <= 32760 && !(disp & 7))
       A64W(tmpi, ARM_ldrRegImmF64(dreg, base, disp));
     else {
@@ -429,6 +448,7 @@ U0 A64LoadArgF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     break;
   case MDF_SIB:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     index = (a->reg >> 8) & 0x3F;
     scale = (a->reg >> 14) & 3;
     if (scale == 0)
@@ -464,6 +484,7 @@ U0 A64StoreResF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     break;
   case MDF_DISP:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     if (0 <= disp && disp <= 32760 && !(disp & 7))
       A64W(tmpi, ARM_strRegImmF64(dreg, base, disp));
     else {
@@ -474,6 +495,7 @@ U0 A64StoreResF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     break;
   case MDF_SIB:
     base = a->reg & 0xFF;
+    A64FrameRef(&base, &disp);
     index = (a->reg >> 8) & 0x3F;
     scale = (a->reg >> 14) & 3;
     if (scale == 0)

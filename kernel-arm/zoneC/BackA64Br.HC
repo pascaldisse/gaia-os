@@ -415,7 +415,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       A64W(tmpi, ARM_strPreImmX(30, 31, -16));
       A64W(tmpi, ARM_strPreImmX(29, 31, -16));
       A64W(tmpi, ARM_addImmX(29, 31, 0));
-      A64SubSP(tmpi, A64FrameLocals(tmpi));
+      A64SubSP(tmpi, (A64FrameLocals(tmpi) + 15) & ~15); //ic_data=-fun->size is POSITIVE locals bytes (PrsVar grows locals downward); 16-align for AAPCS SP
       A64PushMask(tmpi, A64FrameMask(tmpi));
       return TRUE;
 
@@ -430,8 +430,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       //RET1 convention: callee pops its own args (Ff_RET1 set by
       //PrsFunJoin when 0<arg_cnt<<3<=I16_MAX and not variadic). Our
       //IC_PUSH slots are 16B (bug#7c), so pop arg_cnt*16, not <<3.
-      if (cc->htc.fun && Bt(&cc->htc.fun->flags, Ff_RET1))
-        A64AddSP(tmpi, cc->htc.fun->arg_cnt * 16);
+  //bug#7d RESOLVED: callers clean args (IC_ADD_RSP1 emits a real A64AddSP at every call site), so the callee must NOT pop. x86 inverted this (RET1 popped, ADD_RSP1 was a no-op).
       A64W(tmpi, ARM_ret());
       return TRUE;
 
