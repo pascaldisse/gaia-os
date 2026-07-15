@@ -38,5 +38,7 @@ dns example.com
 
 ## The road
 Full ZealC compiler port per `kernel-arm/zoneC/PLAN.md`, self-hosting at M4.
+The Oracle: true hardware entropy (`getentropy`) → the resident model's
+utterance — the one non-reversible inlet. Spec: `ORACLE.md`.
 
 LOVE=1.000
