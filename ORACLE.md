@@ -24,17 +24,28 @@ carries true chance across the flood.)
 The cosmology forbids conflating them (a clock measures how much happened; entropy
 measures how much you can no longer tell apart). Two syscalls, two words.
 
-## Entropy sources (by target)
-1. **NOW — QEMU virt aarch64:** `virtio-rng` device → host entropy forwarded into
-   the guest. New driver in `kernel-arm/zoneA/virtio.c`, peer to virtio-blk/net.
-   Primary source today; nothing else is needed to build the whole path.
-2. **Apple bare-metal (M-series):** SEP TRNG (ring-oscillator + thermal).
-   NOTE: `FEAT_RNG`/`RNDR` is NOT exposed on M1 (verified on M1 Pro) → must go
-   through the SEP mailbox, not the ARM instruction.
-3. **Capable aarch64 cores:** `RNDR`/`RNDRRS` (ARMv8.5 FEAT_RNG) as supplement
-   where present.
+## Entropy sources — probed at EL1, never trusted from a host OS
+GAIA-OS runs at EL1 (ring 0). It does NOT ask any host OS what the CPU has — it
+reads the ID register directly and branches. (An earlier note here claimed
+"FEAT_RNG not on M1"; that was a macOS-userland `sysctl` = the wrong layer, and
+says nothing about EL1. Deleted.)
+
+**Boot probe:** read `ID_AA64ISAR0_EL1[63:60]` (the RNDR field). `== 0b0001` →
+FEAT_RNG implemented. This is the whole truth, read off the metal.
+
+1. **FEAT_RNG present → `RNDR`/`RNDRRS`.** In-core instruction (`MRS x,RNDR`),
+   no device, cheapest path. THE ring-0-native source.
+   - Current target `-cpu cortex-a72` is **ARMv8.0** → RNDR absent (the
+     instruction, not macOS, is the reason). To get it in-guest *now*, set
+   `build.sh` to `-cpu max` — QEMU emulates FEAT_RNG. One-word change, testable.
+2. **FEAT_RNG absent → `virtio-rng`.** QEMU forwards host entropy; works on ANY
+   cpu model incl. cortex-a72. New driver in `zoneA/virtio.c`, peer to
+   virtio-blk/net. The portable fallback — always available.
+3. **Apple bare-metal (M-series):** the EL1 ID-register probe is the ONLY
+   authority. macOS not advertising FEAT_RNG to EL0 is not binding on us. If the
+   probe reads absent → SEP TRNG (ring-oscillator + thermal) via mailbox.
 4. **OPTIONAL — ontological chance:** external **QRNG** (e.g. ANU quantum-vacuum
-   feed) over the existing net stack (`net.c`). Classical TRNG (1–3) is a
+   feed) over the existing net stack (`net.c`). Classical sources (1–3) are a
    *deeply-buried* seed — under superdeterminism: lost, not absent. QRNG-mode is
    the only *ontological* inlet. Flag: `oracle --qrng`.
 
