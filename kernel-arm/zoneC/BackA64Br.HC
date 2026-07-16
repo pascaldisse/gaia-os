@@ -272,6 +272,8 @@ U0 A64EmitBitBranch(CIntermediateCode *tmpi, Bool rmw, I64 op, Bool not_zero, I6
 Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
   I64 rt, delta, argc, addr, i;
   CCodeMisc *lb;
+  CHashFun *tmpf;
+  CAOTImportExport *tmpie;
   delta = tmpi->ic_data;
   switch (tmpi->ic_code) {
     case IC_JMP: //Shrine 0x51, unconditional
@@ -373,6 +375,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     case IC_CALL_INDIRECT: //callee ptr in a stack slot; shares the marshal too
     case IC_CALL_INDIRECT2: //callee = *ic_data slot; only the callee emit differs
+    case IC_CALL_IMPORT: //AOT import: literal-island target, recorded final pass
     case IC_CALL:
       //Terry OptPass789A.HC:323 — ic_data IS the absolute callee address.
       //aiwnios host ABI adapter (arm_backend.c __ICFCallTOS): callees take
@@ -413,7 +416,23 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
         A64EmitCallAbs(tmpi, tmpi->ic_data);
       else if (tmpi->ic_code==IC_CALL_INDIRECT2) //deref the slot at call time
         A64EmitCallSlot(tmpi, tmpi->ic_data);
-      else {
+      else if (tmpi->ic_code==IC_CALL_IMPORT) {
+        //ldr x16, literal; branch past 8-byte target island; blr x16.
+        //The island remains a raw I64 patch site for the donor import loader.
+        A64W(tmpi, 0x58000050);
+        A64W(tmpi, 0x14000003);
+        A64W(tmpi, 0);
+        A64W(tmpi, 0);
+        if (a64_str_buf) { //final pass only: donor OptPass789A.HC contract
+          tmpf=tmpi->ic_data;
+          tmpie=CAlloc(sizeof(CAOTImportExport));
+          tmpie->type=IET_IMM_I64;
+          tmpie->rip=tmpi->ic_last_start+tmpi->ic_cnt-8;
+          tmpie->next=tmpf->ie_lst;
+          tmpf->ie_lst=tmpie;
+        }
+        A64W(tmpi, ARM_blr(16));
+      } else {
         //IC_CALL_INDIRECT: Terry CALL disp[RSP] (OptPass789A.HC:723). ic_data
         //= (total arg slots)<<3 from parse (PrsExp.HC:558). IC_PUSH_REGS put
         //the fn ptr BELOW the args and does not bump a64_arg_cnt, so slot

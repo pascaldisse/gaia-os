@@ -549,6 +549,7 @@ U0 ZoneCJitSmoke()
     // C4 slice 3a permanent AOT gates: CmpBuf fn defs, import/export queue,
     // emitted A64 words, and the existing GaiaMod source shape.
     I64 aot_err,aot_warn,aot_i,aot_dump,aot_bytes,aot_rip,aot_main_rip;
+    I64 aot_import_rip,aot_island,aot_imports;
     Bool aot_ret;
     U8 *aot_buf;
     U32 *aot_words;
@@ -629,6 +630,91 @@ U0 ZoneCJitSmoke()
         aot,aot_err,aot_warn,aot_bytes,aot_rip;
     } catch {
       "zoneC: AOT gate d CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
+
+    // C4 slice 3b: imported AOT call. The target is an 8-byte literal island;
+    // its IET_IMM_I64 record is deliberately compatible with the donor's raw
+    // I64 patcher. Import replaces the temporary extern probe (IC_CALL_EXTERN
+    // remains intentionally unhandled on A64).
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      aot=CmpBuf("import U0 KPutS(U8 *s); U0 AotHello() {KPutS(\"AOT: the Temple grows\\n\");}",NULL,&aot_err,&aot_warn,0);
+      aot_bytes=0;
+      aot_rip=0;
+      if (aot) {
+        aot_bytes=aot->aot_U8s;
+        aot_rip=aot->rip;
+      }
+      "zoneC: 3b gate a import aot=%X err=%d warn=%d bytes=%d rip=%d\n",
+        aot,aot_err,aot_warn,aot_bytes,aot_rip;
+    } catch {
+      "zoneC: 3b gate a CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
+    if (aot) {
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      aot_imports=0;
+      aot_import_rip=INVALID_PTR;
+      while (aot_ie!=&aot->next_ie && aot_i<128) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str) {
+          //This source has one named immediate import: KPutS. Other NULL
+          //IET_IMM_I64 entries are AOT-internal relocation records.
+          aot_imports++;
+          aot_import_rip=aot_ie->rip;
+        }
+        if (aot_ie->str)
+          "zoneC: 3b gate b ie=%d type=%d rip=%X str=%s\n",
+            aot_i,aot_ie->type,aot_ie->rip,aot_ie->str;
+        else
+          "zoneC: 3b gate b ie=%d type=%d rip=%X str=NULL\n",
+            aot_i,aot_ie->type,aot_ie->rip;
+        aot_ie=aot_ie->next;
+        aot_i++;
+      }
+      "zoneC: 3b gate b count=%d named-imm64=%d KPutS-rip=%X\n",
+        aot_i,aot_imports,aot_import_rip;
+      aot_dump=aot->aot_U8s;
+      if (aot_dump>240) aot_dump=240;
+      aot_words=aot->buf;
+      aot_island=INVALID_PTR;
+      "zoneC: 3b gate c dump bytes=%d (aot_U8s=%d)\n",aot_dump,aot->aot_U8s;
+      for (aot_i=0;aot_i<aot_dump>>2;aot_i++) {
+        "zoneC: 3b gate c W[%02d]=%08X\n",aot_i,aot_words[aot_i];
+        if (aot_i+4<aot_dump>>2 &&
+            aot_words[aot_i]==0x58000050 && aot_words[aot_i+1]==0x14000003 &&
+            !aot_words[aot_i+2] && !aot_words[aot_i+3] &&
+            aot_words[aot_i+4]==0xD63F0200)
+          aot_island=aot_i;
+      }
+      if (aot_island!=INVALID_PTR)
+        "zoneC: 3b gate c island W[%d] rip=%X expected=%X match=%d\n",
+          aot_island,aot_import_rip,aot_island*4+8,
+          aot_import_rip==aot_island*4+8;
+      else
+        "zoneC: 3b gate c island MISSING rip=%X\n",aot_import_rip;
+    } else
+      "zoneC: 3b gate b/c skipped: NULL AOT\n";
+    "zoneC: 3b gate d regression = rounds 1-9 + GaiaModHosted + GaiaSayHosted + 3a above\n";
+
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      aot=CmpBuf("U0 AotLoop(I64 n) {I64 i; i=0; while (i<n) i=i+1;}",NULL,&aot_err,&aot_warn,0);
+      aot_bytes=0;
+      aot_rip=0;
+      if (aot) {
+        aot_bytes=aot->aot_U8s;
+        aot_rip=aot->rip;
+      }
+      "zoneC: AOT p2 control aot=%X err=%d warn=%d bytes=%d rip=%d\n",
+        aot,aot_err,aot_warn,aot_bytes,aot_rip;
+    } catch {
+      "zoneC: AOT p2 control CAUGHT %X\n",Fs->except_ch;
       Fs->catch_except=TRUE;
     }
   } else

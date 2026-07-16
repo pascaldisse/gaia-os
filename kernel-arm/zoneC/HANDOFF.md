@@ -83,11 +83,13 @@ Fn-ptr arg calls green: frame/global pointer slots load once in `IC_DEREF`; resu
 
 - slice 1 — done: Shrine/zoneC GaiaMod → Zone A `zc` = 100.
 - slice 2 — done: GaiaSay → Zone A `say` via kernel `puts` fn-ptr; hosted + QEMU green.
-- slice 3 — next: `CCF_AOT_COMPILE` + `IC_CALL_IMPORT` / `IC_CALL_EXTERN`.
+- slice 3a — done: hosted `CmpBuf` AOT defs + export queue/bytes gates.
+- slice 3b — done: `IC_CALL_IMPORT` → `ldr x16` literal-island + `blr x16`; final pass records named `IET_IMM_I64` at the island raw-I64 patch site. Donor patcher semantics preserved.
+- slice 3c — next: kernel-side `LoadOneImport`-style resolver + boot gate.
 
 ## Next steps (in order)
 
-1. **AOT mode.** `CCF_AOT_COMPILE` + `IC_CALL_IMPORT` / `IC_CALL_EXTERN`; Zone A kernel module.
+1. **slice 3c.** Kernel import resolver + boot gate; `IC_CALL_EXTERN` remains an intentional A64 alarm.
 
 ## Known small debts
 
