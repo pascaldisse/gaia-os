@@ -540,6 +540,97 @@ U0 ZoneCJitSmoke()
       }
     } else
       "zoneC: GaiaSay compile failed (%X)\n",jbuf;
+    // C4 slice 3a: shrine/Compiler/AsmInit.HC:67 creates cmp.asm_hash and
+    // :208 chains adam_task->hash_table to it; CMain.HC:68 chains AOT globals
+    // to cmp.asm_hash. Asm layer excluded by C3, so host symbols are its tail.
+    if (!cmp.asm_hash) cmp.asm_hash=Fs->hash_table; //asm layer excluded (C3): AOT chain bottom = host syms, mirroring donor tail
+    "zoneC: asm_hash=%X next=%X FsHash=%X\n",cmp.asm_hash,cmp.asm_hash->next,Fs->hash_table;
+
+    // C4 slice 3a permanent AOT gates: CmpBuf fn defs, import/export queue,
+    // emitted A64 words, and the existing GaiaMod source shape.
+    I64 aot_err,aot_warn,aot_i,aot_dump,aot_bytes,aot_rip,aot_main_rip;
+    Bool aot_ret;
+    U8 *aot_buf;
+    U32 *aot_words;
+    CAOT *aot;
+    CAOTImportExport *aot_ie;
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      aot=CmpBuf("I64 AotProbe() {return 42;}",NULL,&aot_err,&aot_warn,0);
+      aot_buf=NULL;
+      aot_rip=0;
+      if (aot) {
+        aot_buf=aot->buf;
+        aot_rip=aot->rip;
+      }
+      "zoneC: AOT gate a aot=%X err=%d warn=%d buf=%X rip=%d\n",
+        aot,aot_err,aot_warn,aot_buf,aot_rip;
+    } catch {
+      "zoneC: AOT gate a CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
+    if (aot) {
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      aot_main_rip=INVALID_PTR;
+      while (aot_ie!=&aot->next_ie && aot_i<128) {
+        if (aot_ie->type==IET_MAIN) aot_main_rip=aot_ie->rip;
+        if (aot_ie->str)
+          "zoneC: AOT gate b ie=%d type=%d rip=%X str=%s\n",
+            aot_i,aot_ie->type,aot_ie->rip,aot_ie->str;
+        else
+          "zoneC: AOT gate b ie=%d type=%d rip=%X str=NULL\n",
+            aot_i,aot_ie->type,aot_ie->rip;
+        aot_ie=aot_ie->next;
+        aot_i++;
+      }
+      if (aot_i==128)
+        "zoneC: AOT gate b count=%d (guard)\n",aot_i;
+      else
+        "zoneC: AOT gate b count=%d\n",aot_i;
+      aot_dump=aot->rip;
+      // Root CmpBuf CAOT uses rip as origin (zero); its actual buffer length
+      // is aot_U8s. IET_MAIN is absent for a bare function definition.
+      if (!aot_dump) aot_dump=aot->aot_U8s;
+      if (aot_dump>160) aot_dump=160;
+      aot_words=aot->buf;
+      aot_ret=FALSE;
+      "zoneC: AOT gate c dump bytes=%d (rip=%d main=%X aot_U8s=%d)\n",
+        aot_dump,aot->rip,aot_main_rip,aot->aot_U8s;
+      for (aot_i=0;aot_i<aot_dump>>2;aot_i++) {
+        "zoneC: AOT W[%02d]=%08X\n",aot_i,aot_words[aot_i];
+        if (aot_words[aot_i]==0xD65F03C0) aot_ret=TRUE;
+      }
+      if (aot_words[0]==0xF81F0FFE && aot_ret)
+        "zoneC: AOT gate c A64=recognizable (prologue=%08X ret=%d)\n",
+          aot_words[0],aot_ret;
+      else
+        "zoneC: AOT gate c A64=unrecognized (prologue=%08X ret=%d)\n",
+          aot_words[0],aot_ret;
+    } else
+      "zoneC: AOT gate b/c skipped: NULL AOT\n";
+
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      // Keep the GaiaMod body; distinct AOT name avoids overwriting the live
+      // hosted export through the deliberately shared hash-chain tail.
+      aot=CmpBuf("I64 GaiaModAOT() {I64 s,i; s=0; i=0; while (i<10) {s=s+i; i=i+1;} if (s>40) s=s+55; return s;}",NULL,&aot_err,&aot_warn,0);
+      aot_bytes=0;
+      aot_rip=0;
+      if (aot) {
+        aot_bytes=aot->aot_U8s;
+        aot_rip=aot->rip;
+      }
+      "zoneC: AOT gate d GaiaMod aot=%X err=%d warn=%d bytes=%d rip=%d\n",
+        aot,aot_err,aot_warn,aot_bytes,aot_rip;
+    } catch {
+      "zoneC: AOT gate d CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);
