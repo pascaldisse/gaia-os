@@ -75,15 +75,25 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     //=======================================================================
 
     // IC_MOV: "Generic move of arg1 into res" (IC-HolyC.md 0x1A).
-    // IC_DEREF: "loads the pointee into res" (0x24) — the pointer's own
-    // addressing mode is already folded into arg1's CICArg (MDF_DISP/SIB/
-    // etc.), so this is byte-for-byte the same lowering as IC_MOV: design
-    // row "IC_DEREF* | covered by LoadArg modes".
-    case IC_MOV:
-    case IC_DEREF: {
+    case IC_MOV: {
       rt = tmpi->ic_class->raw_type;
       if (A64_FLOATY(rt)) return FALSE; //float lvalues -> BackA64F.HC
       A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
+      A64StoreRes(tmpi, 0, &tmpi->res, rt);
+      return TRUE;
+    }
+
+    // IC_DEREF: pointer-slot value -> res.  MDF_DISP/SIB already denotes the
+    // slot and A64LoadArg performs that load; MDF_IMM denotes its address and
+    // needs one explicit load. PrsExp.HC:419-424 then passes the resulting
+    // function address through IC_SET_RAX; Terry OptPass789A.HC:780-783 says
+    // that node is a plain move, never a second dereference of code.
+    case IC_DEREF: {
+      rt = tmpi->ic_class->raw_type;
+      if (A64_FLOATY(rt)) return FALSE;
+      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
+      if (tmpi->arg1.type & MDF_IMM)
+        A64LdAddr(tmpi, 0, 0, rt);
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
     }

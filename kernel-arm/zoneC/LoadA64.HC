@@ -377,6 +377,63 @@ U0 ZoneCJitSmoke()
       "zoneC: exec7 done Res7=%d\n",ji;
     } else
       "zoneC: exec7 compile failed (%X)\n",jbuf;
+    //TEMP-PROBE spec99: fn-ptr argument — fixed-arg call through a frame home.
+    jcc=CmpCtrlNew("U0 Z90(U0 (*fp)(U8 *s)) {fp(\"d90 via arg\\n\");}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def90 done err=%X\n",ji;
+    jcc=CmpCtrlNew("Z90(&PutS);",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec90 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec90 done res=%X\n",ji;
+    } else
+      "zoneC: exec90 compile failed (%X)\n",jbuf;
+    jcc=CmpCtrlNew("U0 Z91(U0 (*fp)(U8 *s),I64 x) {I64 i; i=0; while (i<x) {fp(\"d91 tick\\n\"); i=i+1;}}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def91 done err=%X\n",ji;
+    jcc=CmpCtrlNew("Z91(&PutS,2);",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec91 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec91 done res=%X\n",ji;
+    } else
+      "zoneC: exec91 compile failed (%X)\n",jbuf;
     //C4 slice 1: module export — pure compute, no calls/strings = position-independent
     jcc=CmpCtrlNew("I64 GaiaMod() {I64 s,i; s=0; i=0; while (i<10) {s=s+i; i=i+1;} if (s>40) s=s+55; return s;}",CCF_DONT_FREE_BUF);
     Lex(jcc);

@@ -7,7 +7,7 @@ the `aiwnios` HolyC runtime; zoneC replaces Shrine's x86 back end with an
 AArch64 one. This is ordinary compiler engineering: lexer/parser reused as-is,
 we only rewrite the instruction-selection + emission tail.
 
-Last green commit: **round 8 (this commit)**. Rounds 1–8 all pass.
+Last green commit: **round 9 (this commit)**. Rounds 1–9 green.
 
 ---
 
@@ -26,7 +26,7 @@ not the process; a hang shows as *missing later markers*, a fault shows as a
 `JIT hello returned`.
 
 Green markers (all must be present, in order):
-`Hello GAIA` · `Val=42` · `Try OK` · `Ind OK` · `Def OK` · `Res6=41` · `Res7=110`.
+`Hello GAIA` · `Val=42` · `Try OK` · `Ind OK` · `Def OK` · `Res6=41` · `Res7=110` · `d90 via arg` · two `d91 tick` · `GaiaModHosted=100` · `JIT hello returned`.
 Any `CAUGHT` / `LIBTHROW` / `UNHANDLED` / `welcome to` line = failure.
 
 Notes:
@@ -39,7 +39,7 @@ Notes:
 
 ---
 
-## What works now (rounds 1–8)
+## What works now (rounds 1–9)
 
 | round | program | proves |
 |---|---|---|
@@ -50,6 +50,7 @@ Notes:
 | 5 | `U0 ZC5(){...}` then `ZC5;` | self-compiled void fn, JIT→JIT call |
 | 6 | `I64 ZC6(a,b){I64 c; c=a*2; c=c+b; return c;}` | args + frame locals + return value |
 | 7 | `I64 ZC7(I64 n){while/if, 2 locals}` | IC_ASSIGN dest stores + fwd-cond/backward branch deltas under a real frame |
+| 9 | `Z90(&PutS)`; `Z91(&PutS,2)` | fn-ptr arg call; `PrsExp.HC:419-424` IC_DEREF→IC_SET_RAX; `OptPass789A.HC:780-783` SET_RAX plain move — no function-code deref |
 
 ## Load-bearing invariants (know these before editing)
 
@@ -74,26 +75,20 @@ Notes:
 
 ---
 
-## Round 8
+## Round 9
 
-Variadic-in-callee green. Root cause: `IC_STR_CONST` absolute addressing into
-the freed compile buffer → heap-reuse nondeterminism; fixed with PC-relative
-ADR per Terry's RIP-relative design. d73/d87 garble explained.
+Fn-ptr arg calls green: frame/global pointer slots load once in `IC_DEREF`; resulting function address crosses `IC_SET_RAX` unchanged. Donor: `PrsExp.HC:419-424`; `OptPass789A.HC:780-783`. Z90/Z91 permanent gates.
 
 ## C4 module-export slices
 
 - slice 1 — done: Shrine/zoneC GaiaMod → Zone A `zc` = 100.
-- slice 2 — prints via fn-ptr arg.
+- slice 2 — kernel wiring: GaiaSay via `kputs` fn-ptr.
 - slice 3 — `CCF_AOT_COMPILE`.
 
 ## Next steps (in order)
 
-1. **BackA64F (floats).** The F64 intermediate codes have never executed:
-   `%f` formatting, F64 arithmetic, int↔float conversion. Emitters exist but
-   are unproven live.
-2. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`,
-   then compile a Zone A kernel module with this back end. That closes M4:
-   the compiler compiles the OS.
+1. **Slice 2 kernel wiring.** GaiaSay via `kputs` fn-ptr.
+2. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`; Zone A kernel module.
 
 ## Known small debts
 

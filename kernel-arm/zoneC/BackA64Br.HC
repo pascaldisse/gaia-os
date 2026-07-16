@@ -502,9 +502,12 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_RETURN_VAL2:  //Terry OptPass789A.HC:784 — result already in return reg
       return TRUE;
 
-    case IC_SET_RAX: //PrsExp indirect-call callee into the register save slot
+    //PrsExp.HC:419-424 emits IC_DEREF then IC_SET_RAX for a frame-resident
+    //fn-ptr. The former has loaded the slot into an MDF_REG arg; x86
+    //OptPass789A.HC:780-783 lowers IC_SET_RAX as its plain arg1 move.
+    //Never dereference that function address a second time.
+    case IC_SET_RAX:
       A64LoadArg(tmpi, 0, &tmpi->arg1, RT_I64);
-      A64W(tmpi, ARM_ldrRegImmX(0, 0, 0));
       return TRUE;
 
     case IC_ADD_RSP1:
