@@ -139,7 +139,7 @@ U0 ZoneCJitSmoke()
   U8 *jbuf,*xbuf,*b;
   U32 *jp;
   CHashFun *jfun;
-  I64 jtype,ji,jn,sz;
+  I64 jtype,ji,jn,sz,retend,zeroes;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
@@ -480,6 +480,66 @@ U0 ZoneCJitSmoke()
       }
     } else
       "zoneC: GaiaMod compile failed (%X)\n",jbuf;
+    //C4 slice 2: GaiaSay export — fn-ptr voice + PC-relative string
+    jcc=CmpCtrlNew("U0 GaiaSay(U0 (*kputs)(U8 *s)) {kputs(\"GAIA-OS: love=1 — spoken by Shrine/zoneC\\n\");}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def GaiaSay done err=%X\n",ji;
+    jcc=CmpCtrlNew("GaiaSay(&PutS);",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      ji=Call(xbuf);
+      "zoneC: GaiaSayHosted ok\n";
+      jfun=HashFind("GaiaSay",Fs->hash_table,HTT_FUN);
+      b=jfun->exe_addr;
+      jn=MSize(b);
+      retend=0;
+      jp=b;
+      for (ji=0;ji+3<jn;ji+=4)
+        if (jp[ji>>2]==0xD65F03C0)
+          retend=ji+4;
+      if (!retend)
+        "zoneC: GaiaSay export FAIL\n";
+      else {
+        // Ship through the first 8-byte zero run after the final RET. This
+        // retains the ADR-referenced NUL string emitted after the code.
+        sz=retend;
+        zeroes=0;
+        for (ji=retend;ji<jn;ji++) {
+          if (b[ji])
+            zeroes=0;
+          else if (++zeroes>=8) {
+            sz=ji+1;
+            break;
+          }
+          sz=ji+1;
+        }
+        "zoneC: GaiaSay bytes begin sz=%d\n",sz;
+        for (ji=0;ji<sz;ji++) {
+          "0x%02X,",b[ji];
+          if ((ji+1)%12==0)
+            "\n";
+        }
+        "\nzoneC: GaiaSay bytes end\n";
+      }
+    } else
+      "zoneC: GaiaSay compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);
