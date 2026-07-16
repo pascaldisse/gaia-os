@@ -136,9 +136,10 @@ zc_fp=&PutS;
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
-  U8 *jbuf,*xbuf;
+  U8 *jbuf,*xbuf,*b;
   U32 *jp;
-  I64 jtype,ji,jn;
+  CHashFun *jfun;
+  I64 jtype,ji,jn,sz;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
@@ -376,6 +377,52 @@ U0 ZoneCJitSmoke()
       "zoneC: exec7 done Res7=%d\n",ji;
     } else
       "zoneC: exec7 compile failed (%X)\n",jbuf;
+    //C4 slice 1: module export — pure compute, no calls/strings = position-independent
+    jcc=CmpCtrlNew("I64 GaiaMod() {I64 s,i; s=0; i=0; while (i<10) {s=s+i; i=i+1;} if (s>40) s=s+55; return s;}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def GaiaMod done err=%X\n",ji;
+    jcc=CmpCtrlNew("GaiaMod;",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      ji=Call(xbuf);
+      "zoneC: GaiaModHosted=%d\n",ji;
+      jfun=HashFind("GaiaMod",Fs->hash_table,HTT_FUN);
+      b=jfun->exe_addr;
+      jp=b;
+      sz=0;
+      for (ji=0;ji<64;ji++)
+        if (jp[ji]==0xD65F03C0)
+          sz=(ji+1)<<2;
+      if (!sz)
+        "zoneC: GaiaMod export FAIL\n";
+      else {
+        "zoneC: GaiaMod bytes begin sz=%d\n",sz;
+        for (ji=0;ji<sz;ji++) {
+          "0x%02X,",b[ji];
+          if ((ji+1)%12==0)
+            "\n";
+        }
+        "\nzoneC: GaiaMod bytes end\n";
+      }
+    } else
+      "zoneC: GaiaMod compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);
