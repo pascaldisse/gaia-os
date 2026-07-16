@@ -147,10 +147,10 @@ I64  ZcFbWidthStub() {return 640;}
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
-  U8 *jbuf,*xbuf,*b;
+  U8 *jbuf,*xbuf,*b,*d10c;
   U32 *jp;
   CHashFun *jfun;
-  I64 jtype,ji,jn,sz,retend,zeroes;
+  I64 jtype,ji,jn,sz,retend,zeroes,d10buf;
   "zoneC: addrs Dbg=%X Lex=%X CmpCtrlNew=%X LexGetChar=%X LexStmt2Bin=%X bmp=%X\n",
 	&Dbg,&Lex,&CmpCtrlNew,&LexGetChar,&LexStmt2Bin,char_bmp_alpha_numeric;
   // (SwTest(300) removed: out-of-range on a no-bounds switch is expected UB,
@@ -388,6 +388,58 @@ U0 ZoneCJitSmoke()
       "zoneC: exec7 done Res7=%d\n",ji;
     } else
       "zoneC: exec7 compile failed (%X)\n",jbuf;
+    //=====================================================================
+    //ROUND 10 d10x — binop operand-clobber regression rig (NO elision-break).
+    //Natural-form single-statement binops with a memory operand fed against a
+    //live sub-expression temp (the slice-4 fault). Every direction exercised:
+    //  temp<op>mem (w*y+x, w*y-x, w*y&x)  mem<op>temp (x+w*y, x-w*y, x|w*y)
+    //  computed-index stores buf[w*y-x]=/buf[x+w*y]= (base memvar + idx temp:
+    //    the exact slice-4 fault; pre-fix address=base+base). Proven via the
+    //    bufA/bufB read-back below (HolyC-side deref, not the JIT).
+    //  subtraction order weighted (t3*2+t4) so an operand-role swap changes
+    //    the total; compare-feeding-branch both directions (c1 fires, c2 not).
+    //ZCA(buf,w=3,x=5,y=4): w*y=12 (live x0 temp). x,w mem-var args.
+    //  t1=x+w*y=17 (mem+temp)  t2=w*y+x=17 (temp+mem)
+    //  t3=x-w*y=-7 (mem-temp)  t4=w*y-x=7 (temp-mem)
+    //  t5=w*y&x=4 (temp&mem)   t6=x|w*y=13 (mem|temp)
+    //  buf[7]=111 buf[17]=222  c1=1 (w*y>x) c2=0 (x>w*y)
+    //  ret = t1+t2+t5+t6 +t3*2+t4 +c1+c2 = 51 -7 +1 = 45 (d10x=45).
+    //Pre-fix the mem-var load reused x0, clobbering the w*y temp -> wrong sums
+    //and base+base store faults. d10x=45 + bufA/bufB=111/222 = clobber-free.
+    //NOTE: rvalue `buf[computed_idx]` reads are NOT summed here — IC_DEREF of a
+    //register-resident address returns the address (separate pre-existing gap,
+    //untouched by this round; see HANDOFF debt). The store direction (the
+    //reported fault) is what this rig proves for the pointer-index path.
+    d10buf=MAlloc(64*8);
+    jcc=CmpCtrlNew("I64 ZCA(I64 *buf,I64 w,I64 x,I64 y){I64 t1,t2,t3,t4,t5,t6,c1,c2; t1=x+w*y; t2=w*y+x; t3=x-w*y; t4=w*y-x; t5=w*y&x; t6=x|w*y; buf[w*y-x]=111; buf[x+w*y]=222; if (w*y>x) c1=1; else c1=0; if (x>w*y) c2=1; else c2=0; return t1+t2+t5+t6+t3*2+t4+c1+c2;}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: defA done err=%X\n",ji;
+    d10c=MStrPrint("ZCA(%d,3,5,4);",d10buf);
+    jcc=CmpCtrlNew(d10c,CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: execA begins\n";
+      ji=Call(xbuf);
+      "zoneC: execA done d10x=%d bufA=%d bufB=%d\n",ji,d10buf(I64*)[7],d10buf(I64*)[17];
+    } else
+      "zoneC: execA compile failed (%X)\n",jbuf;
     //TEMP-PROBE spec99: fn-ptr argument — fixed-arg call through a frame home.
     jcc=CmpCtrlNew("U0 Z90(U0 (*fp)(U8 *s)) {fp(\"d90 via arg\\n\");}",CCF_DONT_FREE_BUF);
     Lex(jcc);

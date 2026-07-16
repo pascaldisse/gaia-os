@@ -222,8 +222,7 @@ U0 A64EmitCallSlot(CIntermediateCode *tmpi, I64 addr) {
 }
 
 U0 A64LoadCmpArgs(CIntermediateCode *tmpi, I64 rt) {
-  A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-  A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+  A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt); //round-10 clobber-safe
   A64W(tmpi, ARM_cmpRegX(0, 1));
 }
 
@@ -245,12 +244,12 @@ U0 A64EmitCmpChain(CIntermediateCode *tmpi, I64 cmp_code) {
 }
 
 U0 A64EmitBitBranch(CIntermediateCode *tmpi, Bool rmw, I64 op, Bool not_zero, I64 delta) {
-  A64LoadArg(tmpi, 0, &tmpi->arg1, RT_U64);
   if (!rmw && (tmpi->arg2.type & MDF_IMM)) {
+    A64LoadArg(tmpi, 0, &tmpi->arg1, RT_U64);
     A64EmitTbz(tmpi, 0, tmpi->arg2.disp & 63, not_zero, delta);
     return;
   }
-  A64LoadArg(tmpi, 1, &tmpi->arg2, RT_U64);
+  A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, RT_U64); //round-10 clobber-safe
   A64W(tmpi, ARM_andImmX(1, 1, 63));
   A64W(tmpi, ARM_lsrvRegX(2, 0, 1));
   A64W(tmpi, ARM_andImmX(2, 2, 1));
@@ -314,16 +313,14 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
 
     case IC_BR_AND_ZERO:
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_andsRegX(9, 0, 1));
       A64EmitBcc(tmpi, A64_CC_EQ, delta);
       return TRUE;
 
     case IC_BR_AND_NOT_ZERO:
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_andsRegX(9, 0, 1));
       A64EmitBcc(tmpi, A64_CC_NE, delta);
       return TRUE;

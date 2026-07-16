@@ -179,8 +179,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_ADD: {
       if (!(tmpi->ic_flags & ICF_USE_INT)) return FALSE;
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_addRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
@@ -188,8 +187,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_SUB: {
       if (!(tmpi->ic_flags & ICF_USE_INT)) return FALSE;
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_subRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
@@ -219,8 +217,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_MUL: {
       if (!(tmpi->ic_flags & ICF_USE_INT)) return FALSE;
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_mulRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
@@ -244,8 +241,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     case IC_DIV: {
       if (!(tmpi->ic_flags & ICF_USE_INT)) return FALSE;
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       if (rt & RTF_UNSIGNED) A64W(tmpi, ARM_udivX(0, 0, 1));
       else                   A64W(tmpi, ARM_sdivRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
@@ -258,8 +254,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     // mul x9,x9,x1 then sub x0,x0,x9 (no msub)".
     case IC_MOD: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_sdivRegX(9, 0, 1));
       A64W(tmpi, ARM_mulRegX(9, 9, 1));
       A64W(tmpi, ARM_subRegX(0, 0, 9));
@@ -268,8 +263,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     }
     case IC_MOD_U64: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_udivX(9, 0, 1));
       A64W(tmpi, ARM_mulRegX(9, 9, 1));
       A64W(tmpi, ARM_subRegX(0, 0, 9));
@@ -283,24 +277,21 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     // binary-op idiom covers the "imm forms" case too.
     case IC_AND: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_andRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
     }
     case IC_OR: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_orrRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
     }
     case IC_XOR: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_eorRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
@@ -333,16 +324,14 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     // the *_CONST folded forms below use the immediate encoders directly.
     case IC_SHL: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_lslvRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
       return TRUE;
     }
     case IC_SHR: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       if (rt & RTF_UNSIGNED) A64W(tmpi, ARM_lsrvRegX(0, 0, 1));
       else                   A64W(tmpi, ARM_asrvRegX(0, 0, 1));
       A64StoreRes(tmpi, 0, &tmpi->res, rt);
@@ -391,32 +380,28 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     // LO/HI (unsigned)"; A64CC's condition map (design section 4) turns
     // IC_LESS/IC_GREATER + the unsigned flag into exactly those codes.
     case IC_MIN_I64: {
-      A64LoadArg(tmpi, 0, &tmpi->arg1, RT_I64);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, RT_I64);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, RT_I64);
       A64W(tmpi, ARM_cmpRegX(0, 1));
       A64W(tmpi, ARM_cselX(0, 0, 1, A64CC(IC_LESS, FALSE)));
       A64StoreRes(tmpi, 0, &tmpi->res, RT_I64);
       return TRUE;
     }
     case IC_MIN_U64: {
-      A64LoadArg(tmpi, 0, &tmpi->arg1, RT_U64);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, RT_U64);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, RT_U64);
       A64W(tmpi, ARM_cmpRegX(0, 1));
       A64W(tmpi, ARM_cselX(0, 0, 1, A64CC(IC_LESS, TRUE)));
       A64StoreRes(tmpi, 0, &tmpi->res, RT_U64);
       return TRUE;
     }
     case IC_MAX_I64: {
-      A64LoadArg(tmpi, 0, &tmpi->arg1, RT_I64);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, RT_I64);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, RT_I64);
       A64W(tmpi, ARM_cmpRegX(0, 1));
       A64W(tmpi, ARM_cselX(0, 0, 1, A64CC(IC_GREATER, FALSE)));
       A64StoreRes(tmpi, 0, &tmpi->res, RT_I64);
       return TRUE;
     }
     case IC_MAX_U64: {
-      A64LoadArg(tmpi, 0, &tmpi->arg1, RT_U64);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, RT_U64);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, RT_U64);
       A64W(tmpi, ARM_cmpRegX(0, 1));
       A64W(tmpi, ARM_cselX(0, 0, 1, A64CC(IC_GREATER, TRUE)));
       A64StoreRes(tmpi, 0, &tmpi->res, RT_U64);
@@ -606,8 +591,7 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
     // in this file.
     case IC_BT: {
       rt = tmpi->ic_class->raw_type;
-      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
-      A64LoadArg(tmpi, 1, &tmpi->arg2, rt);
+      A64LoadBinArgs(tmpi, &tmpi->arg1, &tmpi->arg2, rt);
       A64W(tmpi, ARM_andImmX(1, 1, 63));
       A64W(tmpi, ARM_lsrvRegX(9, 0, 1));
       A64W(tmpi, ARM_andImmX(0, 9, 1));

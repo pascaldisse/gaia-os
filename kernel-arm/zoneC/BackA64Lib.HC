@@ -280,6 +280,36 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
   }
 }
 
+// Round 10 — safe binary-op operand load: arg1->x0, arg2->x1 with NO clobber.
+// Hazard (slice-4 finding): the naive `A64LoadArg(0,arg1); A64LoadArg(1,arg2)`
+// pair loads arg1 into x0 FIRST; if arg2 is a live register temp sitting in x0
+// (mem<op>temp, e.g. `off=off+memvar` inline where memvar is arg1), that load
+// destroys arg2 before it reaches x1 (observed `ldur x0,[b]; mov x1,x0;
+// add x0,x0,x0` -> address=base+base -> fault). Fix: when arg2 lives in x0,
+// relocate it to a distinct scratch (x1, or x2 for the crossed dual-temp case)
+// BEFORE arg1 overwrites x0. temp<op>mem (arg1 already in x0) stays on the
+// straight path -> arg1->x0 is a no-op mov, arg2->x1 loads the memory operand.
+U0 A64LoadBinArgs(CIntermediateCode *tmpi, CICArg *a1, CICArg *a2, I64 rt)
+{
+  I64 a1m,a2m;
+  a1m = a1->type & MDG_MASK;
+  a2m = a2->type & MDG_MASK;
+  if (a2m == MDF_REG && (a2->reg & 0xFF) == 0) {
+    if (a1m == MDF_REG && (a1->reg & 0xFF) == 1) {
+      //crossed dual-temp (arg1 in x1, arg2 in x0): stage arg2 through x2
+      A64LoadArg(tmpi, 2, a2, rt);   //mov x2,x0
+      A64LoadArg(tmpi, 0, a1, rt);   //mov x0,x1
+      A64W(tmpi, ARM_movRegX(1, 2)); //mov x1,x2
+    } else {
+      A64LoadArg(tmpi, 1, a2, rt);   //save arg2 to x1 first
+      A64LoadArg(tmpi, 0, a1, rt);   //then arg1 -> x0 (arg2 no longer in x0)
+    }
+  } else {
+    A64LoadArg(tmpi, 0, a1, rt);
+    A64LoadArg(tmpi, 1, a2, rt);
+  }
+}
+
 U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
 {
   I64 mode,rt,base,index,scale,disp,sz,log,scratch;
