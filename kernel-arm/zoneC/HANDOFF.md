@@ -82,13 +82,12 @@ Fn-ptr arg calls green: frame/global pointer slots load once in `IC_DEREF`; resu
 ## C4 module-export slices
 
 - slice 1 — done: Shrine/zoneC GaiaMod → Zone A `zc` = 100.
-- slice 2 — kernel wiring: GaiaSay via `kputs` fn-ptr.
-- slice 3 — `CCF_AOT_COMPILE`.
+- slice 2 — done: GaiaSay → Zone A `say` via kernel `puts` fn-ptr; hosted + QEMU green.
+- slice 3 — next: `CCF_AOT_COMPILE` + `IC_CALL_IMPORT` / `IC_CALL_EXTERN`.
 
 ## Next steps (in order)
 
-1. **Slice 2 kernel wiring.** GaiaSay via `kputs` fn-ptr.
-2. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`; Zone A kernel module.
+1. **AOT mode.** `CCF_AOT_COMPILE` + `IC_CALL_IMPORT` / `IC_CALL_EXTERN`; Zone A kernel module.
 
 ## Known small debts
 
