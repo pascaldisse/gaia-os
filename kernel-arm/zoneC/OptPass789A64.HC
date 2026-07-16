@@ -109,7 +109,7 @@ cc->pass==10 is final pass, code is placed into buf.
 	      tmpi->ic_data=0;
 	  }
 	  if (!A64GenIC(cc,tmpi)) {
-	    "zoneC UNHANDLED ic=%02X\n",tmpi->ic_code; //TEMP-PROBE spec90
+	    "zoneC UNHANDLED ic=%02X\n",tmpi->ic_code;
 	    throw('BackA64');
 	  }
 	  if (tmpi->ic_flags & ICF_PUSH_RES)

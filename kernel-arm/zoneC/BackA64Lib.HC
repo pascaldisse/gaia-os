@@ -114,7 +114,6 @@ I64 A64CC(I64 ic_code, Bool is_unsigned)
     else
       return 13; // LE
   default:
-    "zoneC LIBTHROW L117\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -277,7 +276,6 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     }
     break;
   default:
-    "zoneC LIBTHROW L273\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -388,7 +386,6 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
   case MDF_NULL:
     break; //unused result (ICF_RES_NOT_USED): storing to no destination is a no-op
   default:
-    "zoneC LIBTHROW L381\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -425,7 +422,6 @@ U0 A64Deref(CIntermediateCode *tmpi, I64 rx, CICArg *a)
     A64MovImm(tmpi, rx, disp);
     break;
   default:
-    "zoneC LIBTHROW L417\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -473,7 +469,6 @@ U0 A64LoadArgF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     }
     break;
   default:
-    "zoneC LIBTHROW L464\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -521,7 +516,6 @@ U0 A64StoreResF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     }
     break;
   default:
-    "zoneC LIBTHROW L511\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }

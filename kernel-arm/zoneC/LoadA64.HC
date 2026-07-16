@@ -316,38 +316,6 @@ U0 ZoneCJitSmoke()
       "zoneC: exec5 done res=%X\n",ji;
     } else
       "zoneC: exec5 compile failed (%X)\n",jbuf;
-    //TEMP-BISECT spec89: which return feature kills the def compile.
-    //Each def try-wrapped: a throw prints CAUGHT instead of dying dark.
-    try {
-      jcc=CmpCtrlNew("I64 ZC60() {PutS(\"x\\n\");}",CCF_DONT_FREE_BUF);
-      Lex(jcc); jtype=0; Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT); COCInit(jcc);
-      ji=PrsStmt(jcc,,,0);
-      "zoneC: d60 err=%X\n",ji;
-    } catch { "zoneC: d60 CAUGHT %X\n",Fs->except_ch; Fs->catch_except=TRUE; }
-    try {
-      jcc=CmpCtrlNew("U0 ZC61() {return;}",CCF_DONT_FREE_BUF);
-      Lex(jcc); jtype=0; Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT); COCInit(jcc);
-      ji=PrsStmt(jcc,,,0);
-      "zoneC: d61 err=%X\n",ji;
-    } catch { "zoneC: d61 CAUGHT %X\n",Fs->except_ch; Fs->catch_except=TRUE; }
-    try {
-      jcc=CmpCtrlNew("I64 ZC6a() {return 41;}",CCF_DONT_FREE_BUF);
-      Lex(jcc); jtype=0; Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT); COCInit(jcc);
-      ji=PrsStmt(jcc,,,0);
-      "zoneC: d6a err=%X\n",ji;
-    } catch { "zoneC: d6a CAUGHT %X\n",Fs->except_ch; Fs->catch_except=TRUE; }
-    try {
-      jcc=CmpCtrlNew("I64 ZC6b(I64 a) {return a;}",CCF_DONT_FREE_BUF);
-      Lex(jcc); jtype=0; Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT); COCInit(jcc);
-      ji=PrsStmt(jcc,,,0);
-      "zoneC: d6b err=%X\n",ji;
-    } catch { "zoneC: d6b CAUGHT %X\n",Fs->except_ch; Fs->catch_except=TRUE; }
-    try {
-      jcc=CmpCtrlNew("U0 ZC6c() {I64 c; c=1;}",CCF_DONT_FREE_BUF);
-      Lex(jcc); jtype=0; Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT); COCInit(jcc);
-      ji=PrsStmt(jcc,,,0);
-      "zoneC: d6c err=%X\n",ji;
-    } catch { "zoneC: d6c CAUGHT %X\n",Fs->except_ch; Fs->catch_except=TRUE; }
     //C6 frame-var smoke: args + locals through the full frame path.
     //ZC6 a,b arrive as MDF_DISP RBP+16/+24 (A64FrameRef remaps to x29+32/+48,
     //16B push slots); local c lives below x29 (1:1). NoRegOpt mkboot transform
