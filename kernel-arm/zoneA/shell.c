@@ -1,6 +1,7 @@
 // GAIA-OS Zone A — the first shell. Cooperative, polling, Temple prompt.
 // Lsh (Shrine) gets ported once HolyC lands; this is the bootstrap voice.
 #include "kernel.h"
+#include "zcmod.h"
 
 #define UART_DR   0x09000000UL
 #define UART_FR   0x09000018UL
@@ -35,6 +36,7 @@ static void cmd_help(void) {
     puts("  cat <name> read file\n");
     puts("  hc <file>  compile+run HolyC file (SeedC JIT)\n");
     puts("  hcl <code> compile+run HolyC one-liner\n");
+    puts("  zc         run Shrine/zoneC GaiaMod\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -110,6 +112,10 @@ static void run_cmd(const char *line) {
     }
     if (line[0] == 'h' && line[1] == 'c' && line[2] == 'l' && line[3] == ' ') {
         HcRun(line + 4);
+        return;
+    }
+    if (line[0] == 'z' && line[1] == 'c' && !line[2]) {
+        puts("zc: GaiaMod="); putdec((u64)((long (*)(void))zcmod_bin)()); puts("\n");
         return;
     }
     if (line[0] == 'h' && line[1] == 'c' && line[2] == ' ') {

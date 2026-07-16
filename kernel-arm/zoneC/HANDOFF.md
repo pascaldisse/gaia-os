@@ -80,6 +80,12 @@ Variadic-in-callee green. Root cause: `IC_STR_CONST` absolute addressing into
 the freed compile buffer → heap-reuse nondeterminism; fixed with PC-relative
 ADR per Terry's RIP-relative design. d73/d87 garble explained.
 
+## C4 module-export slices
+
+- slice 1 — done: Shrine/zoneC GaiaMod → Zone A `zc` = 100.
+- slice 2 — prints via fn-ptr arg.
+- slice 3 — `CCF_AOT_COMPILE`.
+
 ## Next steps (in order)
 
 1. **BackA64F (floats).** The F64 intermediate codes have never executed:
