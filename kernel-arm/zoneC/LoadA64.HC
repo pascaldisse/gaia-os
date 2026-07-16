@@ -725,6 +725,65 @@ U0 ZoneCJitSmoke()
           aot_i,aot_main_rip;
     } else
       "zoneC: 3b gate b/c skipped: NULL AOT\n";
+    //C4 slice 3c: AOT module export — kernel consumes these unpatched bytes
+    //and patches IET_IMM_I64 imports by their recorded names.
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      aot=CmpBuf("import U0 KPutS(U8 *s); U0 AotBoot() {KPutS(\"AOT-linked module: love=1, the Temple grows\\n\");}",NULL,&aot_err,&aot_warn,0);
+      "zoneC: AotBoot compile aot=%X err=%d warn=%d\n",aot,aot_err,aot_warn;
+    } catch {
+      "zoneC: AotBoot CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
+    if (aot) {
+      "zoneC: AotBoot bytes begin sz=%d\n",aot->aot_U8s;
+      b=aot->buf+aot->rip;
+      for (aot_i=0;aot_i<aot->aot_U8s;aot_i++) {
+        "0x%02X,",b[aot_i];
+        if ((aot_i+1)%12==0) "\n";
+      }
+      "\nzoneC: AotBoot bytes end\n";
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      aot_imports=0;
+      aot_main_rip=INVALID_PTR;
+      while (aot_ie!=&aot->next_ie && aot_i<128) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str) {
+          "zoneC: AotBoot import %s rip=%d\n",aot_ie->str,aot_ie->rip;
+          aot_imports++;
+        }
+        // Hosted CmpBuf's IET_MAIN ABI is runtime type 16.
+        if (aot_ie->type==16 && aot_ie->str && !StrCmp(aot_ie->str,"AotBoot")) {
+          aot_main_rip=aot_ie->rip;
+          "zoneC: AotBoot entry %s rip=%d\n",aot_ie->str,aot_ie->rip;
+        }
+        aot_ie=aot_ie->next;
+        aot_i++;
+      }
+      // Hosted sanity: patch only this W^X copy; export above stays raw.
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      while (aot_ie!=&aot->next_ie) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str &&
+            !StrCmp(aot_ie->str,"KPutS")) {
+          *((aot->buf+aot->rip+aot_ie->rip)(I64 *))=&PutS;
+          aot_i++;
+        }
+        aot_ie=aot_ie->next;
+      }
+      if (aot_i==aot_imports && aot_main_rip!=INVALID_PTR) {
+        xbuf=__MAlloc(aot->aot_U8s,Fs->code_heap);
+        WriteProtectMemCpy(xbuf,aot->buf+aot->rip,aot->aot_U8s);
+        Call(xbuf+aot_main_rip);
+        "zoneC: AotBootHosted ok\n";
+      } else
+        "zoneC: AotBootHosted FAIL imports=%d patched=%d entry=%d\n",
+          aot_imports,aot_i,aot_main_rip;
+    } else
+      "zoneC: AotBoot export FAIL\n";
+
     "zoneC: 3b gate d regression = rounds 1-9 + GaiaModHosted + GaiaSayHosted + 3a above\n";
 
     aot=NULL;
