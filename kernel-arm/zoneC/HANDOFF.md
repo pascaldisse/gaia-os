@@ -7,7 +7,7 @@ the `aiwnios` HolyC runtime; zoneC replaces Shrine's x86 back end with an
 AArch64 one. This is ordinary compiler engineering: lexer/parser reused as-is,
 we only rewrite the instruction-selection + emission tail.
 
-Last green commit: **round 7 commit**. Rounds 1–7 all pass.
+Last green commit: **round 8 (this commit)**. Rounds 1–8 all pass.
 
 ---
 
@@ -39,7 +39,7 @@ Notes:
 
 ---
 
-## What works now (rounds 1–7)
+## What works now (rounds 1–8)
 
 | round | program | proves |
 |---|---|---|
@@ -66,23 +66,26 @@ Notes:
   the leave label.
 - **W^X:** compile into the data heap, copy to `Fs->code_heap` via
   `WriteProtectMemCpy` (toggles jit-write-protect + flushes icache), execute the
-  copy. Baked string addresses still point into the readable data original.
+  copy. `IC_STR_CONST` uses PC-relative ADR, so copied code references copied
+  trailing strings rather than the freed compile buffer.
 - **Calls:** fixed = `IC_CALL` (absolute addr in `ic_data`); variadic marker
   rides `ic_flags` high bits (mid-passes scrub `arg2` in place — do not park
   data there); indirect = `IC_CALL_INDIRECT` / `IC_CALL_INDIRECT2`.
 
 ---
 
+## Round 8
+
+Variadic-in-callee green. Root cause: `IC_STR_CONST` absolute addressing into
+the freed compile buffer → heap-reuse nondeterminism; fixed with PC-relative
+ADR per Terry's RIP-relative design. d73/d87 garble explained.
+
 ## Next steps (in order)
 
-1. **Round 8 — variadic host call inside a JIT callee.** `Print("%d",x)`
-   prints garbage (observed: lone tab) while computation stays correct;
-   suspect `a64_arg_cnt`/`a64_arg_sp` argv marshal relative to `sp` under a
-   callee frame.
-2. **BackA64F (floats).** The F64 intermediate codes have never executed:
+1. **BackA64F (floats).** The F64 intermediate codes have never executed:
    `%f` formatting, F64 arithmetic, int↔float conversion. Emitters exist but
    are unproven live.
-3. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`,
+2. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`,
    then compile a Zone A kernel module with this back end. That closes M4:
    the compiler compiles the OS.
 
@@ -100,6 +103,8 @@ Notes:
   `A64EmitCmpChain` unaudited for the same pattern.
 - **IC_ASSIGN:** `IC_ASSIGN_PP`/`IC_ASSIGN_MM` unhandled → alarm; float
   `IC_ASSIGN` → `BackA64F` unproven.
+- **ADR range:** ±1 MiB; strings beyond this need ADRP+ADD. Current lowering
+  throws `BackA64` on the final pass rather than silently emitting a bad ref.
 
 ## Working discipline (what made this tractable)
 

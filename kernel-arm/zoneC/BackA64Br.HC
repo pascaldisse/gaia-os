@@ -25,8 +25,7 @@
 #define A64_BR_BTC_ZERO_CODE 0xA3
 #define A64_BR_BTC_NOT_ZERO_CODE 0xA4
 
-//Set by OptPass789A64 at each pass entry: output buffer base for
-//IC_STR_CONST/IC_GET_LABEL absolute-address materialization.
+//Set by OptPass789A64 at each pass entry for IC_GET_LABEL absolute addresses.
 I64 a64_str_buf = 0;
 
 //aiwnios host ABI passes args in x0-x7 (arm_backend.c __ICFCallTOS) while
@@ -522,11 +521,24 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
 
     case IC_STR_CONST: //Terry OptPass789A.HC:296 — res <- lb->addr + buf
+      lb = tmpi->ic_data;
+      //ADR is relative to this instruction, so the W^X copy carries the
+      //reference to its trailing string data with it.
+      delta = lb->addr - (tmpi->ic_last_start + tmpi->ic_cnt);
+      if (delta < -(1 << 20) || delta > (1 << 20) - 1) {
+        //String offsets settle after the sizing passes; only final code needs
+        //the real displacement.
+        if (cc->pass == 10)
+          throw('BackA64'); //ADR range ±1 MiB; ADRP+ADD needed beyond this
+        delta = 0;
+      }
+      A64W(tmpi, ARM_adrX(0, delta));
+      A64StoreRes(tmpi, 0, &tmpi->res, RT_I64);
+      return TRUE;
+
     case IC_GET_LABEL:
       lb = tmpi->ic_data;
       addr = lb->addr + a64_str_buf;
-      //Fixed 4-instruction materialization: lb->addr moves between passes,
-      //emitted size must NOT change (pass-size stability).
       A64W(tmpi, ARM_movzImmX(0, addr & 0xFFFF, 0));
       A64W(tmpi, ARM_movkImmX(0, (addr >> 16) & 0xFFFF, 16));
       A64W(tmpi, ARM_movkImmX(0, (addr >> 32) & 0xFFFF, 32));
