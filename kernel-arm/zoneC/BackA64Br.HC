@@ -171,6 +171,30 @@ U0 A64PopMask(CIntermediateCode *tmpi, I64 mask) {
   }
 }
 
+U0 A64FrameEnter(CCmpCtrl *cc, CIntermediateCode *tmpi) {
+  //Callee prologue. Save fp/lr, set x29, allocate locals + arg-home area, then
+  //spill the incoming register args x0..x_{n-1} into their frame homes. With
+  //reg-opt disabled (mkboot NoRegOpt), the Shrine front end reads args from
+  //stack slots [RBP+16+8k]; our callers pass args in x0..x7, so the callee must
+  //stash them where the front end expects. Homes sit at the frame bottom
+  //([sp+16k]); A64FrameRef maps [RBP+16+8k] -> [x29 - argbase + 16k] to match.
+  I64 nargs, argsz, locals, k;
+  A64W(tmpi, ARM_strPreImmX(30, 31, -16));
+  A64W(tmpi, ARM_strPreImmX(29, 31, -16));
+  A64W(tmpi, ARM_addImmX(29, 31, 0));         //mov x29, sp
+  locals = (A64FrameLocals(tmpi) + 15) & ~15; //ic_data=-fun->size = positive local bytes
+  nargs = 0;
+  if (cc->htc.fun)
+    nargs = cc->htc.fun->arg_cnt;
+  if (nargs > 8) nargs = 8;                   //only x0..x7 carry register args
+  argsz = nargs * 16;                         //16B home per arg (bug#7c slot size)
+  a64_frame_argbase = locals + argsz;         //A64FrameRef: [RBP+16+8k] -> [x29 - argbase + 16k]
+  A64SubSP(tmpi, locals + argsz);             //16-aligned: locals rounded, argsz already 16*n
+  for (k = 0; k < nargs; k++)                 //spill x_k -> [sp + 16k] (its frame home)
+    A64W(tmpi, ARM_strRegImmX(k, 31, k * 16));
+  A64PushMask(tmpi, A64FrameMask(tmpi));
+}
+
 U0 A64EmitCallAbs(CIntermediateCode *tmpi, I64 addr) {
   A64W(tmpi, ARM_movzImmX(16, addr & 0xFFFF, 0));
   A64W(tmpi, ARM_movkImmX(16, (addr >> 16) & 0xFFFF, 16));
@@ -412,11 +436,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
 
     case IC_ENTER:
-      A64W(tmpi, ARM_strPreImmX(30, 31, -16));
-      A64W(tmpi, ARM_strPreImmX(29, 31, -16));
-      A64W(tmpi, ARM_addImmX(29, 31, 0));
-      A64SubSP(tmpi, (A64FrameLocals(tmpi) + 15) & ~15); //ic_data=-fun->size is POSITIVE locals bytes (PrsVar grows locals downward); 16-align for AAPCS SP
-      A64PushMask(tmpi, A64FrameMask(tmpi));
+      A64FrameEnter(cc, tmpi); //prologue + spill reg args to frame homes (bug#10b)
       return TRUE;
 
     case IC_LEAVE:
@@ -469,6 +489,13 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
 
     case IC_CALL_END2:    //Terry OptPass789A.HC:1036 — no emission
+    case IC_RETURN_VAL:   //Terry OptPass789A.HC:779 — MOV RAX,arg1: load the
+      //return value into x0. The return-stmt jump to lb_leave is a separate
+      //IC_JMP (proven green, smoke89 d61); LEAVE's epilogue then rets.
+      rt = tmpi->ic_class->raw_type;
+      A64LoadArg(tmpi, 0, &tmpi->arg1, rt);
+      return TRUE;
+
     case IC_RETURN_VAL2:  //Terry OptPass789A.HC:784 — result already in return reg
       return TRUE;
 

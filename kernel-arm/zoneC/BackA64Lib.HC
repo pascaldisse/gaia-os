@@ -114,19 +114,26 @@ I64 A64CC(I64 ic_code, Bool is_unsigned)
     else
       return 13; // LE
   default:
+    "zoneC LIBTHROW L117\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
 
+//Set by A64FrameEnter (BackA64Br) at each IC_ENTER: rounded local bytes + the
+//arg-home area. A64FrameRef maps stack args to [x29 - a64_frame_argbase + 16k].
+//Reset to 0 at each OptPass789A64 pass entry; top-level code has no RBP refs.
+I64 a64_frame_argbase = 0;
+
 U0 A64FrameRef(I64 *base, I64 *disp)
 {//x86 frame ref -> arm64 frame. REG_RBP(5) always means the frame ptr (x86 never
- //allocates RBP as a var reg). Locals: disp<0 (PrsVar grows down), maps 1:1 below x29.
- //Args: x86 [RBP+16+8k] -> [x29+32+16k]; 16-byte stack slots, and the saved-x30 slot
- //at [x29+16] stands in for the x86 return-address slot.
+ //allocates RBP as a var reg). Locals (disp<0, PrsVar grows down) map 1:1 below x29.
+ //Args [RBP+16+8k] map to their spilled homes at the frame bottom:
+ //[x29 - argbase + 16k], where argbase = rounded-locals + arg-home area (set by
+ //A64FrameEnter, which spills x0..x_{n-1} into exactly those homes).
   if (*base == REG_RBP) {
     *base = 29;
     if (*disp >= 16)
-      *disp = 32 + (*disp - 16) * 2;
+      *disp = 16 * ((*disp - 16) / 8) - a64_frame_argbase;
   }
 }
 
@@ -270,6 +277,7 @@ U0 A64LoadArg(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
     }
     break;
   default:
+    "zoneC LIBTHROW L273\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -377,7 +385,10 @@ U0 A64StoreRes(CIntermediateCode *tmpi, I64 rx, CICArg *a, I64 raw_type)
       }
     }
     break;
+  case MDF_NULL:
+    break; //unused result (ICF_RES_NOT_USED): storing to no destination is a no-op
   default:
+    "zoneC LIBTHROW L381\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -414,6 +425,7 @@ U0 A64Deref(CIntermediateCode *tmpi, I64 rx, CICArg *a)
     A64MovImm(tmpi, rx, disp);
     break;
   default:
+    "zoneC LIBTHROW L417\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -461,6 +473,7 @@ U0 A64LoadArgF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     }
     break;
   default:
+    "zoneC LIBTHROW L464\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }
@@ -508,6 +521,7 @@ U0 A64StoreResF(CIntermediateCode *tmpi, I64 dreg, CICArg *a)
     }
     break;
   default:
+    "zoneC LIBTHROW L511\n"; //TEMP-PROBE spec90
     throw('BackA64');
   }
 }

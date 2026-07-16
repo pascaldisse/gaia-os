@@ -63,7 +63,7 @@ cc->pass==10 is final pass, code is placed into buf.
   CAOTCtrl *aotc=cc->aotc;
   CAOTAbsAddr *tmpa;
 
-  a64_str_buf=buf; a64_arg_cnt=0; a64_arg_sp=0; //A64GenBr pass-entry state
+  a64_str_buf=buf; a64_arg_cnt=0; a64_arg_sp=0; a64_frame_argbase=0; //A64GenBr pass-entry state
   if (_dbg) {
     *_dbg=dbg_info=CAlloc(offset(CDbgInfo.body)+sizeof(U32)*(num_lines+1));
     dbg_info->min_line=cc->min_line;
@@ -109,6 +109,7 @@ cc->pass==10 is final pass, code is placed into buf.
 	      tmpi->ic_data=0;
 	  }
 	  if (!A64GenIC(cc,tmpi)) {
+	    "zoneC UNHANDLED ic=%02X\n",tmpi->ic_code; //TEMP-PROBE spec90
 	    throw('BackA64');
 	  }
 	  if (tmpi->ic_flags & ICF_PUSH_RES)
