@@ -55,10 +55,12 @@ I64 A64InvertCond(I64 cond) {
 }
 
 U0 A64EmitB(CIntermediateCode *tmpi, I64 delta) {
+  delta -= tmpi->ic_cnt; //branch word sits at node_start+ic_cnt; ic_data is node_start-relative
   A64W(tmpi, ARM_b(delta));
 }
 
 U0 A64EmitBcc(CIntermediateCode *tmpi, I64 cond, I64 delta) {
+  delta -= tmpi->ic_cnt; //branch word sits at node_start+ic_cnt; ic_data is node_start-relative
   if (A64BrFits(delta, 19)) {
     A64W(tmpi, ARM_bcc(cond, delta));
   } else {
@@ -68,6 +70,7 @@ U0 A64EmitBcc(CIntermediateCode *tmpi, I64 cond, I64 delta) {
 }
 
 U0 A64EmitCbz(CIntermediateCode *tmpi, I64 r, Bool not_zero, I64 delta) {
+  delta -= tmpi->ic_cnt; //branch word sits at node_start+ic_cnt; ic_data is node_start-relative
   if (A64BrFits(delta, 19)) {
     if (not_zero)
       A64W(tmpi, ARM_cbnzX(r, delta));
@@ -83,6 +86,7 @@ U0 A64EmitCbz(CIntermediateCode *tmpi, I64 r, Bool not_zero, I64 delta) {
 }
 
 U0 A64EmitTbz(CIntermediateCode *tmpi, I64 r, I64 bit, Bool not_zero, I64 delta) {
+  delta -= tmpi->ic_cnt; //branch word sits at node_start+ic_cnt; ic_data is node_start-relative
   if (A64BrFits(delta, 14)) {
     if (not_zero)
       A64W(tmpi, ARM_tbnz(r, bit, delta));

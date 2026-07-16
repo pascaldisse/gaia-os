@@ -7,7 +7,7 @@ the `aiwnios` HolyC runtime; zoneC replaces Shrine's x86 back end with an
 AArch64 one. This is ordinary compiler engineering: lexer/parser reused as-is,
 we only rewrite the instruction-selection + emission tail.
 
-Last green commit: **626ab83** (round 6). Rounds 1–6 all pass.
+Last green commit: **round 7 commit**. Rounds 1–7 all pass.
 
 ---
 
@@ -26,7 +26,7 @@ not the process; a hang shows as *missing later markers*, a fault shows as a
 `JIT hello returned`.
 
 Green markers (all must be present, in order):
-`Hello GAIA` · `Val=42` · `Try OK` · `Ind OK` · `Def OK` · `Res6=41`.
+`Hello GAIA` · `Val=42` · `Try OK` · `Ind OK` · `Def OK` · `Res6=41` · `Res7=110`.
 Any `CAUGHT` / `LIBTHROW` / `UNHANDLED` / `welcome to` line = failure.
 
 Notes:
@@ -39,7 +39,7 @@ Notes:
 
 ---
 
-## What works now (rounds 1–6)
+## What works now (rounds 1–7)
 
 | round | program | proves |
 |---|---|---|
@@ -49,6 +49,7 @@ Notes:
 | 4 | `zc_fp("Ind OK\n")` | indirect call via fn-ptr slot |
 | 5 | `U0 ZC5(){...}` then `ZC5;` | self-compiled void fn, JIT→JIT call |
 | 6 | `I64 ZC6(a,b){I64 c; c=a*2; c=c+b; return c;}` | args + frame locals + return value |
+| 7 | `I64 ZC7(I64 n){while/if, 2 locals}` | IC_ASSIGN dest stores + fwd-cond/backward branch deltas under a real frame |
 
 ## Load-bearing invariants (know these before editing)
 
@@ -74,17 +75,14 @@ Notes:
 
 ## Next steps (in order)
 
-1. **Probe strip.** Remove the round-6 diagnostic ladder (`d60`/`d61`/`d6a`/
-   `d6b`/`d6c` in LoadA64.HC) and the temporary probe prints (`LIBTHROW L273`/
-   `L381` in BackA64Lib, `789A fwd out`, `ic=` in OptPass789A64). Gate on all
-   six markers staying green, then commit clean. Keep `exec*`/`Res6` telemetry.
-2. **Round 7 — control flow.** A fn with `if`/`while` + multiple locals.
-   Exercises the branch emitters and label/offset convergence under a real
-   frame. Suspect surface: relative branch range + the size-convergence loop.
-3. **BackA64F (floats).** The F64 intermediate codes have never executed:
+1. **Round 8 — variadic host call inside a JIT callee.** `Print("%d",x)`
+   prints garbage (observed: lone tab) while computation stays correct;
+   suspect `a64_arg_cnt`/`a64_arg_sp` argv marshal relative to `sp` under a
+   callee frame.
+2. **BackA64F (floats).** The F64 intermediate codes have never executed:
    `%f` formatting, F64 arithmetic, int↔float conversion. Emitters exist but
    are unproven live.
-4. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`,
+3. **AOT mode.** `IC_CALL_IMPORT` / `IC_CALL_EXTERN` under `CCF_AOT_COMPILE`,
    then compile a Zone A kernel module with this back end. That closes M4:
    the compiler compiles the OS.
 
@@ -97,6 +95,11 @@ Notes:
   only tiny frames are exercised so far; verify when round 7 grows the frame.
 - **MDF_NULL:** added to `A64StoreRes` (unused-result stores). Not added to
   `A64LoadArg` (loading a null source shouldn't occur; revisit if it throws).
+- **Branch delta normalization:** `delta -= tmpi->ic_cnt` at
+  `A64EmitB`/`A64EmitBcc`/`A64EmitCbz`/`A64EmitTbz` entry;
+  `A64EmitCmpChain` unaudited for the same pattern.
+- **IC_ASSIGN:** `IC_ASSIGN_PP`/`IC_ASSIGN_MM` unhandled → alarm; float
+  `IC_ASSIGN` → `BackA64F` unproven.
 
 ## Working discipline (what made this tractable)
 

@@ -67,6 +67,7 @@ U0 A64StAddr(CIntermediateCode *tmpi, I64 rx, I64 addr_reg, I64 raw_type) {
 // OptPass789A64 driver calls through.
 Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
   I64 rt, pt;
+  CICArg st;
   switch (tmpi->ic_code) {
 
     //=======================================================================
@@ -87,13 +88,29 @@ Bool A64GenInt(CCmpCtrl *cc, CIntermediateCode *tmpi) {
       return TRUE;
     }
 
-    // IC_ASSIGN: design row is explicit that the *source* is arg2, not
-    // arg1: "A64LoadArg(x0, arg2) -> A64StoreRes(x0, res)".
     case IC_ASSIGN: {
       rt = tmpi->ic_class->raw_type;
       if (A64_FLOATY(rt)) return FALSE;
-      A64LoadArg(tmpi, 0, &tmpi->arg2, rt);
-      A64StoreRes(tmpi, 0, &tmpi->res, rt);
+      pt = tmpi->arg1_type_pointed_to;
+      A64LoadArg(tmpi, 0, &tmpi->arg2, pt);
+      if (tmpi->ic_flags & ICF_BY_VAL) {
+        //arg1 IS the dest lvalue: keep its mode, retype to pointee (donor branch 1)
+        st.type = tmpi->arg1.type & MDG_MASK + pt;
+        st.reg  = tmpi->arg1.reg;
+        st.disp = tmpi->arg1.disp;
+        A64StoreRes(tmpi, 0, &st, pt);
+      } else if (tmpi->arg1.type & MDF_REG) {
+        //dest address in a register: [arg1.reg + arg1.disp] (donor branch 2)
+        st.type = MDF_DISP + pt;
+        st.reg  = tmpi->arg1.reg;
+        st.disp = tmpi->arg1.disp;
+        A64StoreRes(tmpi, 0, &st, pt);
+      } else {
+        //dest address itself in memory: load it, store through it (donor RCX path)
+        A64LoadArg(tmpi, 9, &tmpi->arg1, RT_I64);
+        A64StAddr(tmpi, 0, 9, pt & RTG_MASK);
+      }
+      A64StoreRes(tmpi, 0, &tmpi->res, rt); //chained-assign mirror; MDF_NULL no-ops
       return TRUE;
     }
 

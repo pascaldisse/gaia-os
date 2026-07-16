@@ -348,6 +348,34 @@ U0 ZoneCJitSmoke()
       "zoneC: exec6 done Res6=%d\n",ji;
     } else
       "zoneC: exec6 compile failed (%X)\n",jbuf;
+    jcc=CmpCtrlNew("I64 ZC7(I64 n) {I64 s,i; s=0; i=0; while (i<n) {s=s+i; i=i+1;} if (s>9) s=s+100; return s;}",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    "zoneC: def7 done err=%X\n",ji;
+    jcc=CmpCtrlNew("ZC7(5);",CCF_DONT_FREE_BUF);
+    Lex(jcc);
+    jtype=0;
+    Btr(&jcc->flags,CCf_PASS_TRACE_PRESENT);
+    COCInit(jcc);
+    ji=PrsStmt(jcc,,,0);
+    jbuf=NULL;
+    if (!ji && jcc->coc.coc_head.next!=&jcc->coc.coc_head) {
+      jcc->coc.coc_head.last->ic_flags&=~ICF_RES_NOT_USED;
+      ICAdd(jcc,IC_RETURN_VAL2,0,0);
+      ICAdd(jcc,IC_RET,0,0);
+      jbuf=COCCompile(jcc,&jn,NULL,&jtype);
+    }
+    if (jbuf && jbuf!=INVALID_PTR) {
+      xbuf=__MAlloc(MSize(jbuf),Fs->code_heap);
+      WriteProtectMemCpy(xbuf,jbuf,MSize(jbuf));
+      "zoneC: exec7 begins\n";
+      ji=Call(xbuf);
+      "zoneC: exec7 done Res7=%d\n",ji;
+    } else
+      "zoneC: exec7 compile failed (%X)\n",jbuf;
   } else
     "zoneC: LexStmt2Bin failed (%X)\n",jbuf;
   CmpCtrlDel(jcc);
