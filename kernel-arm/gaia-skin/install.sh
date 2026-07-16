@@ -24,6 +24,7 @@ echo "install.sh: staging GAIA-OS skin into $AIW"
 # 1) Copy tracked sources into the donor tree (root-mounted ::/ paths).
 cp -f "$REPO/kernel-arm/tools/TempleDbg.HC" "$AIW/TempleDbg.HC"
 cp -f "$SKIN_DIR/GaiaHome.HC" "$AIW/GaiaHome.HC"
+cp -f "$SKIN_DIR/GaiaHome.DD" "$AIW/GaiaHome.DD"
 
 # 2) Window/dialog title: c/*.c literal "AIWNIOS" -> "GAIA-OS" (SDL_CreateWindow
 #    at c/windows.c + every SDL_ShowSimpleMessageBox title in c/windows.c and
@@ -36,13 +37,20 @@ else
 fi
 
 # 3) Front page: UserStartUp() Type()s the boot doc (Src/FULL_PACKAGE.HC,
-#    "U0 UserStartUp()" body). Point it at GaiaHome.HC instead of the donor
-#    Doc/Start.DD (left on disk untouched, still reachable via the Help &
-#    Index link on the new page). Idempotent via grep guard.
+#    "U0 UserStartUp()" body). Point it at GaiaHome.DD, the pure-DolDoc page
+#    (no HolyC source/comments - Type() renders whatever the target file
+#    contains verbatim, so a .HC target puts source clutter on screen; scar
+#    2026-07-16). Donor Doc/Start.DD is left on disk untouched, still
+#    reachable via the Help & Index link. Idempotent via grep guard; also
+#    upgrades a prior GaiaHome.HC-targeted install (whip-16x first pass).
 if grep -q 'Type("::/Doc/Start.DD");' "$AIW/Src/FULL_PACKAGE.HC"; then
-  sed -i '' 's#Type("::/Doc/Start.DD");#Type("::/GaiaHome.HC");#' \
+  sed -i '' 's#Type("::/Doc/Start.DD");#Type("::/GaiaHome.DD");#' \
     "$AIW/Src/FULL_PACKAGE.HC"
   echo "install.sh: front-page transform applied (Src/FULL_PACKAGE.HC)"
+elif grep -q 'Type("::/GaiaHome.HC");' "$AIW/Src/FULL_PACKAGE.HC"; then
+  sed -i '' 's#Type("::/GaiaHome.HC");#Type("::/GaiaHome.DD");#' \
+    "$AIW/Src/FULL_PACKAGE.HC"
+  echo "install.sh: front-page transform upgraded (GaiaHome.HC -> GaiaHome.DD)"
 else
   echo "install.sh: front-page transform already applied"
 fi
