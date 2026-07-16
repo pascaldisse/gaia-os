@@ -135,6 +135,8 @@ void kmain(void) {
     puts("tasks: Adam + Ebrietas + Maiden in the ring\n");
     while (ticks < 2) Yield();   // demo pass under the heartbeat
 
+    if (FbInit() == 0) FbDrawPattern();   // ramfb: draw boot test pattern
+
     if (net_ok) Spawn(NetRxTask, "NetRx");
     Spawn(shell_task, "Shell");
     for (;;) Yield();            // Adam keeps the ring turning

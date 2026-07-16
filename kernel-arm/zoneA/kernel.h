@@ -29,6 +29,13 @@ void shell_task(void);
 u64 BlkInit(void);
 int BlkRW(u64 sector, void *buf, int write);
 
+// fw_cfg.c — QEMU fw_cfg (MMIO) + ramfb framebuffer
+#define FB_WIDTH  640
+#define FB_HEIGHT 480
+#define FB_BPP    4        // XRGB8888
+int  FbInit(void);         // configure ramfb via fw_cfg; 0 = ok
+void FbDrawPattern(void);  // gradient + 3 color bars + white border
+
 // hc.c — SeedC: HolyC-subset JIT compiler (Zone C seed)
 void HcRun(const char *src);
 void iflush(void *base, int bytes);

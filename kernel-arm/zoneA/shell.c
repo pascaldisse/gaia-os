@@ -34,6 +34,7 @@ static void cmd_help(void) {
     puts("  ls         list files\n");
     puts("  wr <name> <text>   write file\n");
     puts("  cat <name> read file\n");
+    puts("  fb         redraw ramfb boot pattern\n");
     puts("  hc <file>  compile+run HolyC file (SeedC JIT)\n");
     puts("  hcl <code> compile+run HolyC one-liner\n");
     puts("  zc         run Shrine/zoneC GaiaMod\n");
@@ -120,6 +121,7 @@ static void run_cmd(const char *line) {
         puts("zc: GaiaMod="); putdec((u64)((long (*)(void))zcmod_bin)()); puts("\n");
         return;
     }
+    if (streq(line, "fb")) { FbDrawPattern(); puts("fb: redrawn\n"); return; }
     if (streq(line, "say")) {
         ((void(*)(void(*)(const char*)))zcsay_bin)(zc_kputs);
         return;
