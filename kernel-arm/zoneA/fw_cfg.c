@@ -124,6 +124,11 @@ void FbDrawPattern(void) {
     asm volatile("dsb sy" ::: "memory");
 }
 
+// Exported to Shrine/zoneC HolyC modules by name (zcmod.c resolver). The
+// GaiaPlot module imports these to draw directly on the ramfb surface.
+long FbBase(void)  { return (long)fb; }
+long FbWidth(void) { return FB_WIDTH; }
+
 int FbInit(void) {
     u16 key = fw_find("etc/ramfb");
     if (!key) { puts("ramfb: etc/ramfb absent (need -device ramfb)\n"); return -1; }

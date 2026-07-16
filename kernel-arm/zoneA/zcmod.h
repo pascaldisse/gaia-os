@@ -14,3 +14,9 @@ void zc_kputs(const char *s);
 long zc_resolve(const char *name);
 void zcaot_link(void);
 extern void (*zcaot_entry_fn)(void);
+
+// C4 slice 4 — GaiaPlot: HolyC draws magenta rect + yellow diagonals on ramfb.
+extern const unsigned char zcplot_bin[];
+extern const unsigned long zcplot_len;
+void zcplot_link(void);
+extern void (*zcplot_entry_fn)(void);

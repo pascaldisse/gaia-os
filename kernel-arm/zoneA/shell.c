@@ -40,6 +40,7 @@ static void cmd_help(void) {
     puts("  zc         run Shrine/zoneC GaiaMod\n");
     puts("  say        run Shrine/zoneC GaiaSay via kernel puts\n");
     puts("  aot        run linked Shrine/zoneC AotBoot module\n");
+    puts("  plot       run Shrine/zoneC GaiaPlot: HolyC draws on ramfb\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -130,6 +131,13 @@ static void run_cmd(const char *line) {
         zcaot_link();
         zcaot_entry_fn();
         puts("aot: ok\n");
+        return;
+    }
+    if (streq(line, "plot")) {
+        puts("plot: GaiaPlot (Shrine/zoneC HolyC) drawing on ramfb...\n");
+        zcplot_link();
+        zcplot_entry_fn();
+        puts("plot: ok - magenta rect + yellow diagonals drawn by HolyC\n");
         return;
     }
     if (line[0] == 'h' && line[1] == 'c' && line[2] == ' ') {

@@ -35,6 +35,8 @@ int BlkRW(u64 sector, void *buf, int write);
 #define FB_BPP    4        // XRGB8888
 int  FbInit(void);         // configure ramfb via fw_cfg; 0 = ok
 void FbDrawPattern(void);  // gradient + 3 color bars + white border
+long FbBase(void);         // XRGB8888 surface base (C4 GaiaPlot import)
+long FbWidth(void);        // pixels per row (C4 GaiaPlot import)
 
 // hc.c — SeedC: HolyC-subset JIT compiler (Zone C seed)
 void HcRun(const char *src);

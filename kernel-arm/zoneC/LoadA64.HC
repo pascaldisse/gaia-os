@@ -133,6 +133,17 @@ I64 ZoneCChain(I64 x)
 U0 (*zc_fp)(U8 *st);
 zc_fp=&PutS;
 
+//C4 slice 4: ramfb GaiaPlot module hosted stubs. GaiaPlot imports FbBase()
+///FbWidth() (proven slice-3 import-by-name). The stubs are DELIBERATELY named
+//differently from the imports: if a hosted symbol matched the import name,
+//Shrine would bind the call to its absolute address (movz/movk+blr) and the
+//module would NOT be relocatable. Undefined import names stay named literal
+//islands (ldr x16), which we patch here (hosted proof) and the kernel patches
+//by name at load. See the abs-vs-island finding in the commit.
+U32 *zc_hosted_fb=NULL;
+U32 *ZcFbBaseStub() {return zc_hosted_fb;}
+I64  ZcFbWidthStub() {return 640;}
+
 U0 ZoneCJitSmoke()
 {
   CCmpCtrl *jcc;
@@ -785,6 +796,80 @@ U0 ZoneCJitSmoke()
       "zoneC: AotBoot export FAIL\n";
 
     "zoneC: 3b gate d regression = rounds 1-9 + GaiaModHosted + GaiaSayHosted + 3a above\n";
+
+    //C4 slice 4: GaiaPlot — first HolyC-drawn pixels. Single entry fn (inter-
+    //AOT-fn calls emit absolute IC_CALL w/ unset callee addr = unproven, so
+    //GrPlot0's algorithm d=w*y+x; body[d]=color is inlined into the draw
+    //loops). Imports FbBase()/FbWidth() by name; direct U32 XRGB stores.
+    aot=NULL;
+    aot_err=0;
+    aot_warn=0;
+    try {
+      //zoneC codegen debt: a binary op `memvar <op> live-x0-temp` clobbers the
+      //temp (the memvar load reuses x0). It only bites WITHIN one statement;
+      //across statements the allocator spills correctly. Rounds 1-9 never fed
+      //a sub-expr result into another op vs memory. Workaround: never write
+      //`off = off <op> memvar` inline — split so the memvar is a fresh local
+      //(z=x; off=off+z), forcing off to spill and the add to be var+var.
+      //GrPlot0 inlined (inter-AOT-fn calls emit abs IC_CALL w/ unset callee).
+      aot=CmpBuf("import I64 FbBase(); import I64 FbWidth(); U0 GaiaPlot() {I64 b,w,x,y,off,z,col; b=FbBase(); w=FbWidth(); y=100; while (y<=379) {x=100; while (x<=539) {off=w*y; z=x; off=off+z; off=off*4; z=b; off=off+z; *(off(U32*))=0x00FF00FF; x=x+1;} y=y+1;} x=0; while (x<280) {y=100; z=x; y=y+z; off=w*y; z=y; off=off+z; off=off*4; z=b; off=off+z; *(off(U32*))=0x00FFFF00; col=539; col=col-x; off=w*y; z=col; off=off+z; off=off*4; z=b; off=off+z; *(off(U32*))=0x00FFFF00; x=x+1;}}",NULL,&aot_err,&aot_warn,0);
+      "zoneC: GaiaPlot compile aot=%X err=%d warn=%d\n",aot,aot_err,aot_warn;
+    } catch {
+      "zoneC: GaiaPlot CAUGHT %X\n",Fs->except_ch;
+      Fs->catch_except=TRUE;
+    }
+    if (aot) {
+      "zoneC: GaiaPlot bytes begin sz=%d\n",aot->aot_U8s;
+      b=aot->buf+aot->rip;
+      for (aot_i=0;aot_i<aot->aot_U8s;aot_i++) {
+        "0x%02X,",b[aot_i];
+        if ((aot_i+1)%12==0) "\n";
+      }
+      "\nzoneC: GaiaPlot bytes end\n";
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      aot_imports=0;
+      aot_main_rip=INVALID_PTR;
+      while (aot_ie!=&aot->next_ie && aot_i<128) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str) {
+          "zoneC: GaiaPlot import %s rip=%d\n",aot_ie->str,aot_ie->rip;
+          aot_imports++;
+        }
+        if (aot_ie->type==16 && aot_ie->str && !StrCmp(aot_ie->str,"GaiaPlot")) {
+          aot_main_rip=aot_ie->rip;
+          "zoneC: GaiaPlot entry %s rip=%d\n",aot_ie->str,aot_ie->rip;
+        }
+        aot_ie=aot_ie->next;
+        aot_i++;
+      }
+      //Hosted proof: patch this W^X copy's import islands to the host stubs.
+      aot_ie=aot->next_ie;
+      aot_i=0;
+      while (aot_ie!=&aot->next_ie) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str) {
+          if (!StrCmp(aot_ie->str,"FbBase")) {
+            *((aot->buf+aot->rip+aot_ie->rip)(I64 *))=&ZcFbBaseStub;
+            aot_i++;
+          } else if (!StrCmp(aot_ie->str,"FbWidth")) {
+            *((aot->buf+aot->rip+aot_ie->rip)(I64 *))=&ZcFbWidthStub;
+            aot_i++;
+          }
+        }
+        aot_ie=aot_ie->next;
+      }
+      if (aot_i==aot_imports && aot_main_rip!=INVALID_PTR) {
+        zc_hosted_fb=MAlloc(640*480*4);
+        xbuf=__MAlloc(aot->aot_U8s,Fs->code_heap);
+        WriteProtectMemCpy(xbuf,aot->buf+aot->rip,aot->aot_U8s);
+        Call(xbuf+aot_main_rip);
+        "zoneC: GaiaPlotHosted rect(300,240)=%08X diagTL(150,150)=%08X diagTR(489,150)=%08X corner(0,0)=%08X edge(101,101)=%08X\n",
+          zc_hosted_fb[640*240+300],zc_hosted_fb[640*150+150],
+          zc_hosted_fb[640*150+489],zc_hosted_fb[0],zc_hosted_fb[640*101+101];
+      } else
+        "zoneC: GaiaPlotHosted FAIL imports=%d patched=%d entry=%d\n",
+          aot_imports,aot_i,aot_main_rip;
+    } else
+      "zoneC: GaiaPlot export FAIL\n";
 
     aot=NULL;
     aot_err=0;
