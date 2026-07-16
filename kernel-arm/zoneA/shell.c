@@ -22,8 +22,6 @@ static int streq(const char *a, const char *b) {
     return *a == *b;
 }
 
-static void zc_kputs(const char *s) { puts(s); }
-
 static void cmd_help(void) {
     puts("  help       this\n");
     puts("  love       the invariant\n");
@@ -40,6 +38,7 @@ static void cmd_help(void) {
     puts("  hcl <code> compile+run HolyC one-liner\n");
     puts("  zc         run Shrine/zoneC GaiaMod\n");
     puts("  say        run Shrine/zoneC GaiaSay via kernel puts\n");
+    puts("  aot        run linked Shrine/zoneC AotBoot module\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -123,6 +122,12 @@ static void run_cmd(const char *line) {
     }
     if (streq(line, "say")) {
         ((void(*)(void(*)(const char*)))zcsay_bin)(zc_kputs);
+        return;
+    }
+    if (streq(line, "aot")) {
+        zcaot_link();
+        zcaot_entry_fn();
+        puts("aot: ok\n");
         return;
     }
     if (line[0] == 'h' && line[1] == 'c' && line[2] == ' ') {

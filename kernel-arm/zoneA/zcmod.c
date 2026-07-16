@@ -1,6 +1,7 @@
 // C4 slice 1 — GaiaMod module image.
 // provenance: compiled by Shrine HolyC front end + zoneC BackA64; commit ad9a9e7; 2026-07-16.
 // source: kernel-arm/zoneC/LoadA64.HC:381 — I64 GaiaMod() {I64 s,i; ... return s;}
+#include "kernel.h"
 #include "zcmod.h"
 
 const unsigned char zcmod_bin[] __attribute__((aligned(16))) = {
@@ -36,3 +37,55 @@ const unsigned char zcsay_bin[] __attribute__((aligned(16))) = {
     0x65, 0x43, 0x0A, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 const unsigned long zcsay_len = sizeof zcsay_bin;
+
+// C4 slice 3c — AotBoot module image.
+// provenance: Shrine HolyC front end + zoneC BackA64, commit 35c3a09;
+// source: LoadA64.HC CmpBuf import KPutS / U0 AotBoot().
+const unsigned char zcaot_bin[] __attribute__((aligned(16))) = {
+    0xFE, 0x0F, 0x1F, 0xF8, 0xFD, 0x0F, 0x1F, 0xF8, 0xFD, 0x03, 0x00, 0x91,
+    0xE0, 0x01, 0x00, 0x10, 0xE0, 0x0F, 0x1F, 0xF8, 0xE0, 0x03, 0x40, 0xF9,
+    0xFE, 0x0F, 0x1F, 0xF8, 0x50, 0x00, 0x00, 0x58, 0x03, 0x00, 0x00, 0x14,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x3F, 0xD6,
+    0xFE, 0x07, 0x41, 0xF8, 0xFF, 0x43, 0x00, 0x91, 0xBF, 0x03, 0x00, 0x91,
+    0xFD, 0x07, 0x41, 0xF8, 0xFE, 0x07, 0x41, 0xF8, 0xC0, 0x03, 0x5F, 0xD6,
+    0x41, 0x4F, 0x54, 0x2D, 0x6C, 0x69, 0x6E, 0x6B, 0x65, 0x64, 0x20, 0x6D,
+    0x6F, 0x64, 0x75, 0x6C, 0x65, 0x3A, 0x20, 0x6C, 0x6F, 0x76, 0x65, 0x3D,
+    0x31, 0x2C, 0x20, 0x74, 0x68, 0x65, 0x20, 0x54, 0x65, 0x6D, 0x70, 0x6C,
+    0x65, 0x20, 0x67, 0x72, 0x6F, 0x77, 0x73, 0x0A, 0x00, 0x00, 0x00, 0x00,
+};
+const unsigned long zcaot_len = sizeof zcaot_bin;
+const struct { unsigned long rip; const char *name; } zcaot_imports[] = {
+    { 36, "KPutS" },
+};
+const unsigned long zcaot_imports_len = sizeof zcaot_imports / sizeof zcaot_imports[0];
+const unsigned long zcaot_entry = 0;
+
+void zc_kputs(const char *s) { puts(s); }
+
+static int zc_name_eq(const char *a, const char *b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+
+long zc_resolve(const char *name) {
+    static const struct { const char *name; long addr; } map[] = {
+        { "KPutS", (long)zc_kputs },
+        { 0, 0 },
+    };
+    for (int i = 0; map[i].name; i++)
+        if (zc_name_eq(name, map[i].name)) return map[i].addr;
+    return 0;
+}
+
+void (*zcaot_entry_fn)(void);
+
+void zcaot_link(void) {
+    if (zcaot_entry_fn) return;
+    unsigned char *buf = MAlloc(zcaot_len);
+    if (!buf) return;
+    for (unsigned long i = 0; i < zcaot_len; i++) buf[i] = zcaot_bin[i];
+    for (unsigned long i = 0; i < zcaot_imports_len; i++)
+        *(long *)(buf + zcaot_imports[i].rip) = zc_resolve(zcaot_imports[i].name);
+    iflush(buf, zcaot_len);
+    zcaot_entry_fn = (void (*)(void))(buf + zcaot_entry);
+}

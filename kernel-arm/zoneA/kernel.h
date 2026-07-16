@@ -31,6 +31,7 @@ int BlkRW(u64 sector, void *buf, int write);
 
 // hc.c — SeedC: HolyC-subset JIT compiler (Zone C seed)
 void HcRun(const char *src);
+void iflush(void *base, int bytes);
 
 // net.c — virtio-net + ARP/IPv4/ICMP/UDP/DNS, polled
 int NetInit(void);

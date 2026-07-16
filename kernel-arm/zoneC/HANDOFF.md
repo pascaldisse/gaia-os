@@ -86,11 +86,12 @@ Fn-ptr arg calls green: frame/global pointer slots load once in `IC_DEREF`; resu
 - slice 3a — done: hosted `CmpBuf` AOT defs + export queue/bytes gates.
 - slice 3b — done: `IC_CALL_IMPORT` → `ldr x16` literal-island + `blr x16`; one size-stable pass-10 `IET_IMM_I64` record/call site; island byte 36 (`rip=0x24`).
 - slice 3c-hosted — done: AOT import patched by donor `IET_IMM_I64` semantics → W^X copy → module call → `AOT: the Temple grows`.
-- slice 3c-kernel — next: export module + import table to zcmod; kernel resolver; boot gate.
+- slice 3c-kernel — done: AotBoot raw export + named `KPutS` import (`rip=36`) → Zone A RWX copy/resolve/iflush → `aot` boot gate.
+- slice 3 — COMPLETE: hosted + kernel.
 
 ## Next steps (in order)
 
-1. **slice 3c-kernel.** Export module + import table to zcmod; kernel resolver + boot gate; `IC_CALL_EXTERN` remains intentional A64 alarm.
+1. **M4 track.** Real Zone A kernel module `.HC` via `CmpBuf` → compiler-in-OS; `IC_CALL_EXTERN` remains intentional A64 alarm.
 
 ## Known small debts
 

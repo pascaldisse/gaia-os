@@ -654,7 +654,7 @@ static void toplevel(void) {
 }
 
 // ---------------------------------------------------------------- run ----
-static void iflush(void *base, int bytes) {
+void iflush(void *base, int bytes) {
     u64 a = (u64)base & ~63ULL, end = (u64)base + (u64)bytes;
     for (u64 p = a; p < end; p += 64) asm volatile("dc cvau, %0" :: "r"(p));
     asm volatile("dsb ish");
