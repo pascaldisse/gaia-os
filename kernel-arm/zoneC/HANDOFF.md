@@ -110,6 +110,13 @@ Fn-ptr arg calls green: frame/global pointer slots load once in `IC_DEREF`; resu
 - **ADR range:** ±1 MiB; strings beyond this need ADRP+ADD. Current lowering
   throws `BackA64` on the final pass rather than silently emitting a bad ref.
 
+## Tooling note
+
+- `tools/TempleDbg.HC` (whip-162): file-driven debug channel + BMP screen dump
+  for aiwnios GUI; GUI mode ignores `-t <root> TempleDbg.HC` argv (cmd-line-
+  mode-only per c/main.c), so it must be loaded via the boot dir's
+  `~/HomeKeyPlugIns.HC` instead — see header comment in the file.
+
 ## Working discipline (what made this tractable)
 
 - Prove every claim with the real smoke above — never assert "it works".
