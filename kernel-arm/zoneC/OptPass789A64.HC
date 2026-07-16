@@ -63,7 +63,7 @@ cc->pass==10 is final pass, code is placed into buf.
   CAOTCtrl *aotc=cc->aotc;
   CAOTAbsAddr *tmpa;
 
-  a64_str_buf=buf; a64_arg_cnt=0; a64_arg_sp=0; a64_frame_argbase=0; //A64GenBr pass-entry state
+  a64_str_buf=buf; a64_final_pass=FALSE; a64_arg_cnt=0; a64_arg_sp=0; a64_frame_argbase=0; //A64GenBr pass-entry state
   if (_dbg) {
     *_dbg=dbg_info=CAlloc(offset(CDbgInfo.body)+sizeof(U32)*(num_lines+1));
     dbg_info->min_line=cc->min_line;
@@ -181,8 +181,14 @@ cc->pass==10 is final pass, code is placed into buf.
       }
       lb=lb->next;
     }
-    if (last_rip<=rip)
-      break;
+    if (last_rip<=rip) {
+      //Unlike donor pass-10, this driver reuses buf through convergence.
+      //Emit import relocations only in one final, size-stable walk.
+      if (!a64_final_pass)
+        a64_final_pass=TRUE;
+      else
+        break;
+    }
     last_rip=rip;
   }
 

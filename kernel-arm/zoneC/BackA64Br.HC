@@ -27,6 +27,8 @@
 
 //Set by OptPass789A64 at each pass entry for IC_GET_LABEL absolute addresses.
 I64 a64_str_buf = 0;
+//OptPass789A64 sets this only for its extra, size-stable emit walk.
+Bool a64_final_pass = FALSE;
 
 //aiwnios host ABI passes args in x0-x7 (arm_backend.c __ICFCallTOS) while
 //Terry streams push args on the stack. IC_PUSH counts arg slots, IC_CALL
@@ -423,7 +425,7 @@ Bool A64GenBr(CCmpCtrl *cc, CIntermediateCode *tmpi) {
         A64W(tmpi, 0x14000003);
         A64W(tmpi, 0);
         A64W(tmpi, 0);
-        if (a64_str_buf) { //final pass only: donor OptPass789A.HC contract
+        if (a64_str_buf && a64_final_pass) { //pass-10 + extra stable emit walk
           tmpf=tmpi->ic_data;
           tmpie=CAlloc(sizeof(CAOTImportExport));
           tmpie->type=IET_IMM_I64;

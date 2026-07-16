@@ -659,7 +659,13 @@ U0 ZoneCJitSmoke()
       aot_i=0;
       aot_imports=0;
       aot_import_rip=INVALID_PTR;
+      aot_main_rip=INVALID_PTR;
       while (aot_ie!=&aot->next_ie && aot_i<128) {
+        //Hosted CmpBuf exposes IET_MAIN as runtime type 16 (not the Shrine
+        //macro value); AotHello is the root entry at offset zero.
+        if (aot_ie->type==16 && aot_ie->str &&
+            !StrCmp(aot_ie->str,"AotHello"))
+          aot_main_rip=aot_ie->rip;
         if (aot_ie->type==IET_IMM_I64 && aot_ie->str) {
           //This source has one named immediate import: KPutS. Other NULL
           //IET_IMM_I64 entries are AOT-internal relocation records.
@@ -696,6 +702,27 @@ U0 ZoneCJitSmoke()
           aot_import_rip==aot_island*4+8;
       else
         "zoneC: 3b gate c island MISSING rip=%X\n",aot_import_rip;
+
+      //C4 slice 3c-hosted: IET_IMM_I64 is a raw-I64 site; patch data before
+      //the W^X copy, then enter the root IET_MAIN (AotHello at offset zero).
+      aot_i=0;
+      aot_ie=aot->next_ie;
+      while (aot_ie!=&aot->next_ie) {
+        if (aot_ie->type==IET_IMM_I64 && aot_ie->str &&
+            !StrCmp(aot_ie->str,"KPutS")) {
+          *((aot->buf+aot->rip+aot_ie->rip)(I64 *))=&PutS;
+          aot_i++;
+        }
+        aot_ie=aot_ie->next;
+      }
+      if (aot_i==1 && aot_main_rip==0) {
+        xbuf=__MAlloc(aot->aot_U8s,Fs->code_heap);
+        WriteProtectMemCpy(xbuf,aot->buf+aot->rip,aot->aot_U8s);
+        Call(xbuf);
+        "zoneC: 3c hosted AOT call ok\n";
+      } else
+        "zoneC: 3c hosted AOT call FAIL imports=%d main=%X\n",
+          aot_i,aot_main_rip;
     } else
       "zoneC: 3b gate b/c skipped: NULL AOT\n";
     "zoneC: 3b gate d regression = rounds 1-9 + GaiaModHosted + GaiaSayHosted + 3a above\n";
