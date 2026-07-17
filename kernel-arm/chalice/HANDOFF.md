@@ -1,3 +1,29 @@
+## State refresh (2026-07-18, C3c-2k) -- legible aborts + __wine_dbg_header grounded as a Wine loader-state gap, not a wiring gap
+HEAD `988b1f1`. p1 (grew NT_SERVICE_COUNT 128->512, ntids.h; implemented
+NtRaiseException id=207 + NtRaiseHardError id=208, ntsvc.c, clean-terminate
+via the existing nt_setjmp/nt_longjmp channel): pe7's prior 28k-hit
+bad_service retry loop -> kernel Data Abort is GONE -- one clean line
+(`CHALICE: NtRaiseException code=0x80000100 addr=0x46049E20
+(ntdll.dll+0x48E20)`, `pe7 ret=3221225728`), shell survives. p2: disasm-
+grounded that __wine_dbg_header (RVA 0x6D700) is SELF-CONTAINED PE code
+(no unix-call dispatch at all -- the plan's assumption it mirrors
+__wine_dbg_output was wrong); the real mechanism is Wine's own unresolved-
+import stub generator (loader.c stub_entry_point/allocate_stub), triggered
+by KERNEL32.dll's own "ntdll.dll"/__wine_dbg_header import (Hint=1465)
+failing find_named_export IN THE GUEST. Proved (Python PE parse + 4x live
+kernel-side pe_find_named_export recheck spanning the whole boot, incl. the
+last syscall before the abort) the export directory is 100% intact on our
+side throughout -- NOT a mapping/memory bug. Also: kernelbase.dll's
+NtCreateSection/NtMapViewOfSection DOES fire (via the NtAreMappedFilesTheSame
+dedup-check trace) -- corrects C3c-2j's "never fired" note, a dispatch-log
+64-cap blind spot. NEXT GAP: inspect guest PEB.LdrData's
+InLoadOrderModuleList (needs LDR_DATA_TABLE_ENTRY BaseDllName/DllBase
+offset receipts, not yet pinned here) to see what ntdll self-entry
+load_dll/find_basename_module actually resolves to for KERNEL32's import
+fixup -- a Wine guest-side loader-state bug, not ours to "wire".
+No-regression green (chalice_gate.py 16/16, ramfb_gate.py -m 1G). No qemu
+leaks.
+
 ## State refresh (2026-07-18, C3c-2j) -- hello6.exe real KERNEL32.dll import gate (pe7, diagnostic frontier)
 HEAD `b065672` (+this note). Built hello6.exe: genuine ARM64 PE console exe
 whose Import Directory names KERNEL32.dll + GetStdHandle/WriteFile/
