@@ -29,3 +29,13 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
 // base (values below stay the pre-existing pseudo-handle no-op path, e.g.
 // NT_STDOUT_HANDLE).
 int nt_file_handle_close(void *handle);
+
+// CHALICE C3b Atom 3B: exposed (were static-internal in Atom 3A) so
+// ntboot.c's nt_boot_process can reuse the exact same DLL-territory
+// allocator + image registry the loader-path services already use, per
+// SLICE3-SPEC's "map ntdll blob + exe blob via the 3A machinery (registry
+// entries)" instruction -- no parallel/duplicate mechanism.
+void nt_blob_ensure_init(void);
+unsigned char *nt_territory_alloc(unsigned long size_of_image);
+void nt_image_register(const char *name, unsigned long base, unsigned long size,
+                        unsigned long entry, int is_dll);

@@ -27,6 +27,13 @@ CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
     xxd -i -n peminidll_bin ../chalice/mini.dll | sed \
         -e 's/^unsigned char/const unsigned char/' \
         -e 's/^unsigned int peminidll_bin_len/const unsigned long peminidll_len/'
+    # CHALICE C3b Atom 3B — hello5.exe + fake-ntdll.dll (boot-protocol gate).
+    xxd -i -n pehello5_bin ../chalice/hello5.exe | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int pehello5_bin_len/const unsigned long pehello5_len/'
+    xxd -i -n pefakentdll_bin ../chalice/fake-ntdll.dll | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int pefakentdll_bin_len/const unsigned long pefakentdll_len/'
     # Manifest-driven blob store (SLICE3-SPEC Atom 3A): run-time-initialized
     # (not a static initializer array) since the *_len consts above are
     # ordinary `const` objects, not integer-constant-expressions -- C
@@ -43,6 +50,8 @@ void nt_blob_manifest_init(void) {
     nt_blob_manifest[i].name = "hello3.exe"; nt_blob_manifest[i].bytes = pehello3_bin; nt_blob_manifest[i].len = pehello3_len; i++;
     nt_blob_manifest[i].name = "hello4.exe"; nt_blob_manifest[i].bytes = pehello4_bin; nt_blob_manifest[i].len = pehello4_len; i++;
     nt_blob_manifest[i].name = "mini.dll";   nt_blob_manifest[i].bytes = peminidll_bin; nt_blob_manifest[i].len = peminidll_len; i++;
+    nt_blob_manifest[i].name = "hello5.exe"; nt_blob_manifest[i].bytes = pehello5_bin; nt_blob_manifest[i].len = pehello5_len; i++;
+    nt_blob_manifest[i].name = "fake-ntdll.dll"; nt_blob_manifest[i].bytes = pefakentdll_bin; nt_blob_manifest[i].len = pefakentdll_len; i++;
     nt_blob_manifest_count = i;
 }
 EOF
@@ -58,6 +67,7 @@ clang $CFLAGS -c zcmod.c -o zcmod.o
 clang $CFLAGS -c ntdisp.S -o ntdisp.o
 clang $CFLAGS -c ntsvc.c -o ntsvc.o
 clang $CFLAGS -c ntfile.c -o ntfile.o
+clang $CFLAGS -c ntboot.c -o ntboot.o
 clang $CFLAGS -c pemod.c -o pemod.o
 clang $CFLAGS -c pehello_bin.c -o pehello_bin.o
 clang $CFLAGS -c virtio.c -o virtio.o
@@ -66,7 +76,7 @@ clang $CFLAGS -c fs.c -o fs.o
 clang $CFLAGS -c hc.c -o hc.o
 clang $CFLAGS -c net.c -o net.o
 clang $CFLAGS -c tcp.c -o tcp.o
-aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o ntfile.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
+aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o ntfile.o ntboot.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 
@@ -89,6 +99,9 @@ QEMU_SERIAL="${GAIA_SERIAL:-mon:stdio}"
 # ceiling (SLICE2-SPEC Atom B receipt). mem.c's own heap arena tops out at
 # 0x45000000 (HEAP_BASE 0x41000000 + HEAP_SIZE 64MB) -- verified nowhere
 # near 0x7ffe0000 (~0.8GB of headroom), no guard needed there.
+# GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
+# harness that attaches QEMU to stdio; gate scripts run build.sh themselves).
+[ -n "${GAIA_NO_RUN:-}" ] && { echo "build ok (GAIA_NO_RUN set, skipping QEMU)"; exit 0; }
 exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m 1G \
     -global virtio-mmio.force-legacy=false \
     -drive if=none,file=disk.img,format=raw,id=hd \

@@ -43,7 +43,7 @@ try:
     full += drain(ser, 5.0)
     if b"T:/>" not in full: fail("shell prompt never appeared")
 
-    for cmd in (b"zc\n", b"say\n", b"aot\n", b"pe\n", b"pe4\n"):
+    for cmd in (b"zc\n", b"say\n", b"aot\n", b"pe\n", b"pe4\n", b"pe5\n"):
         ser.send(cmd)
         full += drain(ser, 15.0)
 finally:
@@ -67,6 +67,9 @@ need = [
     "pe3 ret=99",
     "CHALICE: the cup links",
     "pe4 ret=60",
+    "CHALICE: thunk enters",
+    "CHALICE: the chain speaks",
+    "pe5 ret=99",
 ]
 ok = True
 for n in need:

@@ -22,6 +22,11 @@ void nt_service_tables_init(void);   // idempotent, called by nt_build_teb
 // ntdisp.S
 long nt_dispatch(void);                             // blr target from PE stubs
 long pe_enter(long (*entry)(void), void *teb);       // A4 TEB-install shim
+// CHALICE C3b Atom 3B: pe_enter1 -- same TEB-install shim as pe_enter, but
+// also loads a caller-supplied arg into x0 before the blr (Architecture
+// verdict 2's "enter PE at LdrInitializeThunk with x0=&pushed_ctx" needs an
+// explicit argument; pe_enter's entry signature takes none).
+long pe_enter1(long (*entry)(void *arg), void *teb, void *arg);
 long nt_setjmp(unsigned long *buf);
 void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
 // Atom B slice-2 boss: full ARM64 CONTEXT restore, never returns to its

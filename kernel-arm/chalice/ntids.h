@@ -130,5 +130,28 @@
 // -m 1G (build.sh, Atom B) / 4096 -- "sane" per SLICE2-SPEC, not dynamically
 // probed (no physical page allocator here; RAM size is a build-time given).
 #define NT_KUSER_NUM_PHYS_PAGES        262144
+// CHALICE C3b Atom 3B: InterruptTime (KSYSTEM_TIME, well-known offset 0x08
+// per reactos/sdk/include/ndk/ketypes.h) -- backs the unixlib
+// system_time_precise call (ntboot.c writes it fresh on each call, kernel
+// "IS the unix side" per HANDOFF, no periodic-update task needed).
+#define NT_KUSER_INTERRUPTTIME_OFF     0x08
+
+// ---- CHALICE C3b Atom 3B: unixlib passthrough. __wine_unix_call_dispatcher
+// (fake-ntdll.c, PE side) forwards (handle, code, args) to whatever kernel
+// wrote into *__wine_syscall_dispatcher (nt_unix_call_shim, ntboot.c),
+// which does table[code](args) using handle as the table base pointer
+// (== what kernel wrote into *__wine_unixlib_handle). `code` values below
+// mirror SLICE3-SPEC's unix_call_funcs ordering exactly (8 entries);
+// console subset (dbg_write, system_time_precise) real, rest
+// STATUS_NOT_IMPLEMENTED stubs (ntboot.c).
+#define NT_UNIXCALL_LOAD_SO_DLL           0
+#define NT_UNIXCALL_UNWIND_BUILTIN_DLL    1
+#define NT_UNIXCALL_DBG_WRITE             2
+#define NT_UNIXCALL_SERVER_CALL           3
+#define NT_UNIXCALL_SERVER_FD_TO_HANDLE   4
+#define NT_UNIXCALL_SERVER_HANDLE_TO_FD   5
+#define NT_UNIXCALL_SPAWNVP               6
+#define NT_UNIXCALL_SYSTEM_TIME_PRECISE   7
+#define NT_UNIXCALL_COUNT                 8
 
 #endif

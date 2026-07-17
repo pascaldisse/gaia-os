@@ -158,6 +158,26 @@ pe_enter:
     ldp  x29, x30, [sp], #16
     ret
 
+// ---- pe_enter1: CHALICE C3b Atom 3B -- same shim as pe_enter (TEB
+// install) but also passes an explicit arg in x0 to entry, needed for the
+// Phase-0 boot leap ("enter PE at LdrInitializeThunk with x0=&pushed_ctx",
+// SLICE3-SPEC Architecture verdict 2). long pe_enter1(long (*entry)(void*),
+// void *teb, void *arg) -- x0=entry fn ptr, x1=teb, x2=arg.
+.global pe_enter1
+pe_enter1:
+    stp  x29, x30, [sp, #-16]!
+    mov  x29, sp
+    mov  x9, x18                    // save kernel-side x18
+    mov  x10, x0                    // x10 = entry fn ptr (x0 about to be
+                                     // overwritten with the arg -- must
+                                     // stash the entry address first)
+    mov  x18, x1                    // x18 = TEB (Windows ARM64 ABI convention)
+    mov  x0, x2                     // x0 = arg (entry's own first param)
+    blr  x10
+    mov  x18, x9                    // restore kernel x18 (normal-return path)
+    ldp  x29, x30, [sp], #16
+    ret
+
 // ---- nt_setjmp/nt_longjmp: minimal internal-use longjmp for
 // NtTerminateProcess's "unwind to PeRun w/ exit code" (A3). Saves x18 too
 // (not just x19-x30/sp) so a longjmp from inside a PE call (x18=TEB) lands

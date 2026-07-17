@@ -1,0 +1,295 @@
+// CHALICE C3b Atom 3B — boot protocol (fake-ntdll dress rehearsal).
+// nt_boot_process: Phase-0 emulation per SLICE3-SPEC. Maps ntdll+exe blobs
+// via the 3A machinery (PeMapImage/nt_territory_alloc/nt_image_register,
+// ntfile.c), wires the unixlib passthrough into the mapped ntdll's data
+// exports, builds a 64K thread stack + extended TEB/PEB (graduates
+// ntsvc.c's nt_build_teb, patches in the extra fields Atom 3B needs),
+// pushes a synthetic CONTEXT (Architecture verdict 2 exact shape) and
+// enters ntdll's LdrInitializeThunk via pe_enter1 (ntdisp.S). The booted
+// chain's own NtTerminateProcess unwinds back here through the same
+// nt_setjmp/nt_longjmp channel PeRun's use_nt=1 path already uses (proven
+// slice-2/3A) -- no new unwind mechanism needed.
+// LLP64 note: this file is aarch64-none-elf (LP64, kernel side) -- every
+// `unsigned long` here is 8 bytes. PE-side payloads (chalice/fake-ntdll.c,
+// chalice/hello5.c) are aarch64-windows-gnu (LLP64) and must use explicit
+// `unsigned long long` for any pointer-target integer, per the established
+// SCARS law.
+#include "kernel.h"
+#include "pemod.h"
+#include "ntsvc.h"
+#include "ntfile.h"
+#include "ntboot.h"
+#include "../chalice/ntids.h"
+
+typedef unsigned char  u8;
+typedef unsigned long  u64b;   // aarch64-none-elf LP64: `unsigned long` = 8B
+typedef unsigned int   u32b;
+typedef unsigned short u16b;
+
+static void wr16(u8 *p, u16b v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
+static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
+static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
+static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
+
+static int streq_ci(const char *a, const char *b) {
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
+        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
+        if (ca != cb) return 0;
+        a++; b++;
+    }
+    return *a == 0 && *b == 0;
+}
+
+static u64b strlen_local(const char *s) { u64b n = 0; while (s[n]) n++; return n; }
+
+static void putdec_signed(long v) {
+    if (v < 0) { putc('-'); v = -v; }
+    u64b u = (u64b)v;
+    char b[21]; int i = 20; b[i] = 0;
+    do { b[--i] = '0' + (char)(u % 10); u /= 10; } while (u);
+    puts(&b[i]);
+}
+
+static long boot_err(const char *msg) {
+    puts("CHALICE: boot: "); puts(msg); puts("\n");
+    return -1;
+}
+
+static int boot_blob_lookup(const char *name, const unsigned char **out_bytes, u64b *out_len) {
+    for (u64b i = 0; i < nt_blob_manifest_count; i++) {
+        if (!streq_ci(name, nt_blob_manifest[i].name)) continue;
+        *out_bytes = nt_blob_manifest[i].bytes;
+        *out_len   = nt_blob_manifest[i].len;
+        return 1;
+    }
+    return 0;
+}
+
+// =====================================================================
+// unixlib passthrough (SLICE3-SPEC Atom 3B / Architecture verdict 3).
+// nt_unix_call_shim IS what kernel writes into ntdll's *__wine_syscall_
+// dispatcher; nt_unix_call_funcs (this array's address) IS what kernel
+// writes into ntdll's *__wine_unixlib_handle. fake-ntdll.c's exported
+// __wine_unix_call_dispatcher(handle, code, args) forwards straight to
+// nt_unix_call_shim(handle, code, args) via that first write, closing the
+// loop -- no TEB-slot indirection needed here (unlike the regular Nt*
+// dispatch), this is a direct cross-toolchain C function-pointer call
+// (same trick slice-1's IAT resolution already proved works: basic
+// integer/pointer AAPCS is compatible between aarch64-windows-gnu callers
+// and aarch64-none-elf kernel callees for the first 8 register args).
+// =====================================================================
+typedef long (*NtUnixCallFn)(void *args);
+
+static long nt_unix_stub(void *args) { (void)args; return STATUS_NOT_IMPLEMENTED; }
+
+// Mirrors Wine's real dbg_write_params shape: {const char *str; size_t len;}.
+// PE side (fake-ntdll.c) declares the matching struct with an explicit
+// `unsigned long long len` (LLP64 SCARS law) -- both sides 8B, natural
+// layout matches without needing raw-offset paranoia (precedent:
+// hello3.c/ntsvc.c's shared IO_STATUS_BLOCK struct-not-offsets approach).
+struct nt_unix_dbg_write_args { const char *str; u64b len; };
+
+static long nt_unix_dbg_write(void *args) {
+    struct nt_unix_dbg_write_args *a = (struct nt_unix_dbg_write_args *)args;
+    if (!a || !a->str) return STATUS_INVALID_PARAMETER;
+    for (u64b i = 0; i < a->len; i++) putc(a->str[i]);
+    return STATUS_SUCCESS;
+}
+
+// KUSER_SHARED_DATA.InterruptTime: kernel "IS the unix side" (HANDOFF) --
+// write it fresh right here rather than a periodic-update task (nothing
+// else in this dress rehearsal needs a live clock). Derived from the
+// existing `ticks` heartbeat (task.c), scaled toward 100ns units (NT
+// FILETIME/interrupt-time convention) -- not calibrated against real wall
+// time (no RTC read here), just monotonic and nonzero, matching "KUSER-
+// derived" without claiming clock-accurate semantics.
+static long nt_unix_system_time_precise(void *args) {
+    if (!args) return STATUS_INVALID_PARAMETER;
+    u64b v = (u64b)ticks * 2500000ULL;   // ~ticks (250ms/tick, task.c) -> 100ns units
+    u8 *k = (u8 *)(u64b)NT_KUSER_SHARED_DATA_ADDR;
+    wr32(k + NT_KUSER_INTERRUPTTIME_OFF, (u32b)v);
+    wr32(k + NT_KUSER_INTERRUPTTIME_OFF + 4, (u32b)(v >> 32));
+    *(u64b *)args = rd64(k + NT_KUSER_INTERRUPTTIME_OFF);
+    return STATUS_SUCCESS;
+}
+
+static NtUnixCallFn nt_unix_call_funcs[NT_UNIXCALL_COUNT];
+static int nt_unix_call_funcs_inited;
+
+static void nt_unix_call_funcs_ensure_init(void) {
+    if (nt_unix_call_funcs_inited) return;
+    nt_unix_call_funcs_inited = 1;
+    for (int i = 0; i < NT_UNIXCALL_COUNT; i++) nt_unix_call_funcs[i] = nt_unix_stub;
+    nt_unix_call_funcs[NT_UNIXCALL_DBG_WRITE]           = nt_unix_dbg_write;
+    nt_unix_call_funcs[NT_UNIXCALL_SYSTEM_TIME_PRECISE] = nt_unix_system_time_precise;
+}
+
+// Wine signature (handle, code, args) -> table[code](args). `handle` here
+// IS the table base pointer (single unixlib in this kernel, so "handle" ==
+// &nt_unix_call_funcs, written verbatim into *__wine_unixlib_handle at
+// wire time below) -- matches SLICE3-SPEC bullet 3 literally.
+static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
+    NtUnixCallFn *table = (NtUnixCallFn *)handle;
+    if (!table || code >= NT_UNIXCALL_COUNT) return STATUS_NOT_IMPLEMENTED;
+    NtUnixCallFn fn = table[code];
+    if (!fn) return STATUS_NOT_IMPLEMENTED;
+    return fn(args);
+}
+
+// =====================================================================
+// TEB.NtTib / RTL_USER_PROCESS_PARAMETERS extra offsets (Atom 3B growth
+// over ntsvc.c's nt_build_teb). NT_TIB64 (winternl.h): ExceptionList@0,
+// StackBase@8, StackLimit@0x10, ..., Self@0x30 (ntsvc.c's existing
+// TEB_NTTIB_SELF_OFF receipt cross-checks this layout). RTL_USER_PROCESS_
+// PARAMETERS (rtltypes.h, well-known public offsets, StandardOutput@0x28
+// already receipted in ntsvc.c): StandardInput@0x20, StandardError@0x30,
+// CurrentDirectory(CURDIR: UNICODE_STRING+Handle)@0x38..0x50, DllPath
+// UNICODE_STRING@0x50, ImagePathName UNICODE_STRING@0x60, CommandLine
+// UNICODE_STRING@0x70, Environment ptr@0x80 -- fits PARAMS_SIZE 0x90
+// (ntsvc.c, bumped this atom). UNICODE_STRING: Length(u16)@0,
+// MaximumLength(u16)@2, Buffer(ptr,8-aligned)@8 (matches ntfile.c's
+// US_LENGTH_OFF/US_BUFFER_OFF receipt).
+// =====================================================================
+#define TEB_NTTIB_STACKBASE_OFF    0x08
+#define TEB_NTTIB_STACKLIMIT_OFF   0x10
+#define TEB_PEB_OFF                0x60   // ntsvc.c receipt, duplicated (file-local const convention)
+#define PEB_PROCESSPARAMETERS_OFF  0x20   // ntsvc.c receipt, duplicated
+#define PARAMS_STANDARDINPUT_OFF   0x20
+#define PARAMS_STANDARDERROR_OFF   0x30
+#define PARAMS_IMAGEPATHNAME_OFF   0x60
+#define PARAMS_COMMANDLINE_OFF     0x70
+#define US_LENGTH_OFF              0x00
+#define US_MAXLENGTH_OFF           0x02
+#define US_BUFFER_OFF              0x08
+
+// ---- ARM64 CONTEXT offsets (ke.h _CONTEXT, LP64/_STRUCT64 -- full receipt
+// lives in ntdisp.S's NtContinue comment; duplicated here, file-local
+// const convention, same as every other struct-offset table in this
+// codebase). X[i] @ 0x08 + i*8 (X0..X28,Fp=X29,Lr=X30); Sp@0x100; Pc@0x108;
+// total size 0x390.
+#define CTX_SIZE     0x390
+#define CTX_X0_OFF   0x08
+#define CTX_X1_OFF   0x10
+#define CTX_X18_OFF  0x98
+#define CTX_SP_OFF   0x100
+#define CTX_PC_OFF   0x108
+
+static void widen_ascii(const char *s, u16b *out, u64b n) {
+    for (u64b i = 0; i < n; i++) out[i] = (u16b)(unsigned char)s[i];
+}
+
+#define NT_BOOT_STACK_SIZE 0x10000UL
+
+long nt_boot_process(const char *exe_name, const char *ntdll_name) {
+    nt_blob_ensure_init();
+
+    const unsigned char *ntdll_bytes, *exe_bytes;
+    u64b ntdll_len, exe_len;
+    if (!boot_blob_lookup(ntdll_name, &ntdll_bytes, &ntdll_len)) return boot_err("ntdll blob not found");
+    if (!boot_blob_lookup(exe_name, &exe_bytes, &exe_len))       return boot_err("exe blob not found");
+
+    // ---- Phase 0: map ntdll + exe via the 3A machinery (do_imports=0,
+    // Architecture verdict 4: PE-side loader owns its own imports; there
+    // is no Ldr walk here to resolve them against anyway). ----
+    u64b ntdll_base = 0, ntdll_size = 0, ntdll_entry = 0;
+    if (PeMapImage(ntdll_bytes, ntdll_len, "pe5-ntdll", nt_territory_alloc, 0,
+                    &ntdll_base, &ntdll_size, &ntdll_entry) != 0)
+        return boot_err("ntdll map failed");
+    nt_image_register(ntdll_name, ntdll_base, ntdll_size, ntdll_entry, 1);
+
+    u64b exe_base = 0, exe_size = 0, exe_entry = 0;
+    if (PeMapImage(exe_bytes, exe_len, "pe5-exe", nt_territory_alloc, 0,
+                    &exe_base, &exe_size, &exe_entry) != 0)
+        return boot_err("exe map failed");
+    nt_image_register(exe_name, exe_base, exe_size, exe_entry, 0);
+
+    // ---- required ntdll exports (Architecture verdict 3 required-name
+    // set; kernel only needs to LOOK UP the four it directly consumes --
+    // the rest (KiUser*, DbgUiRemoteBreakin, __wine_ctrl_routine,
+    // __wine_unix_call_dispatcher, LdrSystemDllInitBlock) just need to
+    // EXIST in the mapped image so PE-side code that references them
+    // resolves; nothing kernel-side calls them by address). Missing any
+    // of the four -> clear serial error line, abort boot cleanly. ----
+    u64b thunk_addr = 0, rtl_addr = 0, sdisp_addr = 0, uhandle_addr = 0;
+    if (pe_find_named_export(ntdll_base, ntdll_size, "LdrInitializeThunk", &thunk_addr) != 0)
+        return boot_err("ntdll missing export LdrInitializeThunk");
+    if (pe_find_named_export(ntdll_base, ntdll_size, "RtlUserThreadStart", &rtl_addr) != 0)
+        return boot_err("ntdll missing export RtlUserThreadStart");
+    if (pe_find_named_export(ntdll_base, ntdll_size, "__wine_syscall_dispatcher", &sdisp_addr) != 0)
+        return boot_err("ntdll missing export __wine_syscall_dispatcher");
+    if (pe_find_named_export(ntdll_base, ntdll_size, "__wine_unixlib_handle", &uhandle_addr) != 0)
+        return boot_err("ntdll missing export __wine_unixlib_handle");
+
+    // ---- unixlib wiring: pointer WRITES into the mapped ntdll's data
+    // exports (Architecture verdict 3), no syscall. ----
+    nt_unix_call_funcs_ensure_init();
+    wr64((u8 *)(u64b)sdisp_addr, (u64b)nt_unix_call_shim);
+    wr64((u8 *)(u64b)uhandle_addr, (u64b)nt_unix_call_funcs);
+
+    // ---- 64K thread stack, DLL territory (same bump allocator as the DLL
+    // images themselves -- SLICE3-SPEC: "alloc 64K thread stack in DLL
+    // territory"). ----
+    u64b stack_base = (u64b)nt_territory_alloc(NT_BOOT_STACK_SIZE);
+    if (!stack_base) return boot_err("thread stack alloc failed");
+    u64b stack_top = stack_base + NT_BOOT_STACK_SIZE;
+
+    // ---- TEB/PEB floor: graduate ntsvc.c's nt_build_teb (today's
+    // behavior: 4 trapdoors + PEB.ImageBaseAddress=image_base +
+    // ProcessParameters.StandardOutput), then patch in Atom 3B's extras. ----
+    u8 *teb = (u8 *)nt_build_teb((void *)exe_base, (void *)exe_entry, (unsigned long)exe_size);
+    if (!teb) return boot_err("nt_build_teb failed");
+
+    wr64(teb + TEB_NTTIB_STACKBASE_OFF, stack_top);     // StackBase = highest addr
+    wr64(teb + TEB_NTTIB_STACKLIMIT_OFF, stack_base);   // StackLimit = lowest addr
+
+    u8 *peb    = (u8 *)(u64b)rd64(teb + TEB_PEB_OFF);
+    u8 *params = (u8 *)(u64b)rd64(peb + PEB_PROCESSPARAMETERS_OFF);
+    wr64(params + PARAMS_STANDARDINPUT_OFF, NT_STDOUT_HANDLE);
+    wr64(params + PARAMS_STANDARDERROR_OFF, NT_STDOUT_HANDLE);
+
+    u64b namelen = strlen_local(exe_name);
+    u16b *wname = (u16b *)MAlloc((namelen + 1) * 2);
+    if (!wname) return boot_err("command line alloc failed");
+    widen_ascii(exe_name, wname, namelen);
+    wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_LENGTH_OFF, (u16b)(namelen * 2));
+    wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_MAXLENGTH_OFF, (u16b)(namelen * 2));
+    wr64(params + PARAMS_IMAGEPATHNAME_OFF + US_BUFFER_OFF, (u64b)wname);
+    wr16(params + PARAMS_COMMANDLINE_OFF + US_LENGTH_OFF, (u16b)(namelen * 2));
+    wr16(params + PARAMS_COMMANDLINE_OFF + US_MAXLENGTH_OFF, (u16b)(namelen * 2));
+    wr64(params + PARAMS_COMMANDLINE_OFF + US_BUFFER_OFF, (u64b)wname);
+
+    // ---- synthetic CONTEXT, pushed onto the new stack (16-aligned).
+    // Architecture verdict 2 exact shape: X0=exe_entry, X1=arg(0), X18=teb,
+    // Sp=stack_top, Pc=RtlUserThreadStart. ----
+    u64b ctx_addr = (stack_top - CTX_SIZE) & ~0xFULL;
+    u8 *ctx = (u8 *)ctx_addr;
+    for (u64b i = 0; i < CTX_SIZE; i++) ctx[i] = 0;
+    wr64(ctx + CTX_X0_OFF, exe_entry);
+    wr64(ctx + CTX_X1_OFF, 0);
+    wr64(ctx + CTX_X18_OFF, (u64b)teb);
+    wr64(ctx + CTX_SP_OFF, stack_top);
+    wr64(ctx + CTX_PC_OFF, rtl_addr);
+
+    // ---- enter at LdrInitializeThunk (x0=&pushed_ctx, x18=teb). Runs on
+    // the KERNEL's own C stack (pe_enter1, mirrors PeRun's pe_enter) until
+    // LdrInitializeThunk itself calls NtContinue, which switches to
+    // Context->Sp (the new 64K stack) and leaps to Context->Pc
+    // (RtlUserThreadStart) -- never returns here on the success path.
+    // NtTerminateProcess (called from deep inside the booted chain) longjmps
+    // straight back to the nt_setjmp point below, same channel PeRun's
+    // use_nt=1 path already proves (slice-2/3A). ----
+    static unsigned long ntjmp[14];
+    nt_exit_jmpbuf = ntjmp;
+    long ret;
+    if (nt_setjmp(ntjmp) == 0) {
+        ret = pe_enter1((long (*)(void *))(u64b)thunk_addr, teb, (void *)ctx_addr);
+    } else {
+        ret = nt_exit_code;
+    }
+    nt_exit_jmpbuf = 0;
+
+    puts("pe5"); puts(" ret="); putdec_signed(ret); puts("\n");
+    return ret;
+}

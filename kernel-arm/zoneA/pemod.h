@@ -21,6 +21,14 @@ extern const unsigned long pehello4_len;
 extern const unsigned char peminidll_bin[];
 extern const unsigned long peminidll_len;
 
+// CHALICE C3b Atom 3B: PE test artifacts 5 -- fake-ntdll.dll (dress-
+// rehearsal ntdll: unixlib wiring + LdrInitializeThunk/RtlUserThreadStart/
+// KiUser*/etc. exports) + hello5.exe (plain-entry Phase-0 boot target).
+extern const unsigned char pehello5_bin[];
+extern const unsigned long pehello5_len;
+extern const unsigned char pefakentdll_bin[];
+extern const unsigned long pefakentdll_len;
+
 // CHALICE C3a Atom 3A: manifest-driven blob store (build.sh generated,
 // pehello_bin.c) -- {name, bytes, len} per embedded PE image, looked up by
 // ntfile.c's NtOpenFile (case-insensitive basename match). Replaces the

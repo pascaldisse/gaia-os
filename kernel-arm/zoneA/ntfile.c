@@ -47,7 +47,10 @@ static int nt_streq_ci(const char *a, const char *b) {
 // =====================================================================
 static int nt_blob_inited;
 
-static void nt_blob_ensure_init(void) {
+// CHALICE C3b Atom 3B: no longer static -- ntboot.c calls this directly
+// before its own blob-manifest lookups (nt_boot_process doesn't go through
+// NtOpenFile/handle-table machinery, it wants the blob bytes straight).
+void nt_blob_ensure_init(void) {
     if (nt_blob_inited) return;
     nt_blob_inited = 1;
     nt_blob_manifest_init();
@@ -133,7 +136,9 @@ typedef struct {
 
 static NtImageEntry nt_images[NT_IMG_MAX];
 
-static void nt_image_register(const char *name, u64b base, u64b size, u64b entry, int is_dll) {
+// CHALICE C3b Atom 3B: no longer static -- ntboot.c registers the Phase-0
+// ntdll + exe maps here too, same registry NtQueryVirtualMemory answers from.
+void nt_image_register(const char *name, u64b base, u64b size, u64b entry, int is_dll) {
     for (int i = 0; i < NT_IMG_MAX; i++) {
         if (nt_images[i].used) continue;
         int j = 0;
@@ -169,7 +174,9 @@ static NtImageEntry *nt_image_find_containing(u64b addr) {
 
 static u64b nt_dll_territory_next = NT_DLL_TERRITORY_BASE;
 
-static unsigned char *nt_territory_alloc(unsigned long size_of_image) {
+// CHALICE C3b Atom 3B: no longer static -- ntboot.c's nt_boot_process
+// allocates the Phase-0 thread stack (64K) from the same DLL territory.
+unsigned char *nt_territory_alloc(unsigned long size_of_image) {
     u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
     if (pages == 0) pages = NT_PAGE_SIZE;
     if (nt_dll_territory_next + pages > NT_DLL_TERRITORY_LIMIT) return 0;

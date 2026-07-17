@@ -400,7 +400,15 @@ void nt_service_tables_init(void) {
 // (HANDLE, 8-align, pad 4)@0x20 -> StandardOutput@0x28 -> StandardError@0x30.
 // 0x28 matches SLICE2-SPEC A4's own receipt ("StdOutput @ +0x28").
 #define PARAMS_STANDARDOUTPUT_OFF 0x28
-#define PARAMS_SIZE               0x60
+// CHALICE C3b Atom 3B: bumped 0x60 -> 0x90 -- headroom for ntboot.c's
+// nt_boot_process to also populate StandardInput/StandardError (already
+// laid out below Atom A's StandardOutput receipt) + ImagePathName/
+// CommandLine UNICODE_STRINGs (well-known public RTL_USER_PROCESS_
+// PARAMETERS offsets: CurrentDirectory@0x38, DllPath@0x50,
+// ImagePathName@0x60, CommandLine@0x70, Environment ptr@0x80) -- purely a
+// larger zeroed MAlloc, no change to Atom A/3A's existing byte usage
+// (StandardOutput@0x28 untouched, PeRun/hello3/hello4 unaffected).
+#define PARAMS_SIZE               0x90
 
 // ---- PEB_LDR_DATA (ldrtypes.h ~:119, WIN7+ branch: ShutdownThreadId present) ----
 // Length(4)+Initialized(1,pad3)=8 -> SsHandle(8)@0x08 -> InLoadOrderModuleList

@@ -29,8 +29,18 @@ CFLAGS="-target $TARGET -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=
 "$ZIG" cc $CFLAGS -shared -Wl,-e,MiniEntry -o mini.dll minidll.c
 "$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello4.exe hello4.c ntstub.S
 
+# CHALICE C3b Atom 3B — fake-ntdll.dll (dress-rehearsal ntdll: unixlib
+# wiring + LdrInitializeThunk/RtlUserThreadStart/KiUser*/etc. exports,
+# needs ntstub.S linked in for its own NtContinue call) + hello5.exe
+# (Phase-0 boot target: plain entry, NtWriteFile + NtTerminateProcess via
+# the same TEB-dispatch stubs as hello3/hello4).
+"$ZIG" cc $CFLAGS -shared -Wl,-e,FakeNtdllEntry -o fake-ntdll.dll fake-ntdll.c ntstub.S
+"$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello5.exe hello5.c ntstub.S
+
 echo "hello1.exe: $(wc -c < hello1.exe | tr -d ' ') bytes"
 echo "hello2.exe: $(wc -c < hello2.exe | tr -d ' ') bytes"
 echo "hello3.exe: $(wc -c < hello3.exe | tr -d ' ') bytes"
 echo "hello4.exe: $(wc -c < hello4.exe | tr -d ' ') bytes"
 echo "mini.dll:   $(wc -c < mini.dll | tr -d ' ') bytes"
+echo "hello5.exe: $(wc -c < hello5.exe | tr -d ' ') bytes"
+echo "fake-ntdll.dll: $(wc -c < fake-ntdll.dll | tr -d ' ') bytes"
