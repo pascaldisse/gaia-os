@@ -272,12 +272,29 @@ int nt_image_resolve(u64b addr, char *name_out, u64b namelen, u64b *off_out) {
 #define NT_DLL_TERRITORY_BASE  0x45000000ULL
 #define NT_DLL_TERRITORY_LIMIT 0x7ff00000ULL   // safety margin below KUSER
 #define NT_PAGE_SIZE 4096ULL
+// CHALICE C3c-2l Phase B: Windows allocation granularity (SectionAlignment/
+// image-map granularity every real PE loader assumes) -- 64KB, NOT the 4KB
+// page size. NT_DLL_TERRITORY_BASE is already 0x10000-aligned so the FIRST
+// call in a fresh boot lands correctly, but every call after the first only
+// page-rounds its SIZE (not its START), so repeated small/odd-sized
+// allocations (thread stacks, FS read buffers) drift the running bump
+// pointer off the 64KB grid -- confirmed live (C3c-2l Phase A pe7 receipt):
+// ntdll mapped at 0x46001000 (page-aligned, NOT 64KB-aligned) after pe1-pe6
+// had already consumed territory earlier in the same boot.
+#define NT_DLL_TERRITORY_ALIGN 0x10000ULL
 
 static u64b nt_dll_territory_next = NT_DLL_TERRITORY_BASE;
 
 // CHALICE C3b Atom 3B: no longer static -- ntboot.c's nt_boot_process
 // allocates the Phase-0 thread stack (64K) from the same DLL territory.
 unsigned char *nt_territory_alloc(unsigned long size_of_image) {
+    // CHALICE C3c-2l Phase B: round the START up to 64KB granularity before
+    // handing out this allocation -- every DLL image map (and, for
+    // simplicity/uniformity, every other territory consumer: thread stacks,
+    // FS buffers) gets a Windows-allocation-granularity-aligned base, same
+    // as a real Windows VirtualAlloc/MapViewOfFile guarantee. Territory is
+    // ~890MB (0x45000000..0x7ff00000) so the extra rounding waste is cheap.
+    nt_dll_territory_next = (nt_dll_territory_next + (NT_DLL_TERRITORY_ALIGN - 1)) & ~(NT_DLL_TERRITORY_ALIGN - 1);
     u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
     if (pages == 0) pages = NT_PAGE_SIZE;
     if (nt_dll_territory_next + pages > NT_DLL_TERRITORY_LIMIT) return 0;
