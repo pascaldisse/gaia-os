@@ -1,3 +1,35 @@
+## State refresh (2026-07-17, C3c-2i) -- NtQuerySection wired, kernel32 maps, c000007b GONE
+HEAD `acc6652`. Added pemod.c's pe_query_image_info (raw unmapped-blob DOS/NT/
+optional-header walk, same pattern as pe_find_raw_section) + ntfile.c's
+NtQuerySection(SectionImageInformation) handler (id=81, 5 args/40B, wired
+ntsvc.c) filling all SECTION_IMAGE_INFORMATION fields (not just Machine) at
+LP64 offsets 0x00-0x3C computed from wine/include/winternl.h's struct field
+order/sizes (cross-checked against wine/dlls/ntdll/unix/virtual.c's
+virtual_fill_image_information + wine/server/mapping.c's create_mapping).
+RESULT: kernel32.dll now passes is_valid_binary (Machine=0xAA64 reported) ->
+NtCreateSection/NtQuerySection/NtMapViewOfSection fire once and succeed ->
+ntdll walks past the old `could not load kernel32.dll, status c000007b`
+ENTIRELY -- pe6 (stock ntdll + hello5.exe) now runs to completion: "CHALICE:
+stock thunk enters" -> full LdrInitializeThunk/RtlUserThreadStart chain ->
+hello5.exe's own entry runs -> "CHALICE: the chain speaks" -> pe6 ret=99,
+clean NtTerminateProcess, no crash, no fault. kernelbase.dll's file DOES open
+successfully (NtOpenFile base=kernelbase.dll succeeds, confirmed via temp
+debug print, reverted) but NO matching NtCreateSection/NtMapViewOfSection
+pair was observed for it in this trace -- open_dll_file's NtFsControlFile/
+NtAreMappedFilesTheSame calls fire (both STATUS_NOT_IMPLEMENTED, expected/
+non-fatal per donor) but the handle is never followed by NtCreateSection or
+NtClose in the log; UNRESOLVED, not investigated further this atom (hello5.exe
+has zero PE imports of its own -- kernel32.dll's need for kernelbase appears
+to be lazy/forwarder-driven and this test payload never exercises it, so it's
+unconfirmed whether kernelbase actually needs a real load here at all). NEXT:
+if a kernel32-API-calling PE test target is ever added, re-check whether
+kernelbase.dll's NtCreateSection actually fires; if not, the open_dll_file
+call site for kernelbase (or whatever code path opens it) is the next gap.
+No-regression gate green: chalice_gate.py (all 16 lines, kernel32.dll's
+single CreateSection/QuerySection/MapView triple confirmed via full serial
+log, zero c000007b/STATUS_INVALID_IMAGE_FORMAT anywhere) + ramfb_gate.py
+(pattern + corners correct, shell answered same boot). No qemu leaks.
+
 ## State refresh (2026-07-17, C3c-2h) -- PEB.ApiSetMap wired, kernel32 imports resolve
 HEAD `36401a7`. apisetschema.dll fetched (196608B, Machine=0xAA64) + baked onto the
 FS disk; ntboot.c's nt_wire_apiset (stock=1 only) locates its `.apiset` section
