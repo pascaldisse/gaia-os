@@ -48,6 +48,7 @@ static void cmd_help(void) {
     puts("  pe4        run CHALICE hello4: loader-path services + DLL machinery (slice3 Atom 3A)\n");
     puts("  pe5        run CHALICE hello5 over fake-ntdll: boot protocol dress rehearsal (slice3 Atom 3B)\n");
     puts("  pe6        run CHALICE hello5 over STOCK wine ntdll.dll (FS-backed): first walk + fault log (slice3 Atom 3C-1)\n");
+    puts("  pe7        run CHALICE hello6 (real KERNEL32.dll import) over STOCK wine ntdll.dll: import-table/IAT gate (slice3 Atom 3C-2j)\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -145,7 +146,7 @@ static void run_cmd(const char *line) {
         return;
     }
     if (streq(line, "pe5")) {
-        nt_boot_process("hello5.exe", "fake-ntdll.dll", 0);
+        nt_boot_process("hello5.exe", "fake-ntdll.dll", 0, "pe5");
         return;
     }
     if (streq(line, "pe6")) {
@@ -161,7 +162,23 @@ static void run_cmd(const char *line) {
         nt_dispatch_log_reset();
         nt_dispatch_log_enabled = 1;
         profile_armed = 1;
-        nt_boot_process("hello5.exe", "ntdll.dll", 1);
+        nt_boot_process("hello5.exe", "ntdll.dll", 1, "pe6");
+        profile_armed = 0;
+        nt_dispatch_log_enabled = 0;
+        return;
+    }
+    if (streq(line, "pe7")) {
+        // CHALICE C3c Atom 3C-2j: stock ntdll.dll + hello6.exe (genuine
+        // KERNEL32.dll import, real GetStdHandle/WriteFile/ExitProcess
+        // calls) -- the import-table/IAT resolution gate. Diagnostic
+        // frontier, not yet a required-pass gate line (mirrors pe6's own
+        // dispatch-log + PC-sampling profiler rig; a crash/hang past
+        // thunk-entry is a possible, non-fatal-to-the-gate outcome here
+        // too).
+        nt_dispatch_log_reset();
+        nt_dispatch_log_enabled = 1;
+        profile_armed = 1;
+        nt_boot_process("hello6.exe", "ntdll.dll", 1, "pe7");
         profile_armed = 0;
         nt_dispatch_log_enabled = 0;
         return;

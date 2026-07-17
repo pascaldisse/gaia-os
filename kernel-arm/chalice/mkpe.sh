@@ -37,6 +37,14 @@ CFLAGS="-target $TARGET -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=
 "$ZIG" cc $CFLAGS -shared -Wl,-e,FakeNtdllEntry -o fake-ntdll.dll fake-ntdll.c ntstub.S
 "$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello5.exe hello5.c ntstub.S
 
+# CHALICE C3c Atom 3C-2j — hello6.exe: the real-import-table gate. Genuine
+# KERNEL32.dll import (GetStdHandle/WriteFile/ExitProcess) resolved against
+# zig's bundled mingw-w64 kernel32 import def (`-lkernel32`, NOT gaia.def/
+# libgaia.a). No ntstub.S here -- dispatch happens entirely inside real
+# kernel32 code via the PE loader's own IAT patching, not our TEB-slot
+# convention.
+"$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello6.exe hello6.c -lkernel32
+
 echo "hello1.exe: $(wc -c < hello1.exe | tr -d ' ') bytes"
 echo "hello2.exe: $(wc -c < hello2.exe | tr -d ' ') bytes"
 echo "hello3.exe: $(wc -c < hello3.exe | tr -d ' ') bytes"
@@ -44,3 +52,4 @@ echo "hello4.exe: $(wc -c < hello4.exe | tr -d ' ') bytes"
 echo "mini.dll:   $(wc -c < mini.dll | tr -d ' ') bytes"
 echo "hello5.exe: $(wc -c < hello5.exe | tr -d ' ') bytes"
 echo "fake-ntdll.dll: $(wc -c < fake-ntdll.dll | tr -d ' ') bytes"
+echo "hello6.exe: $(wc -c < hello6.exe | tr -d ' ') bytes"

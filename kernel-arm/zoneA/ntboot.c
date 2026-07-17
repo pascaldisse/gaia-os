@@ -230,7 +230,7 @@ static long nt_wire_apiset(u8 *peb) {
 
 #define NT_BOOT_STACK_SIZE 0x10000UL
 
-long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
+long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, const char *label) {
     nt_blob_ensure_init();
 
     const unsigned char *ntdll_bytes, *exe_bytes;
@@ -392,6 +392,6 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
     }
     nt_exit_jmpbuf = 0;
 
-    puts(stock ? "pe6" : "pe5"); puts(" ret="); putdec_signed(ret); puts("\n");
+    puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
 }
