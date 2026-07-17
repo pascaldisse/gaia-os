@@ -47,6 +47,7 @@
 #define NT_SVC_NTQUERYSECTION              81  // REAL, CHALICE C3c-2i (wine-arm64-syscalls.txt:76)
 #define NT_SVC_NTRAISEEXCEPTION           207  // REAL, CHALICE C3c-2k p1 (wine-arm64-syscalls.txt:209)
 #define NT_SVC_NTRAISEHARDERROR           208  // REAL, CHALICE C3c-2k p1 (wine-arm64-syscalls.txt:211)
+#define NT_SVC_NTINITIALIZENLSFILES       158  // REAL, CHALICE C3c-2n (wine-arm64-syscalls.txt:157, 0x9e)
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via

@@ -655,3 +655,49 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
     if (ReturnLength) *ReturnLength = MBI_SIZE;
     return STATUS_SUCCESS;
 }
+
+// =====================================================================
+// CHALICE C3c-2n: NtInitializeNlsFiles -- maps the combined locale/casing/
+// codepage NLS data blob (locale.nls) kernelbase's init_locale ultimately
+// needs, via ntdll's RtlGetLocaleFileMappingAddress (locale.c:359) ->
+// NtInitializeNlsFiles (real Wine syscall id 158/0x9e, wine-arm64-
+// syscalls.txt:157). Donor contract (wine/dlls/ntdll/unix/env.c:2243
+// NtInitializeNlsFiles): open "<data_dir>/nls/locale.nls", map it
+// SEC_COMMIT/PAGE_READONLY (a flat data section, NOT a SEC_IMAGE/PE map),
+// write the mapped base through *ptr and system_lcid (env.c:79/813,
+// defaults to MAKELANGID(LANG_ENGLISH,SUBLANG_DEFAULT)==0x0409 when no
+// locale override is configured) through *lcid. The donor's own `size`
+// out-param is DEAD -- read the donor source: the function never writes
+// through it (a local `mapsize` absorbs map_section's own size answer
+// instead) -- so this mirrors that exactly, leaving
+// *DefaultCasingTableSize untouched.
+// Our equivalent of "map the file": the same blob-store/FS-fallback lookup
+// NtOpenFile (above) and ntboot.c's stock-DLL path already use
+// (nt_blob_lookup_or_fs—"locale.nls" lives on the RedSea-spirit disk,
+// chalice/stock/ + mkdisk.py populate, same as apisetschema.dll). On an
+// FS-fallback hit the returned bytes pointer is ALREADY territory-backed
+// (nt_blob_lookup_fs allocates its read buffer via nt_territory_alloc) --
+// same "hand the blob pointer straight back, no extra copy" idiom
+// NtCreateSection/NtMapViewOfSection already use for fh->blob/sh->blob
+// above, and satisfies the "stable address, read for process lifetime,
+// never freed" contract RtlGetLocaleFileMappingAddress's caching wrapper
+// assumes (it never calls NtUnmapViewOfSection on the success path).
+// =====================================================================
+long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,
+                           void *DefaultCasingTableSize) {
+    (void)DefaultCasingTableSize;   // donor leaves this out-param unwritten too (receipted above)
+    nt_blob_ensure_init();
+    if (!BaseAddress || !DefaultLocaleId) return STATUS_INVALID_PARAMETER;
+
+    const unsigned char *bytes; u64b len; const char *name;
+    if (!nt_blob_lookup_or_fs("locale.nls", &bytes, &len, &name)) return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    *BaseAddress = (void *)bytes;
+    *DefaultLocaleId = 0x0409UL;   // MAKELANGID(LANG_ENGLISH,SUBLANG_DEFAULT), env.c:813 default
+
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtInitializeNlsFiles base="); puthex((u64b)bytes);
+        puts(" len="); puthex(len); puts(" lcid=0x409\n");
+    }
+    return STATUS_SUCCESS;
+}

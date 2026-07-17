@@ -476,6 +476,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTQUERYSECTION:              return "NtQuerySection";
     case NT_SVC_NTRAISEEXCEPTION:            return "NtRaiseException";
     case NT_SVC_NTRAISEHARDERROR:            return "NtRaiseHardError";
+    case NT_SVC_NTINITIALIZENLSFILES:        return "NtInitializeNlsFiles";
     default: return 0;
     }
 }
@@ -559,6 +560,11 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTRAISEEXCEPTION] = 3 * 8;
     nt_svc_table0[NT_SVC_NTRAISEHARDERROR] = (void *)NtRaiseHardError;
     nt_svc_argtable0[NT_SVC_NTRAISEHARDERROR] = 6 * 8;
+
+    // ---- CHALICE C3c-2n: NtInitializeNlsFiles(BaseAddress, DefaultLocaleId,
+    // DefaultCasingTableSize) -- 3 args (ntfile.c) ----
+    nt_svc_table0[NT_SVC_NTINITIALIZENLSFILES] = (void *)NtInitializeNlsFiles;
+    nt_svc_argtable0[NT_SVC_NTINITIALIZENLSFILES] = 3 * 8;
 
     nt_service_tables[0].ServiceTable  = nt_svc_table0;
     nt_service_tables[0].CounterTable  = 0;

@@ -28,6 +28,10 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
 long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
                      void *SectionInformation, unsigned long SectionInformationLength,
                      unsigned long *ReturnLength);
+// CHALICE C3c-2n: NtInitializeNlsFiles -- see ntfile.c for the donor
+// contract receipt (wine/dlls/ntdll/unix/env.c:2243).
+long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,
+                           void *DefaultCasingTableSize);
 
 // NtClose (ntsvc.c) also releases handle-table entries allocated here --
 // this is the release hook it calls for any handle value >= the table's

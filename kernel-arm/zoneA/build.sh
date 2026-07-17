@@ -99,12 +99,17 @@ STOCK_DIR=../chalice/stock
 # CHALICE C3c-2h: apisetschema.dll joins the populate set -- holds the
 # .apiset section PEB->ApiSetMap points at (import-name resolution for
 # api-ms-win-*/api-set imports, ntboot.c nt_wire_apiset).
-if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ] && [ -s "$STOCK_DIR/apisetschema.dll" ]; then
+# CHALICE C3c-2n: locale.nls joins the populate set -- the combined locale/
+# casing/codepage NLS data blob NtInitializeNlsFiles maps (ntsvc.c/ntfile.c
+# handler, id=158). Not a PE image, just a flat data blob (fetch-stock-
+# dlls.sh sources it separately, same stock/ dir).
+if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ] && [ -s "$STOCK_DIR/apisetschema.dll" ] && [ -s "$STOCK_DIR/locale.nls" ]; then
     python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
         ntdll.dll="$STOCK_DIR/ntdll.dll" \
         kernel32.dll="$STOCK_DIR/kernel32.dll" \
         kernelbase.dll="$STOCK_DIR/kernelbase.dll" \
-        apisetschema.dll="$STOCK_DIR/apisetschema.dll"
+        apisetschema.dll="$STOCK_DIR/apisetschema.dll" \
+        locale.nls="$STOCK_DIR/locale.nls"
 elif [ ! -f disk.img ]; then
     dd if=/dev/zero of=disk.img bs=1m count=4 2>/dev/null
     printf 'GAIA-OS TEMPLE DISK  LOVE=1.000  --  the first stone laid 2026-07-08' \

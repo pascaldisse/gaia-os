@@ -24,6 +24,20 @@ OUT_DIR="stock"
 # the .apiset section PEB->ApiSetMap points at (import-name resolution for
 # api-ms-win-*/api-set imports, wine/dlls/ntdll/unix/loader.c load_apiset_dll).
 TARGETS="ntdll.dll kernel32.dll kernelbase.dll apisetschema.dll"
+# CHALICE C3c-2n: locale.nls -- the combined locale/casing/codepage NLS data
+# blob NtInitializeNlsFiles maps (wine/dlls/ntdll/unix/env.c:2243, opens
+# "$dir/nls/locale.nls"). NOT a PE image (no MZ/PE Machine field to verify),
+# so it's handled separately from TARGETS/verify_one below. Two sources,
+# tried in order: (1) the same Hangover deb's data.tar.xz, wherever its NLS
+# payload actually lives (path unconfirmed -- Wine installs share/wine/nls/
+# on the host side, separate from the aarch64-windows guest-DLL dir the 4
+# TARGETS above come from; discovered via a tar listing grep, not hardcoded);
+# (2) this repo's gitignored wine/ donor tree (wine/nls/locale.nls,
+# Wine's own generated output -- identical format, no network needed).
+# Donor tried FIRST when present (fast, no 260MB re-fetch for an already-
+# cloned dev tree); deb path stays as the fresh-clone/no-donor fallback.
+NLS_TARGET="locale.nls"
+DONOR_NLS="../../wine/nls/locale.nls"   # relative to this script's dir (chalice/)
 
 all_present() {
     for f in $TARGETS; do
@@ -97,4 +111,42 @@ done
 [ "$status" -eq 0 ] || { echo "fetch-stock-dlls: FAILED verification"; exit 1; }
 
 echo "fetch-stock-dlls: OK -- $OUT_DIR/{$( echo $TARGETS | tr ' ' ',' )}"
+
+# ---- CHALICE C3c-2n: locale.nls, sourced separately (not a PE image). ----
+if [ -s "$OUT_DIR/$NLS_TARGET" ]; then
+    echo "fetch-stock-dlls: cached, $OUT_DIR/$NLS_TARGET already present -- skipping"
+elif [ -s "$DONOR_NLS" ]; then
+    cp "$DONOR_NLS" "$OUT_DIR/$NLS_TARGET"
+    echo "fetch-stock-dlls: $NLS_TARGET <- donor wine/ tree ($DONOR_NLS), $(wc -c < "$OUT_DIR/$NLS_TARGET") bytes"
+else
+    echo "fetch-stock-dlls: no donor copy at $DONOR_NLS -- fetching $NLS_TARGET from the Hangover deb ..."
+    WORK=$(mktemp -d)
+    trap 'rm -rf "$WORK"' EXIT
+
+    echo "fetch-stock-dlls: downloading $ASSET (~260MB) ..."
+    curl -fL -o "$WORK/hangover.tar" "$ASSET_URL"
+
+    echo "fetch-stock-dlls: extracting $DEB_MEMBER ..."
+    ( cd "$WORK" && tar -xf hangover.tar "$DEB_MEMBER" )
+
+    echo "fetch-stock-dlls: extracting data.tar.xz from the .deb (ar) ..."
+    ( cd "$WORK" && ar x "$DEB_MEMBER" data.tar.xz )
+
+    NLS_MEMBER=$( ( cd "$WORK" && tar -tJf data.tar.xz ) | grep -i '/locale\.nls$' | head -1 )
+    if [ -z "$NLS_MEMBER" ]; then
+        echo "fetch-stock-dlls: FAILED -- $NLS_TARGET not found anywhere in $DEB_MEMBER's data.tar.xz" >&2
+        rm -rf "$WORK"
+        trap - EXIT
+        exit 1
+    fi
+    echo "fetch-stock-dlls: found $NLS_TARGET at $NLS_MEMBER"
+    ( cd "$WORK" && tar -xJf data.tar.xz "$NLS_MEMBER" )
+    cp "$WORK/$NLS_MEMBER" "$OUT_DIR/$NLS_TARGET"
+    echo "fetch-stock-dlls: $NLS_TARGET <- deb ($NLS_MEMBER), $(wc -c < "$OUT_DIR/$NLS_TARGET") bytes"
+    rm -rf "$WORK"
+    trap - EXIT
+fi
+
+[ -s "$OUT_DIR/$NLS_TARGET" ] || { echo "fetch-stock-dlls: FAILED -- $OUT_DIR/$NLS_TARGET missing/empty" >&2; exit 1; }
+echo "fetch-stock-dlls: OK -- $OUT_DIR/$NLS_TARGET"
 ls -la "$OUT_DIR"
