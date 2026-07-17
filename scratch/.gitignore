@@ -2,3 +2,4 @@
 !.gitignore
 !ramfb_gate.py
 !plot_gate.py
+!chalice_gate.py
