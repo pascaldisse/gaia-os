@@ -76,6 +76,62 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
     return STATUS_SUCCESS;   // unreachable
 }
 
+// CHALICE C3c-2k p1: NtRaiseException -- makes every future Wine internal
+// abort/debug fault LEGIBLE instead of a silent kernel Data Abort. Before
+// this, an out-of-range id (any real Wine syscall >= the old
+// NT_SERVICE_COUNT=128 table cap, e.g. this one, real id 207) hit
+// ntdisp.S's bad_service path and returned STATUS_INVALID_SYSTEM_SERVICE
+// forever -- Wine's own "unimplemented function ... aborting" handler
+// (stock ntdll) retries NtRaiseException in an unbroken loop on that
+// answer (28233 consecutive hits observed, C3c-2j), degrading kernel state
+// until a real ARM64 Data Abort. Growing the table (ntids.h,
+// NT_SERVICE_COUNT 128->512) lets id 207 resolve to a REAL handler now:
+// read EXCEPTION_RECORD.ExceptionCode(@0)/ExceptionAddress(@0x10) (winnt.h
+// _EXCEPTION_RECORD layout), print one line naming the fault (resolved
+// against the image registry, ntfile.c's nt_image_resolve, when the
+// address falls inside a mapped image), then cleanly terminate the process
+// via the same nt_setjmp/nt_longjmp unwind channel NtTerminateProcess uses
+// (SLICE2-SPEC A3 mechanism, reused verbatim) -- turns an unrecoverable
+// kernel crash into a one-line diagnosis + clean return to the shell.
+long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance) {
+    (void)Context; (void)FirstChance;
+    u8 *er = (u8 *)ExceptionRecord;
+    u32b code = 0;
+    u64b addr = 0;
+    if (er) {
+        code = (u32b)er[0] | ((u32b)er[1] << 8) | ((u32b)er[2] << 16) | ((u32b)er[3] << 24);
+        for (int i = 0; i < 8; i++) addr |= (u64b)er[0x10 + i] << (8 * i);
+    }
+    puts("CHALICE: NtRaiseException code="); puthex(code);
+    puts(" addr="); puthex(addr);
+    char name[64]; u64b off = 0;
+    if (addr && nt_image_resolve(addr, name, sizeof(name), &off)) {
+        puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
+    }
+    puts("\n");
+    nt_exit_code = (long)(0xC0000000UL | (code & 0xFFFF));
+    if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
+    return STATUS_SUCCESS;   // unreachable
+}
+
+// CHALICE C3c-2k p1: NtRaiseHardError -- same clean-terminate treatment as
+// NtRaiseException (optional per plan, cheap to add, same abort-legibility
+// payoff for this sibling Wine fault-reporting path). Minimal: print
+// ErrorStatus, terminate. Full response-option handling (Parameters array,
+// Response out-param) not needed here -- nothing in this chain waits for a
+// hard-error response, the process just needs to unwind cleanly instead of
+// retry-looping into a bad_service crash the way NtRaiseException did.
+long NtRaiseHardError(unsigned long ErrorStatus, unsigned long NumberOfParameters,
+                       unsigned long UnicodeStringParameterMask, void *Parameters,
+                       unsigned long ValidResponseOptions, void *Response) {
+    (void)NumberOfParameters; (void)UnicodeStringParameterMask;
+    (void)Parameters; (void)ValidResponseOptions; (void)Response;
+    puts("CHALICE: NtRaiseHardError status="); puthex(ErrorStatus); puts("\n");
+    nt_exit_code = (long)(ErrorStatus & 0xFFFFFFFFUL);
+    if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
+    return STATUS_SUCCESS;   // unreachable
+}
+
 // =====================================================================
 // Atom B — flat page-aligned VM arena (NtAllocateVirtualMemory /
 // NtFreeVirtualMemory). HANDOFF: "flat arena OK, skip VAD tree".
@@ -417,6 +473,8 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTQUERYVALUEKEY:            return "NtQueryValueKey";
     case NT_SVC_NTQUERYVIRTUALMEMORY:       return "NtQueryVirtualMemory";
     case NT_SVC_NTQUERYSECTION:              return "NtQuerySection";
+    case NT_SVC_NTRAISEEXCEPTION:            return "NtRaiseException";
+    case NT_SVC_NTRAISEHARDERROR:            return "NtRaiseHardError";
     default: return 0;
     }
 }
@@ -494,6 +552,12 @@ void nt_service_tables_init(void) {
     // SectionInformation, SectionInformationLength, ReturnLength) -- 5 args.
     nt_svc_table0[NT_SVC_NTQUERYSECTION] = (void *)NtQuerySection;
     nt_svc_argtable0[NT_SVC_NTQUERYSECTION] = 5 * 8;
+
+    // ---- CHALICE C3c-2k p1: legible-abort handlers ----
+    nt_svc_table0[NT_SVC_NTRAISEEXCEPTION] = (void *)NtRaiseException;
+    nt_svc_argtable0[NT_SVC_NTRAISEEXCEPTION] = 3 * 8;
+    nt_svc_table0[NT_SVC_NTRAISEHARDERROR] = (void *)NtRaiseHardError;
+    nt_svc_argtable0[NT_SVC_NTRAISEHARDERROR] = 6 * 8;
 
     nt_service_tables[0].ServiceTable  = nt_svc_table0;
     nt_service_tables[0].CounterTable  = 0;

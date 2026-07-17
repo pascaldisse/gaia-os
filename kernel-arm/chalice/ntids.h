@@ -45,7 +45,16 @@
 #define NT_SVC_NTQUERYVALUEKEY            23
 #define NT_SVC_NTQUERYVIRTUALMEMORY       35  // REAL, CHALICE C3a Atom 3A
 #define NT_SVC_NTQUERYSECTION              81  // REAL, CHALICE C3c-2i (wine-arm64-syscalls.txt:76)
-#define NT_SERVICE_COUNT                 128
+#define NT_SVC_NTRAISEEXCEPTION           207  // REAL, CHALICE C3c-2k p1 (wine-arm64-syscalls.txt:209)
+#define NT_SVC_NTRAISEHARDERROR           208  // REAL, CHALICE C3c-2k p1 (wine-arm64-syscalls.txt:211)
+// CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
+// (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
+// [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via
+// bad_service on EVERY hit, ntdisp.S), which for a hot abort path (Wine's
+// own unimplemented-function handler calling NtRaiseException=207) meant an
+// unbroken high-frequency retry loop instead of a single clean failure.
+// 512 covers the real max (257) plus headroom for later real ids.
+#define NT_SERVICE_COUNT                 512
 
 // ---- NTSTATUS consts ----
 #define STATUS_SUCCESS                0x00000000L

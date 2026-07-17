@@ -52,6 +52,11 @@ long NtWriteFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcConte
                   void *ByteOffset, unsigned long *Key);
 long NtClose(void *Handle);
 long NtTerminateProcess(void *ProcessHandle, long ExitStatus);
+// CHALICE C3c-2k p1: legible-abort handlers.
+long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance);
+long NtRaiseHardError(unsigned long ErrorStatus, unsigned long NumberOfParameters,
+                       unsigned long UnicodeStringParameterMask, void *Parameters,
+                       unsigned long ValidResponseOptions, void *Response);
 
 // Atom B real handlers.
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
