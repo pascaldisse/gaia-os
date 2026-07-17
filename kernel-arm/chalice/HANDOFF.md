@@ -1,3 +1,38 @@
+## State refresh (2026-07-18, C3c-2m) -- __wine_dbg_header root cause FOUND + FIXED (MEMORY_BASIC_INFORMATION size/offset bug); pe7 now past it into a new, deeper frontier
+HEAD `1ef4946`+this note. CHALICE PROBE (ntboot.c, stock=1, replicates donor
+build_ntdll_module's own base-discovery call) + unconditional
+NtQueryVirtualMemory ENTRY/result logging (ntfile.c) confirmed the
+image-registry base-discovery path was ALREADY CORRECT (guest_base==
+ntdll_base, probe's own find_named_export rc=0) -- falsifying that branch.
+The ENTRY log then caught the REAL divergence: the guest's own runtime
+NtQueryVirtualMemory(MemoryBasicInformation) call on LdrInitializeThunk's
+address passes MemoryInformationLength=0x30 (48B, the REAL Win64
+sizeof(MEMORY_BASIC_INFORMATION)) -- our MBI_SIZE was 0x38 (56B, WRONG: an
+extra spurious 4B pad had been inserted after BOTH Protect and Type,
+when the real struct only pads once, between AllocationProtect and
+RegionSize). Every boot rejected this call with STATUS_INFO_LENGTH_
+MISMATCH, so meminfo.AllocationBase was NEVER filled for ntdll's own
+self-registration -- the actual mechanism behind the __wine_dbg_header
+failure the last several atoms chased. FIX (ntfile.c): MBI_SIZE 0x38->
+0x30, MBI_PROTECT_OFF 0x28->0x24, MBI_TYPE_OFF 0x30->0x28 (ntboot.c probe
+buffer shrunk to match). RESULT: pe7 re-run -- the `wine: Call from <addr>
+to unimplemented function ntdll.dll.__wine_dbg_header` abort and its
+NtRaiseException are GONE. Boot now visibly progresses much further:
+NtOpenFile fires for kernel32.dll, kernelbase.dll, AND hello6.exe (+
+manifest probe) -- confirming KERNEL32.dll's own import fixup (the pe7
+atom's actual target) now runs. New frontier: a genuine ARM64 Data Abort
+(esr=0x96000021, far=0xF -- near-null pointer deref) at elr=kernelbase.
+dll+0x3AAA0, i.e. INSIDE real kernelbase.dll code, several calls deeper
+than any prior atom reached. "CHALICE: kernel32 speaks" / pe7 ret=77 NOT
+yet reached -- this new fault is the next diagnostic frontier, not chased
+this atom (out of scope: atom C3c-2m's target was pinning __wine_dbg_
+header specifically, now closed). No-regression green: chalice_gate.py
+(16/16, GATE PASS) + ramfb_gate.py -m 1G (pattern + all 4 corners, GATE
+PASS, shell answered same boot). No qemu leaks (pgrep clean before/after
+every drive). Build-artifact churn (chalice/*.exe/.pdb, pehello_bin.c)
+left uncommitted per source-only-commit convention -- only ntfile.c/
+ntboot.c source changes + this HANDOFF note committed.
+
 ## State refresh (2026-07-18, C3c-2l) -- image-base-alignment hypothesis TESTED and FALSIFIED (both fixes landed, neither unblocks pe7)
 HEAD `b4043dd`. Phase A instrument (nt_ldr_dump, ntsvc.c): PEB.Ldr.
 InLoadOrderModuleList held exactly ONE node before this atom -- the EXE's
