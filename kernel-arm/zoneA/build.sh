@@ -16,6 +16,9 @@ CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
     xxd -i -n pehello2_bin ../chalice/hello2.exe | sed \
         -e 's/^unsigned char/const unsigned char/' \
         -e 's/^unsigned int pehello2_bin_len/const unsigned long pehello2_len/'
+    xxd -i -n pehello3_bin ../chalice/hello3.exe | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int pehello3_bin_len/const unsigned long pehello3_len/'
 } > pehello_bin.c
 
 clang $CFLAGS -c boot.S -o boot.o
@@ -25,6 +28,8 @@ clang $CFLAGS -c mem.c -o mem.o
 clang $CFLAGS -c task.c -o task.o
 clang $CFLAGS -c shell.c -o shell.o
 clang $CFLAGS -c zcmod.c -o zcmod.o
+clang $CFLAGS -c ntdisp.S -o ntdisp.o
+clang $CFLAGS -c ntsvc.c -o ntsvc.o
 clang $CFLAGS -c pemod.c -o pemod.o
 clang $CFLAGS -c pehello_bin.c -o pehello_bin.o
 clang $CFLAGS -c virtio.c -o virtio.o
@@ -33,7 +38,7 @@ clang $CFLAGS -c fs.c -o fs.o
 clang $CFLAGS -c hc.c -o hc.o
 clang $CFLAGS -c net.c -o net.o
 clang $CFLAGS -c tcp.c -o tcp.o
-aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
+aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 

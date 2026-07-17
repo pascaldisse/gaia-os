@@ -19,12 +19,48 @@ load and run. Donors cloned as read-only quarry (gitignored): `wine/`,
 
 ---
 
-## State: Slice 1 DONE, on origin
+## State: Slice 2 Atom A DONE, NOT pushed
 
-Last green + pushed commit: **`f6b8aa7`** — "CHALICE C1 slice 1: PE ARM64 loader
-(pemod) + pe verb + mkpe toolchain". `origin/main == HEAD`. Uncommitted tree =
-rebuild churn only (`hello{1,2}.exe`, `pehello_bin.c` byte array) — revert or
-ignore, no real work there.
+Last local commit: **"CHALICE C2a: NT service dispatch + TEB/PEB floor +
+console gate"** (parent `1d91982`). `origin/main` still at slice-1 `f6b8aa7` —
+DO NOT push per operator instruction, next worker should confirm before
+pushing.
+
+What Atom A delivers, proven at `T:/>` (`pe` verb, gate script
+`scratch/chalice_gate.py`, gitignored, drives serial over a unix socket):
+```
+pe1 ret=42
+CHALICE: the cup fills
+pe2 ret=7
+CHALICE: the cup speaks
+pe3 ret=99
+```
+Plus `scratch/ramfb_gate.py` regression still green (unrelated surface,
+re-run as a whole-kernel sanity check).
+
+### Bug found + fixed while closing out the partial work
+The previous worker's `ntstub.S` PE-side stubs (`NtWriteFile`/`NtClose`/
+`NtTerminateProcess`) were non-leaf functions (each does `blr` into
+`nt_dispatch`) but never saved their own incoming `x30` (LR) across that
+call. `nt_dispatch` itself does a second `blr` internally (into the C
+handler, e.g. `NtWriteFile` in `ntsvc.c`), which clobbers `x30` again before
+`nt_dispatch` hands control back to the stub via `ret x16` (using the
+frame-saved `pc`, by design, NOT `x30`). So when the stub's own trailing
+`ret` executed, `x30` held a stale value pointing back inside `nt_dispatch`
+(not the real caller in `hello3.c`) — an infinite bounce with no CPU fault
+(so it hung silently, no `!SYNC` line, matching the "stalled harness"
+symptom the previous worker probably hit and never diagnosed). Fixed by
+stashing `x30` into `x23` (a register `nt_dispatch` never touches) around
+each stub's `blr`, restoring before the stub's own `ret` — deliberately NOT
+a stack push, since that would have shifted the outgoing-stack-arg base
+(`x9` in `nt_dispatch`) out from under the caller's actual arg placement for
+`NtWriteFile`'s 9-arg case. Everything else in the partial 90% (syscall_frame
+layout, ArgumentTable marshal, x18 discipline, TEB/PEB trapdoor offsets,
+nt_setjmp/nt_longjmp unwind for NtTerminateProcess) checked out correct on
+review and needed no changes.
+
+Older state (slice 1, still true): pushed commit **`f6b8aa7`** — "CHALICE C1
+slice 1: PE ARM64 loader (pemod) + pe verb + mkpe toolchain".
 
 What slice 1 delivers, proven at `T:/>`:
 - `kernel-arm/chalice/mkpe.sh` — `zig cc` builds real **ARM64 PE** executables

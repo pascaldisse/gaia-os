@@ -8,6 +8,7 @@
 #include "kernel.h"
 #include "zcmod.h"
 #include "pemod.h"
+#include "ntsvc.h"
 
 typedef unsigned char  u8;
 typedef unsigned short u16b;
@@ -66,7 +67,7 @@ static void putdec_signed(long v) {
     puts(&b[i]);
 }
 
-long PeRun(const unsigned char *img, unsigned long lenL, const char *tag) {
+long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int use_nt) {
     u64b len = (u64b)lenL;
 
     if (len < DOS_E_LFANEW + 4) return pe_err(tag, "file too small for DOS header");
@@ -207,7 +208,26 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag) {
     iflush(alloc, (int)size_of_image);
 
     long (*entry)(void) = (long (*)(void))(alloc + entry_rva);
-    long ret = entry();
+    long ret;
+    if (use_nt) {
+        // CHALICE C2a Atom A: build the TEB/PEB floor (ntsvc.c, receipts
+        // there) and enter via pe_enter (x18=TEB) instead of a bare call --
+        // NtTerminateProcess can unwind straight back here through
+        // nt_setjmp/nt_longjmp, mirroring how a normal `return` from entry
+        // already flows into `ret` below (SLICE2-SPEC A3 receipt).
+        void *teb = nt_build_teb(alloc, (void *)entry, size_of_image);
+        if (!teb) return pe_err(tag, "nt_build_teb: MAlloc failed");
+        static unsigned long ntjmp[14];
+        nt_exit_jmpbuf = ntjmp;
+        if (nt_setjmp(ntjmp) == 0) {
+            ret = pe_enter(entry, teb);
+        } else {
+            ret = nt_exit_code;   // NtTerminateProcess longjmp'd here
+        }
+        nt_exit_jmpbuf = 0;
+    } else {
+        ret = entry();
+    }
 
     puts(tag); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
