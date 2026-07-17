@@ -1,6 +1,9 @@
 aiwnios/
 shrine/
 zealos/
+proton/
+reactos/
+wine/
 .gaia/
 *.o
 *.elf
