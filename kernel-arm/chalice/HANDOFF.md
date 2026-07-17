@@ -1,3 +1,54 @@
+## State refresh (2026-07-18, C3c-2l) -- image-base-alignment hypothesis TESTED and FALSIFIED (both fixes landed, neither unblocks pe7)
+HEAD `b4043dd`. Phase A instrument (nt_ldr_dump, ntsvc.c): PEB.Ldr.
+InLoadOrderModuleList held exactly ONE node before this atom -- the EXE's
+self-entry (nt_build_teb only ever registers the image it's called with).
+ntdll itself (mapped directly by ntboot.c's own C code via nt_territory_
+alloc, bypassing the guest's own NtCreateSection/NtMapViewOfSection
+dependency-load path kernel32/kernelbase go through) had ZERO module-list
+entries -- confirmed live (pe7 receipt): count=1 pre-fix, base=exe only.
+Also confirmed live: ntdll's actual map base was 0x46001000 -- page-
+aligned (nt_territory_alloc's existing 4KB rounding) but NOT 64KB-aligned
+(Windows allocation granularity), because pe1-pe6 already ran earlier in
+the same boot and left the bump pointer off the 64KB grid; ntdll's export
+RVA math (0x4606E700 - 0x6D700 = 0x46001000) matched this exactly on our
+side. Applied BOTH fixes from the plan: (1) `nt_ldr_add_module` (ntsvc.c/
+.h) splices ntdll's own LDR_DATA_TABLE_ENTRY (DllBase/EntryPoint/
+SizeOfImage/BaseDllName="ntdll.dll") into all 3 circular PEB.Ldr lists,
+called from ntboot.c right after nt_build_teb (stock=1 only); (2)
+`nt_territory_alloc` (ntfile.c) now rounds the bump pointer's START up to
+0x10000 before every allocation (not just the size up to 4KB), so every
+DLL image map lands on a real Windows-allocation-granularity boundary --
+live-verified: ntdll moved to 0x46010000 (64KB-aligned) after the fix.
+RESULT: pe7's abort is BYTE-FOR-BYTE UNCHANGED by either fix, alone or
+together -- same `wine: Call from <addr> to unimplemented function
+ntdll.dll.__wine_dbg_header, aborting`, same `CHALICE: NtRaiseException
+code=0x80000100 addr=<addr> (ntdll.dll+0x48E20)` (identical RELATIVE
+offset both before and after, only the absolute base moved), same
+kernel-side `pe_find_named_export` success (`rc=0`) throughout. BOTH the
+missing-LDR-entry and the base-misalignment hypotheses are FALSIFIED by
+direct live measurement, not argued from source -- the guest's own
+find_named_export failure on "ntdll.dll"/__wine_dbg_header depends on
+NEITHER PEB.Ldr module-list contents NOR ntdll's base alignment. This
+rules out the two most plausible non-source-reading explanations; the
+remaining candidates (untested, no donor wine/ source available in this
+workspace this atom to ground further without re-guessing): (a) Wine's
+loader resolves its own "ntdll.dll" module handle via something OTHER
+than PEB.Ldr (a cached/internal pointer set once at process init,
+unaffected by our added LDR node) and find_named_export's actual failure
+is in reading/comparing the export NAME TABLE itself against a mismatched
+or stale base -- needs the donor source (wine/dlls/ntdll/unix/loader.c's
+real find_named_export + however it obtains the ntdll module handle for
+self-referential imports) re-cloned to ground precisely, not re-guessed;
+(b) something in our own emulated instruction/syscall support that this
+specific guest code path exercises and our C reimplementation doesn't
+(e.g. a syscall the guest's OWN find_named_export needs mid-lookup that
+we silently no-op). No-regression green: chalice_gate.py (all 16 lines,
+pe6 completes to "pe6 ret=99") + ramfb_gate.py -m 1G (pattern + all 4
+corners correct, shell answered same boot). No qemu leaks. Both fixes
+KEPT (objectively more correct NT/Windows-loader behavior regardless of
+whether they unblock pe7) -- do not revert without a reason beyond "didn't
+fix pe7".
+
 ## State refresh (2026-07-18, C3c-2k) -- legible aborts + __wine_dbg_header grounded as a Wine loader-state gap, not a wiring gap
 HEAD `988b1f1`. p1 (grew NT_SERVICE_COUNT 128->512, ntids.h; implemented
 NtRaiseException id=207 + NtRaiseHardError id=208, ntsvc.c, clean-terminate
