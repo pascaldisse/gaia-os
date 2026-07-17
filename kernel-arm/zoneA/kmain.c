@@ -132,6 +132,12 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
     puts(" x2=");   puthex(regs[2]);  puts(" x3=");  puthex(regs[3]); puts("\n");
     puts("  x4=");  puthex(regs[4]);  puts(" x5=");  puthex(regs[5]);
     puts(" x6=");   puthex(regs[6]);  puts(" x7=");  puthex(regs[7]); puts("\n");
+    // CHALICE C3c-2e p1: x8-x11 added -- RtlAllocateHeap's `ldaxr w9,
+    // [x10]` fault needs x8 (bin-array base) and x10 (computed lock addr)
+    // visible to diagnose a bad-pointer bug (they were previously omitted,
+    // spec'd as "not needed by any real handler here" before this atom).
+    puts("  x8=");  puthex(regs[8]);  puts(" x9=");  puthex(regs[9]);
+    puts(" x10=");  puthex(regs[10]); puts(" x11="); puthex(regs[11]); puts("\n");
     puts("  x16="); puthex(regs[16]); puts(" x17="); puthex(regs[17]);
     puts(" x18=");  puthex(regs[18]); puts(" lr=");  puthex(regs[20]); puts("\n");
 

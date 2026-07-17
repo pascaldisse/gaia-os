@@ -141,20 +141,51 @@ static int nt_vm_free(void *aligned, u64b *out_size) {
     return 0;
 }
 
+// CHALICE C3c-2e p1: heap-init alloc I/O trace, gated on the same
+// nt_dispatch_log_enabled flag pe6 already arms (shell.c) -- prints the
+// full 64-bit in-value/out-value of the two in-out params (*BaseAddress,
+// *RegionSize) plus AllocationType/Protect/status, so a truncated-width or
+// unzeroed-page bug in the LLP64 in-out contract shows up directly in the
+// serial trace rather than being inferred from the eventual fault.
+static void nt_avm_log(const char *tag, void *base, u64b size, u64b atype,
+                        u64b protect, long status) {
+    if (!nt_dispatch_log_enabled) return;
+    puts("CHALICE AVM "); puts(tag);
+    puts(" base="); puthex((u64b)base);
+    puts(" size="); puthex(size);
+    puts(" atype="); puthex(atype);
+    puts(" prot="); puthex(protect);
+    puts(" status="); puthex((u64b)status);
+    puts("\n");
+}
+
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
                               unsigned long *RegionSize, unsigned long AllocationType,
                               unsigned long Protect) {
-    (void)ProcessHandle; (void)ZeroBits; (void)Protect;
-    if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
+    (void)ProcessHandle; (void)ZeroBits;
+
+    void   *in_base = BaseAddress ? *BaseAddress : 0;
+    u64b    in_size = RegionSize  ? *RegionSize  : 0;
+    nt_avm_log("IN ", in_base, in_size, AllocationType, Protect, 0);
+
+    if (!BaseAddress || !RegionSize) {
+        nt_avm_log("OUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
 
     // exotic flags -> STATUS_INVALID_PARAMETER (SLICE2-SPEC Atom B); must
     // specify at least one of COMMIT/RESERVE, both together also accepted
     // ("MEM_COMMIT|MEM_RESERVE both = alloc").
-    if (AllocationType == 0 || (AllocationType & ~(u64b)(MEM_COMMIT | MEM_RESERVE)) != 0)
+    if (AllocationType == 0 || (AllocationType & ~(u64b)(MEM_COMMIT | MEM_RESERVE)) != 0) {
+        nt_avm_log("OUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
         return STATUS_INVALID_PARAMETER;
+    }
 
     u64b size = *RegionSize;
-    if (size == 0) return STATUS_INVALID_PARAMETER;
+    if (size == 0) {
+        nt_avm_log("OUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
     u64b pages = (size + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
 
     // DEVIATION (documented, not silent): a caller-supplied *BaseAddress
@@ -169,16 +200,27 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
         // already-tracked region + MEM_COMMIT => bookkeeping no-op success
         // (flat arena: every tracked page is already committed). Untracked
         // base => keep rejecting (spec: "keep rejecting").
-        if (!(AllocationType & MEM_COMMIT)) return STATUS_INVALID_PARAMETER;
-        if (!nt_vm_region_contains(*BaseAddress)) return STATUS_INVALID_PARAMETER;
+        if (!(AllocationType & MEM_COMMIT)) {
+            nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        }
+        if (!nt_vm_region_contains(*BaseAddress)) {
+            nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        }
+        nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_SUCCESS);
         return STATUS_SUCCESS;
     }
 
     void *mem = nt_vm_alloc(pages);
-    if (!mem) return STATUS_NO_MEMORY;
+    if (!mem) {
+        nt_avm_log("OUT", 0, pages, AllocationType, Protect, STATUS_NO_MEMORY);
+        return STATUS_NO_MEMORY;
+    }
 
     *BaseAddress = mem;
     *RegionSize = pages;
+    nt_avm_log("OUT", mem, pages, AllocationType, Protect, STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 
