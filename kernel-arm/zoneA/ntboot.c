@@ -201,7 +201,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
     // EXIST in the mapped image so PE-side code that references them
     // resolves; nothing kernel-side calls them by address). Missing any
     // of the four -> clear serial error line, abort boot cleanly. ----
-    u64b thunk_addr = 0, rtl_addr = 0, sdisp_addr = 0, uhandle_addr = 0;
+    u64b thunk_addr = 0, rtl_addr = 0, sdisp_addr = 0, uhandle_addr = 0, ucdisp_addr = 0;
     if (pe_find_named_export(ntdll_base, ntdll_size, "LdrInitializeThunk", &thunk_addr) != 0)
         return boot_err("ntdll missing export LdrInitializeThunk");
     if (pe_find_named_export(ntdll_base, ntdll_size, "RtlUserThreadStart", &rtl_addr) != 0)
@@ -210,6 +210,19 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
         return boot_err("ntdll missing export __wine_syscall_dispatcher");
     if (pe_find_named_export(ntdll_base, ntdll_size, "__wine_unixlib_handle", &uhandle_addr) != 0)
         return boot_err("ntdll missing export __wine_unixlib_handle");
+    // CHALICE C3c-2f p2: __wine_unix_call_dispatcher is a THIRD writable
+    // data slot in STOCK ntdll (not a code export there -- confirmed via
+    // `llvm-objdump -p stock/ntdll.dll`: its RVA 0x151750 sits directly
+    // adjacent to __wine_syscall_dispatcher@0x151758 and
+    // __wine_unixlib_handle@0x151760, a 3-pointer unixlib-wiring struct,
+    // not 3 unrelated symbols) -- ONLY looked up/written when stock=1.
+    // fake-ntdll.c (stock=0) exports this SAME NAME as a real CODE
+    // function (its own hand-rolled forwarder, fake-ntdll.c:37) -- writing
+    // through that address would overwrite live machine code, so the
+    // lookup+write below is gated behind `stock` entirely, never touching
+    // the stock=0 (pe5) path.
+    if (stock && pe_find_named_export(ntdll_base, ntdll_size, "__wine_unix_call_dispatcher", &ucdisp_addr) != 0)
+        return boot_err("ntdll missing export __wine_unix_call_dispatcher");
 
     // ---- unixlib wiring: pointer WRITES into the mapped ntdll's data
     // exports (Architecture verdict 3), no syscall. ----
@@ -230,9 +243,24 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
     // as the unix-call shim by its own design (fake-ntdll.c comment), so
     // stock=0 keeps the old wiring unchanged -- only stock=1 (real Wine
     // ntdll, pe6) gets the fix.
+    //
+    // CHALICE C3c-2f p2: the C3c-2d fix above wired *__wine_syscall_dispatcher
+    // correctly but left nt_unix_call_shim (built exactly for this
+    // (handle,code,args) shape) with nowhere to plug in on the stock path
+    // -- STOCK ntdll's own __wine_dbg_output (its always-on debug-channel
+    // trace helper, called from inside RtlCreateAtomTable during heap init,
+    // unconditional on any WINEDEBUG env var) calls straight through
+    // *__wine_unix_call_dispatcher with x0=*__wine_unixlib_handle (our
+    // nt_unix_call_funcs table, verified in the fault dump: x0=0x4021EA08
+    // matches exactly), x1=code=2 (NT_UNIXCALL_DBG_WRITE), x2=argsptr --
+    // this THIRD slot was never written, so it stayed zero (kernel BSS/
+    // fresh page) and `blr x9` (x9=0) branched straight to address 0.
+    // Fix: also write nt_unix_call_shim into *__wine_unix_call_dispatcher
+    // when stock=1.
     nt_unix_call_funcs_ensure_init();
     wr64((u8 *)(u64b)sdisp_addr, stock ? (u64b)nt_dispatch : (u64b)nt_unix_call_shim);
     wr64((u8 *)(u64b)uhandle_addr, (u64b)nt_unix_call_funcs);
+    if (stock) wr64((u8 *)(u64b)ucdisp_addr, (u64b)nt_unix_call_shim);
     if (stock) puts("CHALICE: stock ntdll mapped\n");
 
     // ---- 64K thread stack, DLL territory (same bump allocator as the DLL
