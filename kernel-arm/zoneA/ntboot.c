@@ -269,6 +269,19 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         return boot_err("ntdll missing export __wine_syscall_dispatcher");
     if (pe_find_named_export(ntdll_base, ntdll_size, "__wine_unixlib_handle", &uhandle_addr) != 0)
         return boot_err("ntdll missing export __wine_unixlib_handle");
+    // CHALICE C3c-2k p2 diagnostic: cross-check our OWN kernel-side export
+    // lookup against the exact export name the guest's find_named_export
+    // (wine/dlls/ntdll/loader.c) is observed failing on ("ntdll.dll.
+    // __wine_dbg_header", stub_entry_point abort). If this succeeds, the
+    // export directory itself is intact in our mapped ntdll -- the guest-
+    // side failure is a Wine loader-state bug, not a mapping/memory bug
+    // on our end (disambiguates two very different next-gap fixes).
+    if (stock) {
+        u64b dbgh_addr = 0;
+        long dbgh_rc = pe_find_named_export(ntdll_base, ntdll_size, "__wine_dbg_header", &dbgh_addr);
+        puts("CHALICE: kernel-side __wine_dbg_header lookup rc="); putdec_signed(dbgh_rc);
+        puts(" addr="); puthex(dbgh_addr); puts("\n");
+    }
     // CHALICE C3c-2f p2: __wine_unix_call_dispatcher is a THIRD writable
     // data slot in STOCK ntdll (not a code export there -- confirmed via
     // `llvm-objdump -p stock/ntdll.dll`: its RVA 0x151750 sits directly

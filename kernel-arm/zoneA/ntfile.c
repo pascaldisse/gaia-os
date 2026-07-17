@@ -229,6 +229,21 @@ static NtImageEntry *nt_image_find_containing(u64b addr) {
     return 0;
 }
 
+// CHALICE C3c-2k p2 diagnostic: exact-name lookup (case-sensitive, matches
+// nt_image_register's stored basename verbatim) -- used to re-verify a
+// specific registered image's export directory is still intact LATER in
+// the boot sequence (not just at map time), by calling pe_find_named_export
+// against a fresh base/size snapshot from the registry.
+static NtImageEntry *nt_image_find_by_name(const char *name) {
+    for (int i = 0; i < NT_IMG_MAX; i++) {
+        if (!nt_images[i].used) continue;
+        int j = 0;
+        for (; name[j] && nt_images[i].name[j] == name[j]; j++) {}
+        if (name[j] == 0 && nt_images[i].name[j] == 0) return &nt_images[i];
+    }
+    return 0;
+}
+
 // CHALICE C3c Atom 3C-2a: exported so kmain.c's fault dump (boot.S
 // sync_entry -> sync_handler) can resolve ELR/FAR against the same
 // registry NtQueryVirtualMemory already answers from -- no parallel
@@ -312,6 +327,25 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
     // "\??\C:\windows\system32\kernel32.dll" -> "kernel32.dll").
     const char *base = path;
     for (u32b i = 0; i < nchars; i++) if (path[i] == '\\') base = &path[i + 1];
+
+    // CHALICE C3c-2k p2 diagnostic: unconditional (not gated behind the
+    // 64-count dispatch-log cap) so a SECOND open of an already-mapped
+    // module (e.g. "ntdll.dll" self-open during its own module-list
+    // self-registration lookup) is visible even late in a long boot trace.
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtOpenFile "); puts(base); puts("\n");
+        // re-verify ntdll's export directory is STILL intact at THIS point
+        // in the boot sequence (not just at ntdll-map time) -- rules out
+        // any later corruption (relocation passes, other DLL maps) vs a
+        // pure Wine-guest-side loader-state bug.
+        NtImageEntry *ndl = nt_image_find_by_name("ntdll.dll");
+        if (ndl) {
+            u64b a = 0;
+            long rc = pe_find_named_export(ndl->base, ndl->size, "__wine_dbg_header", &a);
+            puts("CHALICE: recheck __wine_dbg_header rc="); puthex((u64b)rc);
+            puts(" addr="); puthex(a); puts("\n");
+        }
+    }
 
     const unsigned char *bytes; u64b bloblen; const char *manifest_name;
     if (!nt_blob_lookup_or_fs(base, &bytes, &bloblen, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
