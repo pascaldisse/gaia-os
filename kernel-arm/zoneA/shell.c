@@ -155,9 +155,14 @@ static void run_cmd(const char *line) {
         // fault log IS the deliverable here; a crash/hang after thunk-entry
         // is expected (SLICE3-SPEC: "the shell may not survive pe6"), so
         // this verb is deliberately LAST in any driven sequence.
+        // CHALICE C3c Atom 3C-2b: arm the IRQ PC-sampling profiler around
+        // the same call -- turns the silent post-thunk spin into a visible
+        // ntdll.dll+RVA trail in the serial log (kmain.c irq_handler).
         nt_dispatch_log_reset();
         nt_dispatch_log_enabled = 1;
+        profile_armed = 1;
         nt_boot_process("hello5.exe", "ntdll.dll", 1);
+        profile_armed = 0;
         nt_dispatch_log_enabled = 0;
         return;
     }

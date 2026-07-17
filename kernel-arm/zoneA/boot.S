@@ -82,7 +82,11 @@ hang:
 .endm
 
 irq_entry:
+    // CHALICE C3c Atom 3C-2b: pass elr_el1 (the interrupted PC) to
+    // irq_handler so a PC-sampling profiler can be driven from the
+    // timer IRQ -- mirrors sync_entry's register-capture pattern below.
     SAVEALL
+    mrs     x0, elr_el1
     bl      irq_handler
     RESTOREALL
     eret

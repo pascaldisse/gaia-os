@@ -22,6 +22,9 @@ void Spawn(void (*fn)(void), const char *name);
 void Yield(void);
 extern volatile u64 ticks;
 
+// kmain.c — CHALICE C3c Atom 3C-2b: IRQ PC-sampling profiler arm flag
+extern volatile int profile_armed;
+
 // shell.c
 void shell_task(void);
 

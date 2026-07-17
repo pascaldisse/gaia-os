@@ -71,22 +71,47 @@ static void timer_start(void) {
     asm volatile("msr daifclr, #2");
 }
 
-void irq_handler(void) {
+// CHALICE C3c Atom 3C-2a: image-relative resolve, from the same registry
+// NtQueryVirtualMemory/nt_boot_process already populate (ntfile.c).
+// Declared here (file-local prototype, same convention this codebase
+// already uses) so both the profiler below and sync_handler further down
+// can call it.
+int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
+
+// CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
+// around a specific call (shell.c pe6) so it never fires during normal
+// boot/shell traffic. Dedup ring keeps the serial log to one line per
+// distinct <module>+RVA seen -- a tight spin shows as 1-3 repeating
+// entries, a walk shows as a growing trail.
+volatile int profile_armed = 0;
+#define PROF_RING_MAX 16
+static u64  prof_addrs[PROF_RING_MAX];
+static int  prof_count;
+
+static void profile_sample(u64 elr) {
+    if (prof_count >= PROF_RING_MAX) return;   // cap reached, stop printing
+    for (int i = 0; i < prof_count; i++)
+        if (prof_addrs[i] == elr) return;      // already seen this exact PC
+
+    char name[64]; u64 off;
+    if (nt_image_resolve(elr, name, sizeof(name), &off)) {
+        puts("CHALICE PROF: "); puts(name); puts("+"); puthex(off); puts("\n");
+    } else {
+        puts("CHALICE PROF: (unmapped) elr="); puthex(elr); puts("\n");
+    }
+    prof_addrs[prof_count++] = elr;
+}
+
+void irq_handler(u64 elr) {
     u64 iar;
     asm volatile("mrs %0, S3_0_C12_C12_0" : "=r"(iar));
     if ((iar & 0xFFFFFF) == 30) {
         ticks++;
+        if (profile_armed) profile_sample(elr);
         asm volatile("msr cntp_tval_el0, %0" :: "r"(tick_interval));
     }
     asm volatile("msr S3_0_C12_C12_1, %0" :: "r"(iar));
 }
-
-// CHALICE C3c Atom 3C-2a: image-relative resolve for ELR/FAR, from the
-// same registry NtQueryVirtualMemory/nt_boot_process already populate
-// (ntfile.c). Declared here rather than pulling in ntfile.h (which drags
-// pemod.h/ntids.h) -- same file-local prototype-duplication convention
-// this codebase already uses for struct offsets.
-int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
 
 // CHALICE C3c Atom 3C-2a: sync_entry (boot.S) now hands over esr/elr/far/
 // orig-sp/regs-frame-ptr -- turn a silent CPU fault into one dense serial
