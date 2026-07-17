@@ -44,6 +44,7 @@
 #define NT_SVC_NTOPENKEY                  18
 #define NT_SVC_NTQUERYVALUEKEY            23
 #define NT_SVC_NTQUERYVIRTUALMEMORY       35  // REAL, CHALICE C3a Atom 3A
+#define NT_SVC_NTQUERYSECTION              81  // REAL, CHALICE C3c-2i (wine-arm64-syscalls.txt:76)
 #define NT_SERVICE_COUNT                 128
 
 // ---- NTSTATUS consts ----

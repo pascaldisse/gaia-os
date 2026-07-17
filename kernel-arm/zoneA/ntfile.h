@@ -23,6 +23,11 @@ long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned lo
 long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long MemoryInformationClass,
                            void *MemoryInformation, unsigned long MemoryInformationLength,
                            unsigned long *ReturnLength);
+// CHALICE C3c-2i: NtQuerySection(SectionImageInformation) -- see ntfile.c
+// for the SECTION_IMAGE_INFORMATION layout receipt.
+long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
+                     void *SectionInformation, unsigned long SectionInformationLength,
+                     unsigned long *ReturnLength);
 
 // NtClose (ntsvc.c) also releases handle-table entries allocated here --
 // this is the release hook it calls for any handle value >= the table's

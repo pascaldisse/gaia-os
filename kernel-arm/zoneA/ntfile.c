@@ -21,6 +21,7 @@ typedef unsigned long  u64b;   // aarch64-none-elf LP64: `unsigned long` = 8B
 typedef unsigned int   u32b;
 typedef unsigned short u16b;
 
+static void wr16(u8 *p, u16b v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
 static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
 
@@ -396,6 +397,93 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
     *BaseAddress = (void *)base;
     *ViewSize = (unsigned long)size;
     nt_image_register(sh->name, base, size, entry, 1);
+    return STATUS_SUCCESS;
+}
+
+// =====================================================================
+// NtQuerySection(SectionImageInformation) -- parses the section's own PE
+// blob (already held by the NTH_SECTION handle NtCreateSection above
+// allocated -- sh->blob/bloblen, the same struct NtMapViewOfSection reads)
+// via pemod.c's pe_query_image_info, and fills a SECTION_IMAGE_INFORMATION
+// out-buffer. This is the gate wine/dlls/ntdll/loader.c's open_dll_file
+// runs BEFORE ever calling NtMapViewOfSection: is_valid_binary() rejects
+// any candidate whose info->Machine != current_machine (0xAA64 on ARM64),
+// so an unwired/zeroed answer here fails EVERY real candidate and the
+// search exhausts to STATUS_INVALID_IMAGE_FORMAT.
+//
+// SECTION_IMAGE_INFORMATION layout (donor wine/include/winternl.h struct,
+// LP64 natural C alignment -- offsets computed from the struct's own field
+// order/sizes, not assumed): TransferAddress@0x00(8) ZeroBits@0x08(4)
+// MaximumStackSize@0x10(8) CommittedStackSize@0x18(8) SubSystemType@0x20(4)
+// MinorSubsystemVersion@0x24(2) MajorSubsystemVersion@0x26(2)
+// MajorOperatingSystemVersion@0x28(2) MinorOperatingSystemVersion@0x2A(2)
+// ImageCharacteristics@0x2C(2) DllCharacteristics@0x2E(2) Machine@0x30(2)
+// ImageContainsCode@0x32(1) ImageFlags@0x33(1) LoaderFlags@0x34(4)
+// ImageFileSize@0x38(4) CheckSum@0x3C(4) -- total 0x40 (64B), matches the
+// well-known Win64 sizeof(SECTION_IMAGE_INFORMATION).
+//
+// Field semantics cross-checked against wine/dlls/ntdll/unix/virtual.c's
+// virtual_fill_image_information() + wine/server/mapping.c's create_mapping
+// (server-side PE-header -> pe_image_info fill, the struct this mirrors):
+// TransferAddress = PREFERRED ImageBase + AddressOfEntryPoint, NOT a
+// runtime-mapped address -- confirmed against loader.c:2735-2743
+// (open_dll_file), NtQuerySection is always called on the section BEFORE
+// NtMapViewOfSection ever runs, so no mapped address exists yet.
+// CheckSum is left 0 (PE checksum field, not read by is_valid_binary or
+// the rest of the boot-critical loader path -- SLICE3-SPEC's own
+// no-registry-needed-to-boot precedent for low-value optional fields).
+// =====================================================================
+#define SII_SIZE                 0x40
+#define SII_TRANSFERADDRESS_OFF  0x00
+#define SII_MAXSTACKSIZE_OFF     0x10
+#define SII_COMMITSTACKSIZE_OFF  0x18
+#define SII_SUBSYSTEMTYPE_OFF    0x20
+#define SII_MINORSUBSYS_OFF      0x24
+#define SII_MAJORSUBSYS_OFF      0x26
+#define SII_MAJOROS_OFF          0x28
+#define SII_MINOROS_OFF          0x2A
+#define SII_IMAGECHAR_OFF        0x2C
+#define SII_DLLCHAR_OFF          0x2E
+#define SII_MACHINE_OFF          0x30
+#define SII_CONTAINSCODE_OFF     0x32
+#define SII_LOADERFLAGS_OFF      0x34
+#define SII_IMAGEFILESIZE_OFF    0x38
+#define SECTION_IMAGE_INFORMATION_CLASS 1   // SECTION_INFORMATION_CLASS enum index
+
+long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
+                     void *SectionInformation, unsigned long SectionInformationLength,
+                     unsigned long *ReturnLength) {
+    if (SectionInformationClass != SECTION_IMAGE_INFORMATION_CLASS) return STATUS_INVALID_INFO_CLASS;
+    if (!SectionInformation) return STATUS_INVALID_PARAMETER;
+    if (SectionInformationLength < SII_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+
+    NtHandleEntry *sh = nt_handle_get(SectionHandle, NTH_SECTION);
+    if (!sh) return STATUS_INVALID_HANDLE;
+
+    PeImageInfo info;
+    if (pe_query_image_info(sh->blob, (unsigned long)sh->bloblen, &info) != 0)
+        return STATUS_INVALID_IMAGE_FORMAT;
+
+    u8 *out = (u8 *)SectionInformation;
+    for (int i = 0; i < SII_SIZE; i++) out[i] = 0;
+
+    u64b transfer = (u64b)info.image_base + (u64b)info.entry_point_rva;
+    wr64(out + SII_TRANSFERADDRESS_OFF, transfer);
+    wr64(out + SII_MAXSTACKSIZE_OFF, (u64b)info.stack_reserve);
+    wr64(out + SII_COMMITSTACKSIZE_OFF, (u64b)info.stack_commit);
+    wr32(out + SII_SUBSYSTEMTYPE_OFF, (u32b)info.subsystem);
+    wr16(out + SII_MINORSUBSYS_OFF, info.subsystem_minor);
+    wr16(out + SII_MAJORSUBSYS_OFF, info.subsystem_major);
+    wr16(out + SII_MAJOROS_OFF, info.os_major);
+    wr16(out + SII_MINOROS_OFF, info.os_minor);
+    wr16(out + SII_IMAGECHAR_OFF, info.image_characteristics);
+    wr16(out + SII_DLLCHAR_OFF, info.dll_characteristics);
+    wr16(out + SII_MACHINE_OFF, info.machine);
+    out[SII_CONTAINSCODE_OFF] = info.contains_code;
+    wr32(out + SII_LOADERFLAGS_OFF, (u32b)info.loader_flags);
+    wr32(out + SII_IMAGEFILESIZE_OFF, (u32b)info.file_size);
+
+    if (ReturnLength) *ReturnLength = SII_SIZE;
     return STATUS_SUCCESS;
 }
 

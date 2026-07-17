@@ -30,13 +30,26 @@ static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (
 #define COFF_MACHINE        0x00
 #define COFF_NSECTIONS      0x02
 #define COFF_OPTHDR_SIZE    0x10
+#define COFF_CHARACTERISTICS 0x12         // CHALICE C3c-2i: FileHeader.Characteristics
 #define OPT_MAGIC           0x00
+#define OPT_SIZEOFCODE      0x04          // CHALICE C3c-2i: OptionalHeader.SizeOfCode
 #define OPT_ENTRYPOINT_RVA  0x10
 #define OPT_IMAGEBASE       0x18          // PE32+ only (magic 0x20B)
+#define OPT_MAJOROSVER      0x28          // CHALICE C3c-2i
+#define OPT_MINOROSVER      0x2A          // CHALICE C3c-2i
+#define OPT_MAJORSUBSYSVER  0x30          // CHALICE C3c-2i
+#define OPT_MINORSUBSYSVER  0x32          // CHALICE C3c-2i
 #define OPT_SIZEOFIMAGE     0x38
 #define OPT_SIZEOFHEADERS   0x3C
+#define OPT_SUBSYSTEM       0x44          // CHALICE C3c-2i
+#define OPT_DLLCHARACTERISTICS 0x46       // CHALICE C3c-2i
+#define OPT_STACKRESERVE    0x48          // CHALICE C3c-2i
+#define OPT_STACKCOMMIT     0x50          // CHALICE C3c-2i
 #define OPT_NUMBER_OF_DIRS  0x6C
 #define OPT_DATA_DIRS       0x70
+#define IMAGE_DIR_COM_DESCRIPTOR 14        // CHALICE C3c-2i: CLR/COM+ header dir index
+#define SEC_CHARACTERISTICS 36             // CHALICE C3c-2i: section header Characteristics
+#define IMAGE_SCN_MEM_EXECUTE 0x20000000L  // CHALICE C3c-2i
 #define SEC_ENTRY_SIZE      40
 #define SEC_VIRTUAL_SIZE    8
 #define SEC_VIRTUAL_ADDR    12
@@ -320,6 +333,94 @@ long pe_find_raw_section(const unsigned char *img, unsigned long lenL, const cha
         return 0;
     }
     return -1;
+}
+
+// CHALICE C3c-2i: NtQuerySection(SectionImageInformation)'s backing parser.
+// See pemod.h for the field-semantics receipt (donor cross-refs). Zeros
+// *out first so any field this PE lacks room for (short optional header,
+// etc.) reads as 0 rather than stale caller memory.
+long pe_query_image_info(const unsigned char *img, unsigned long lenL, PeImageInfo *out) {
+    u64b len = (u64b)lenL;
+    if (!out) return -1;
+    for (u64b i = 0; i < sizeof(*out); i++) ((u8 *)out)[i] = 0;
+
+    if (len < DOS_E_LFANEW + 4) return -1;
+    if (img[0] != 'M' || img[1] != 'Z') return -1;
+
+    u32b e_lfanew = rd32(img + DOS_E_LFANEW);
+    if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE > len) return -1;
+
+    const u8 *pe = img + e_lfanew;
+    if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0) return -1;
+
+    const u8 *coff = pe + 4;
+    u16b machine        = rd16(coff + COFF_MACHINE);
+    u16b nsections      = rd16(coff + COFF_NSECTIONS);
+    u16b opthdr_size    = rd16(coff + COFF_OPTHDR_SIZE);
+    u16b characteristics = rd16(coff + COFF_CHARACTERISTICS);
+    const u8 *opt = coff + COFF_HDR_SIZE;
+    if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE + opthdr_size > len) return -1;
+    if (opthdr_size < OPT_DATA_DIRS) return -1;
+
+    u16b magic = rd16(opt + OPT_MAGIC);
+    if (magic != PE32PLUS_MAGIC) return -1;
+
+    u32b size_of_code  = rd32(opt + OPT_SIZEOFCODE);
+    u32b entry_rva     = rd32(opt + OPT_ENTRYPOINT_RVA);
+    u64b image_base    = rd64(opt + OPT_IMAGEBASE);
+    u16b os_major       = rd16(opt + OPT_MAJOROSVER);
+    u16b os_minor       = rd16(opt + OPT_MINOROSVER);
+    u16b subsys_major   = rd16(opt + OPT_MAJORSUBSYSVER);
+    u16b subsys_minor   = rd16(opt + OPT_MINORSUBSYSVER);
+    u16b subsystem      = rd16(opt + OPT_SUBSYSTEM);
+    u16b dll_char       = rd16(opt + OPT_DLLCHARACTERISTICS);
+    u64b stack_reserve  = rd64(opt + OPT_STACKRESERVE);
+    u64b stack_commit   = rd64(opt + OPT_STACKCOMMIT);
+    u32b num_dirs       = rd32(opt + OPT_NUMBER_OF_DIRS);
+    const u8 *dirs       = opt + OPT_DATA_DIRS;
+
+    // ---- loader_flags: 1 iff a non-empty COM_DESCRIPTOR (CLR) data dir is
+    // present (server/mapping.c: `mapping->image.loader_flags = !!clr_dir`) ----
+    int has_clr = 0;
+    if (num_dirs > IMAGE_DIR_COM_DESCRIPTOR) {
+        const u8 *d = dirs + (u64b)IMAGE_DIR_COM_DESCRIPTOR * 8;
+        if ((u64b)(d - img) + 8 <= len) {
+            u32b vaddr = rd32(d);
+            u32b vsize = rd32(d + 4);
+            has_clr = (vaddr && vsize);
+        }
+    }
+
+    // ---- contains_code: SizeOfCode!=0 OR any section IMAGE_SCN_MEM_EXECUTE
+    // (server/mapping.c's own two-part test) ----
+    int contains_code = size_of_code != 0;
+    if (!contains_code) {
+        const u8 *sectab = opt + opthdr_size;
+        if ((u64b)(sectab - img) + (u64b)nsections * SEC_ENTRY_SIZE <= len) {
+            for (u16b s = 0; s < nsections && !contains_code; s++) {
+                const u8 *sh = sectab + (u32b)s * SEC_ENTRY_SIZE;
+                u32b sec_char = rd32(sh + SEC_CHARACTERISTICS);
+                if (sec_char & IMAGE_SCN_MEM_EXECUTE) contains_code = 1;
+            }
+        }
+    }
+
+    out->machine               = machine;
+    out->subsystem              = subsystem;
+    out->subsystem_major        = subsys_major;
+    out->subsystem_minor        = subsys_minor;
+    out->os_major                = os_major;
+    out->os_minor                = os_minor;
+    out->image_characteristics  = characteristics;
+    out->dll_characteristics    = dll_char;
+    out->image_base              = (unsigned long)image_base;
+    out->entry_point_rva         = (unsigned long)entry_rva;
+    out->stack_reserve           = (unsigned long)stack_reserve;
+    out->stack_commit            = (unsigned long)stack_commit;
+    out->loader_flags            = has_clr ? 1 : 0;
+    out->file_size                = (unsigned long)len;
+    out->contains_code           = (unsigned char)(contains_code ? 1 : 0);
+    return 0;
 }
 
 long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int use_nt) {

@@ -91,3 +91,33 @@ long pe_find_named_export(unsigned long base, unsigned long size_of_image,
 // malformed header, -2 = PointerToRawData outside the file.
 long pe_find_raw_section(const unsigned char *img, unsigned long len, const char *name8,
                           unsigned long *out_off, unsigned long *out_size);
+
+// CHALICE C3c-2i: raw (unmapped) PE image-info parser -- walks an
+// UNMAPPED blob's own DOS/NT/optional headers (same header-walk
+// pe_find_raw_section/PeMapImage already do, no PeMapImage/allocator
+// involved) for the fields NtQuerySection(SectionImageInformation)
+// (ntfile.c) reports. Machine + ImageBase + EntryPointRVA are the
+// load-bearing trio (wine/dlls/ntdll/loader.c's is_valid_binary gates on
+// Machine; TransferAddress = ImageBase+EntryPointRVA, the PREFERRED base,
+// per wine/server/mapping.c's create_mapping + unix/virtual.c's
+// virtual_fill_image_information -- NtQuerySection is always called BEFORE
+// NtMapViewOfSection in open_dll_file, so no runtime-mapped address exists
+// yet). contains_code mirrors server/mapping.c: SizeOfCode!=0 OR any
+// section has IMAGE_SCN_MEM_EXECUTE. loader_flags mirrors server/
+// mapping.c: 1 iff a non-empty COM_DESCRIPTOR (CLR) data directory is
+// present, else 0. Returns: 0 = ok, -1 = not a valid PE32+/ARM64 header.
+typedef struct {
+    unsigned short machine;                 // FileHeader.Machine
+    unsigned short subsystem;                // OptionalHeader.Subsystem
+    unsigned short subsystem_major, subsystem_minor;
+    unsigned short os_major, os_minor;
+    unsigned short image_characteristics;    // FileHeader.Characteristics
+    unsigned short dll_characteristics;      // OptionalHeader.DllCharacteristics
+    unsigned long  image_base;               // OptionalHeader.ImageBase (preferred)
+    unsigned long  entry_point_rva;          // OptionalHeader.AddressOfEntryPoint
+    unsigned long  stack_reserve, stack_commit;
+    unsigned long  loader_flags;
+    unsigned long  file_size;                // == caller's blob length
+    unsigned char  contains_code;
+} PeImageInfo;
+long pe_query_image_info(const unsigned char *img, unsigned long len, PeImageInfo *out);
