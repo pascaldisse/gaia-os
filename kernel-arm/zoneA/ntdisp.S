@@ -68,11 +68,38 @@ nt_dispatch:
                                      // already pushed them here per its own
                                      // C compiler's calling convention).
 
-    ldr  x19, [x18, #0x378]         // NT_TEB_SYSCALL_FRAME_OFF: reuse if set
-    cbnz x19, 1f
-    sub  x19, sp, #0x330            // carve sizeof(struct syscall_frame)
-    str  x19, [x18, #0x378]
+    ldr  x10, [x18, #0x378]         // NT_TEB_SYSCALL_FRAME_OFF: reuse if set
+    cbnz x10, 1f
+    sub  x10, sp, #0x330            // carve sizeof(struct syscall_frame)
+    str  x10, [x18, #0x378]
 1:
+    // ---- CHALICE C3c-2e p2: PE-side callee-saved x19-x28 preservation.
+    // Root-caused via disasm (stock ntdll.dll allocate_region, heap.c):
+    // real ARM64 `svc` leaves EVERY GPR except x0 exactly as the caller
+    // left it (no real trap here -- this dispatcher is a `blr` target, so
+    // it must emulate that contract by hand). x19-x24 below are used as
+    // this dispatcher's OWN internal scratch (frame ptr, service id, table
+    // index/entry, handler-ptr stash, TEB stash) WITHOUT ever being saved
+    // -- a caller that keeps its own locals in x19-x24 across two
+    // back-to-back syscalls (stock allocate_region does exactly this: its
+    // own x19=commit_size ptr, x21=Protect value, live across the
+    // RESERVE-then-COMMIT call pair) gets those locals silently
+    // overwritten with dispatcher internals (a frame-pointer kernel
+    // address landed in the caller's x19; &nt_service_tables[idx] landed
+    // in the caller's x21) -- confirmed against the pe6 trace: call #2's
+    // *RegionSize read back as -1 and Protect read back as 0x4021D780 (a
+    // live kernel .data address, matching &nt_service_tables[0] range),
+    // both exactly the dispatcher's own x19/x21 scratch values. Fix: save
+    // the INCOMING x19-x28 into the frame (using x10, not yet repurposed,
+    // as frame base) before ANY of them are touched; dispatch_return
+    // restores them verbatim, so the PE caller sees x19-x28 completely
+    // unchanged across the call, exactly like a real `svc`.
+    stp  x19, x20, [x10, #0x130]
+    stp  x21, x22, [x10, #0x140]
+    stp  x23, x24, [x10, #0x150]
+    stp  x25, x26, [x10, #0x160]
+    stp  x27, x28, [x10, #0x170]
+    mov  x19, x10                   // NOW safe to repurpose x19 as frame ptr
     mov  sp, x19                    // frame becomes new top of stack
 
     stp  x0,  x1,  [x19, #0x00]     // syscall_frame x0..x28 @ 0 (spec layout)
@@ -81,12 +108,18 @@ nt_dispatch:
     stp  x6,  x7,  [x19, #0x30]
     // DEVIATION vs donor (signal_arm64.c:1630+ spills all of x0-x28 and
     // q0-q31): Atom A only spills x0-x7 (the args every real handler here
-    // needs) + fp/lr/sp/pc/cpsr/id. None of NtWriteFile/NtClose/
-    // NtTerminateProcess touch x8-x28 or vector regs. Atom B's NtContinue
-    // also fits this spill range unchanged: its only real arguments are x0
-    // (ContextRecord ptr) and x1 (TestAlert), both within x0-x7 -- the full
-    // x0-x30 restore it performs reads directly from *ContextRecord in
-    // memory, not from this frame's spilled registers.
+    // needs) + fp/lr/sp/pc/cpsr/id, PLUS (C3c-2e p2) x19-x28 for PE-caller
+    // preservation (see note above -- this closes that gap; x8-x18/x29-x30
+    // are covered separately: x8 is an id-carrying scratch reg by the NT
+    // ABI itself, not caller-preserved; x18=TEB is the dispatcher's own
+    // domain; fp/pc already spilled below; x9-x17 are AAPCS64 caller-saved,
+    // never guaranteed to survive any call including a real `svc`-adjacent
+    // sequence). None of NtWriteFile/NtClose/NtTerminateProcess touch
+    // x8-x18 or vector regs. Atom B's NtContinue also fits this spill range
+    // unchanged: its only real arguments are x0 (ContextRecord ptr) and x1
+    // (TestAlert), both within x0-x7 -- the full x0-x30 restore it performs
+    // reads directly from *ContextRecord in memory, not from this frame's
+    // spilled registers.
     str  x29, [x19, #0xe8]          // frame->fp
     str  x9,  [x19, #0xf0]          // frame->sp  (caller's original sp)
     str  x30, [x19, #0x100]         // frame->pc  (return addr into PE stub)
@@ -178,6 +211,15 @@ dispatch_return:
     ldr  x16, [x10, #0x100]         // frame->pc  ("ret x16" pattern, donor)
     ldr  x17, [x10, #0xf0]          // frame->sp
     ldr  x30, [x10, #0x110]         // frame->stub_lr (Atom B fix, see header)
+    // CHALICE C3c-2e p2: restore the PE caller's original x19-x28 verbatim
+    // (saved at entry above) -- must happen before `mov sp,x17` clobbers
+    // our own x19 (this dispatcher's frame ptr, no longer needed past this
+    // point) and before the frame slot is zeroed.
+    ldp  x19, x20, [x10, #0x130]
+    ldp  x21, x22, [x10, #0x140]
+    ldp  x23, x24, [x10, #0x150]
+    ldp  x25, x26, [x10, #0x160]
+    ldp  x27, x28, [x10, #0x170]
     mov  sp, x17
     str  xzr, [x18, #0x378]         // Atom A: one-shot frame, no re-entrancy
     ret  x16
