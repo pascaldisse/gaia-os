@@ -1,3 +1,52 @@
+## State refresh (2026-07-18, C3c-2j) -- hello6.exe real KERNEL32.dll import gate (pe7, diagnostic frontier)
+HEAD `b065672` (+this note). Built hello6.exe: genuine ARM64 PE console exe
+whose Import Directory names KERNEL32.dll + GetStdHandle/WriteFile/
+ExitProcess (zig's bundled mingw-w64 kernel32 import def via `-lkernel32`,
+NOT libgaia.a; proof: `llvm-objdump -p hello6.exe` -> "DLL Name:
+KERNEL32.dll" + the 3 names). Embedded (blob manifest slot 8/8, exact fit)
++ new `pe7` verb (nt_boot_process("hello6.exe","ntdll.dll",1), same
+dispatch-log/profiler rig as pe6). nt_boot_process gained a `label` param
+(was hardcoded "pe5"/"pe6" off `stock` alone) so pe7 prints its own
+"pe7 ret=<N>" line; pe5/pe6 callers updated, no behavior change (proven:
+pe6 still prints "pe6 ret=99" in the no-regression gate). RESULT (pe7, via
+scratch/pe7_gate.py, NOT added to chalice_gate.py's required list this
+atom -- diagnostic frontier per plan): kernel32.dll maps exactly as it
+does for pe6 (single NtCreateSection(74)/NtQuerySection(81)/
+NtMapViewOfSection(40) triple, 15x NtProtectVirtualMemory relocation
+passes) -- but hello6.exe's own KERNEL32.dll import (the actual atom
+target) is NEVER reached. Instead, after the kernel32 map, ntdll runs a
+burst of 0xFD0000-sized NtAllocateVirtualMemory probe reservations
+(dependency search-path candidates, same shape as C3c-2h/2i's kernelbase
+probing) then hits `wine: Call from <addr> to unimplemented function
+ntdll.dll.__wine_dbg_header, aborting` -- a THIRD Wine internal debug-
+channel entry point (distinct from __wine_dbg_output, already handled via
+NT_UNIXCALL_DBG_WRITE, and __wine_unix_call_dispatcher, already wired)
+that nt_boot_process never resolves/wires at all. Wine's own
+"unimplemented function" abort path then raises NtRaiseException
+(id=207/0xCF, real Wine syscall number per wine-arm64-syscalls.txt, way
+past our NT_SERVICE_COUNT=128 table capacity so STATUS_INVALID_SYSTEM_
+SERVICE every time) in an unbroken retry loop (28233 consecutive hits, no
+other svc interleaved) -- state visibly degrades under the loop (ever-
+growing 0xFD0000 reservations continue alongside it) until a genuine ARM64
+Data Abort (esr=0x96000004, ec=0x25) at elr=0x40204954 (inside OUR OWN
+kernel code, not any mapped guest image) with a non-canonical
+far=0x3000000D1, consistent with corruption accumulated during the retry
+storm. No kernelbase.dll NtCreateSection/NtMapViewOfSection pair ever
+fired (same as pe6/HANDOFF C3c-2i's open note); "CHALICE: kernel32
+speaks" never printed; pe7 never reaches NtTerminateProcess (no "pe7
+ret=" line). NEXT GAP (plain words, not chased this atom): wire
+__wine_dbg_header (find its export/forwarder in stock ntdll.dll, same
+lookup+write pattern nt_boot_process already uses for __wine_syscall_
+dispatcher/__wine_unixlib_handle/__wine_unix_call_dispatcher) so this
+Wine-internal call resolves instead of aborting -- until then hello6.exe's
+own import table is never even walked, so nothing yet exercises the real
+kernel32 Win32 API path (GetStdHandle/WriteFile) this atom set out to
+prove. No-regression gate green: chalice_gate.py (all 16 lines, pe6 still
+completes to "pe6 ret=99" with the new `label` param) + ramfb_gate.py -m
+1G (pattern + all 4 corners correct, shell answered same boot). No qemu
+leaks (pgrep clean before/after every drive, scratch/pe7_gate.py mirrors
+chalice_gate.py's socket-harness convention, never launched QEMU naked).
+
 ## State refresh (2026-07-17, C3c-2i) -- NtQuerySection wired, kernel32 maps, c000007b GONE
 HEAD `acc6652`. Added pemod.c's pe_query_image_info (raw unmapped-blob DOS/NT/
 optional-header walk, same pattern as pe_find_raw_section) + ntfile.c's
