@@ -270,6 +270,58 @@ long pe_find_named_export(unsigned long baseL, unsigned long size_of_imageL,
     return -1;
 }
 
+// CHALICE C3c-2h: raw (unmapped) PE section finder -- locates a section by
+// its 8-byte on-disk Name field directly in the FILE bytes (no PeMapImage,
+// no relocation, no allocator). Matches wine's own load_apiset_dll
+// (wine/dlls/ntdll/unix/loader.c:1726) receipt exactly: apisetschema.dll is
+// mapped SEC_COMMIT flat there (not SEC_IMAGE), so a section's on-disk
+// PointerToRawData IS its offset in that flat mapping too -- no VA/RVA
+// translation needed, we can read straight out of the same file-bytes
+// buffer ntfile.c's blob lookup already returned. *out_off/*out_size give
+// the section's raw byte range, capped to both SizeOfRawData and
+// VirtualSize and to the bytes actually available in the file (mirrors
+// the donor's own `size - PointerToRawData >= VirtualSize` guard, done as
+// a clamp instead of a hard reject so a short/truncated tail can't read
+// past the buffer). Returns: 0 = found (out_off/out_size valid), -1 = not
+// found or malformed header, -2 = PointerToRawData outside the file.
+long pe_find_raw_section(const unsigned char *img, unsigned long lenL, const char *name8,
+                          unsigned long *out_off, unsigned long *out_size) {
+    u64b len = (u64b)lenL;
+    if (len < DOS_E_LFANEW + 4) return -1;
+    if (img[0] != 'M' || img[1] != 'Z') return -1;
+    u32b e_lfanew = rd32(img + DOS_E_LFANEW);
+    if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE > len) return -1;
+    const u8 *pe = img + e_lfanew;
+    if (pe[0] != 'P' || pe[1] != 'E' || pe[2] != 0 || pe[3] != 0) return -1;
+    const u8 *coff = pe + 4;
+    u16b nsections   = rd16(coff + COFF_NSECTIONS);
+    u16b opthdr_size = rd16(coff + COFF_OPTHDR_SIZE);
+    const u8 *opt = coff + COFF_HDR_SIZE;
+    if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE + opthdr_size > len) return -1;
+    const u8 *sectab = opt + opthdr_size;
+    if ((u64b)(sectab - img) + (u64b)nsections * SEC_ENTRY_SIZE > len) return -1;
+
+    for (u16b s = 0; s < nsections; s++) {
+        const u8 *sh = sectab + (u32b)s * SEC_ENTRY_SIZE;
+        int match = 1;
+        for (int i = 0; i < 8; i++) if (sh[i] != (u8)name8[i]) { match = 0; break; }
+        if (!match) continue;
+
+        u32b vsize   = rd32(sh + SEC_VIRTUAL_SIZE);
+        u32b rawsize = rd32(sh + SEC_RAW_SIZE);
+        u32b rawptr  = rd32(sh + SEC_RAW_PTR);
+        if (!rawptr || (u64b)rawptr >= len) return -2;
+
+        u64b avail = len - rawptr;
+        u32b size = rawsize < vsize ? rawsize : vsize;
+        if ((u64b)size > avail) size = (u32b)avail;
+        *out_off  = rawptr;
+        *out_size = size;
+        return 0;
+    }
+    return -1;
+}
+
 long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int use_nt) {
     // NOTE: `unsigned long` here, not this file's own `u64b` (=`unsigned
     // long long` in pemod.c's local typedefs) -- PeMapImage's out-params are

@@ -20,7 +20,10 @@ ASSET_URL="https://github.com/AndreRH/hangover/releases/download/${RELEASE_TAG}/
 DEB_MEMBER='hangover-wine_11.9~trixie_arm64.deb'
 DLL_SUBDIR="./usr/lib/wine/aarch64-windows"
 OUT_DIR="stock"
-TARGETS="ntdll.dll kernel32.dll kernelbase.dll"
+# CHALICE C3c-2h: apisetschema.dll added -- same aarch64-windows dir, holds
+# the .apiset section PEB->ApiSetMap points at (import-name resolution for
+# api-ms-win-*/api-set imports, wine/dlls/ntdll/unix/loader.c load_apiset_dll).
+TARGETS="ntdll.dll kernel32.dll kernelbase.dll apisetschema.dll"
 
 all_present() {
     for f in $TARGETS; do

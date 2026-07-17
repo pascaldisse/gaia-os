@@ -145,6 +145,19 @@ static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
 #define TEB_NTTIB_STACKLIMIT_OFF   0x10
 #define TEB_PEB_OFF                0x60   // ntsvc.c receipt, duplicated (file-local const convention)
 #define PEB_PROCESSPARAMETERS_OFF  0x20   // ntsvc.c receipt, duplicated
+// CHALICE C3c-2h: PEB.ApiSetMap. Donor receipt (wine/include/winternl.h,
+// reactos/sdk/include/wine/winternl.h -- both agree): field comment
+// "ApiSetMap; /* 038/068 */" -- the TWO numbers are the 32-bit/64-bit
+// build offsets of the SAME field, not two different fields. This kernel
+// is LP64 (aarch64-none-elf) building an LP64 (aarch64-windows-gnu) PEB,
+// i.e. the 64-bit branch -> 0x68, NOT 0x38 (that's the x86/WoW64 offset --
+// verified against the donor before use, not assumed from any well-known-
+// public-offset table). Cross-check: ntsvc.c's own PEB_PROCESSPARAMETERS_OFF
+// (0x20/RTL_USER_PROCESS_PARAMETERS* @ "010/020") and its
+// TlsExpansionCounter C_ASSERT anchor ("03c/070" -> 0x70) both follow the
+// exact same 32-bit/64-bit dual-offset comment convention in the same
+// donor header, one field after ApiSetMap -- consistent.
+#define PEB_APISETMAP_OFF          0x68
 #define PARAMS_STANDARDINPUT_OFF   0x20
 #define PARAMS_STANDARDERROR_OFF   0x30
 #define PARAMS_IMAGEPATHNAME_OFF   0x60
@@ -167,6 +180,52 @@ static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
 
 static void widen_ascii(const char *s, u16b *out, u64b n) {
     for (u64b i = 0; i < n; i++) out[i] = (u16b)(unsigned char)s[i];
+}
+
+// CHALICE C3c-2h: PEB.ApiSetMap wiring -- replicates wine's own unix-side
+// load_apiset_dll (wine/dlls/ntdll/unix/loader.c:1726, donor receipt in
+// HANDOFF) on our boot path. ntdll's import-name resolution
+// (build_import_name, loader.c:756) reads PEB.ApiSetMap on EVERY api-ms-
+// win-*/api-set import; left null, every such import resolves to
+// STATUS_DLL_NOT_FOUND before any file is even opened -- confirmed live
+// this session: kernel32.dll's own NtOpenFile fires, but no dependency's
+// ever does, and ntdll cleanly reports "could not load kernel32.dll,
+// status c0000135" and exits. Gated to stock=1 only by the caller (Atom
+// 3B's fake-ntdll.c dress rehearsal never reads this PEB field).
+static long nt_wire_apiset(u8 *peb) {
+    const unsigned char *schema_bytes; u64b schema_len;
+    if (!boot_blob_lookup("apisetschema.dll", &schema_bytes, &schema_len))
+        return boot_err("apisetschema.dll blob not found");
+
+    // .apiset's raw on-disk range -- apisetschema.dll is a data-only DLL
+    // wine maps SEC_COMMIT flat (not SEC_IMAGE), so PointerToRawData is
+    // already the right offset into the very same file-bytes buffer
+    // boot_blob_lookup just returned (pe_find_raw_section receipt,
+    // pemod.c/h) -- no PeMapImage, no separate copy or allocator call.
+    unsigned long sec_off = 0, sec_size = 0;
+    long rc = pe_find_raw_section(schema_bytes, (unsigned long)schema_len, ".apiset", &sec_off, &sec_size);
+    if (rc != 0) return boot_err("apisetschema.dll: .apiset section not found");
+    if (sec_size < 28) return boot_err("apisetschema.dll: .apiset section too small for API_SET_NAMESPACE header");
+
+    // schema_bytes itself is a STABLE, persistent address: for the FS-
+    // fallback path (the one stock=1 always takes -- apisetschema.dll is
+    // never in the embedded manifest) it's a DLL-territory bump allocation
+    // (ntfile.c's nt_blob_lookup_fs), never freed/overwritten for the
+    // kernel's lifetime -- exactly the guarantee PEB.ApiSetMap needs
+    // (read on every import for the process's whole life). Point straight
+    // at the section's bytes inside it; no extra copy required.
+    const u8 *map = schema_bytes + sec_off;
+    u32b version = (u32b)map[0] | ((u32b)map[1] << 8) | ((u32b)map[2] << 16) | ((u32b)map[3] << 24);
+    u32b mapsize  = (u32b)map[4] | ((u32b)map[5] << 8) | ((u32b)map[6] << 16) | ((u32b)map[7] << 24);
+    // API_SET_NAMESPACE (winternl.h): Version@0, Size@4 (donor validation
+    // this atom replicates: "map->Version==6 && map->Size<=VirtualSize").
+    if (version != 6) return boot_err("apisetschema.dll: .apiset Version != 6");
+    if ((u64b)mapsize > sec_size) return boot_err("apisetschema.dll: .apiset Size exceeds section VirtualSize");
+
+    wr64(peb + PEB_APISETMAP_OFF, (u64b)map);
+    puts("CHALICE: ApiSetMap wired addr="); puthex((u64b)map);
+    puts(" size="); putdec_signed((long)mapsize); puts("\n");
+    return 0;
 }
 
 #define NT_BOOT_STACK_SIZE 0x10000UL
@@ -294,6 +353,13 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
     wr16(params + PARAMS_COMMANDLINE_OFF + US_LENGTH_OFF, (u16b)(namelen * 2));
     wr16(params + PARAMS_COMMANDLINE_OFF + US_MAXLENGTH_OFF, (u16b)(namelen * 2));
     wr64(params + PARAMS_COMMANDLINE_OFF + US_BUFFER_OFF, (u64b)wname);
+
+    // ---- CHALICE C3c-2h: PEB.ApiSetMap, stock=1 only (Atom 3B's
+    // fake-ntdll.c dress rehearsal never reads this field). Must land
+    // before the thunk is entered -- ntdll's import-name resolution reads
+    // it starting with kernel32.dll's own import walk, immediately after
+    // "stock thunk enters". ----
+    if (stock && nt_wire_apiset(peb) != 0) return -1;
 
     // ---- synthetic CONTEXT, pushed onto the new stack (16-aligned).
     // Architecture verdict 2 exact shape: X0=exe_entry, X1=arg(0), X18=teb,

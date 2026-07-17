@@ -91,11 +91,15 @@ echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 # ../chalice/stock/ isn't populated yet (fetch-stock-dlls.sh not run) --
 # keeps earlier slice-2/3A/3B gates buildable from a fresh clone.
 STOCK_DIR=../chalice/stock
-if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ]; then
+# CHALICE C3c-2h: apisetschema.dll joins the populate set -- holds the
+# .apiset section PEB->ApiSetMap points at (import-name resolution for
+# api-ms-win-*/api-set imports, ntboot.c nt_wire_apiset).
+if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ] && [ -s "$STOCK_DIR/apisetschema.dll" ]; then
     python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
         ntdll.dll="$STOCK_DIR/ntdll.dll" \
         kernel32.dll="$STOCK_DIR/kernel32.dll" \
-        kernelbase.dll="$STOCK_DIR/kernelbase.dll"
+        kernelbase.dll="$STOCK_DIR/kernelbase.dll" \
+        apisetschema.dll="$STOCK_DIR/apisetschema.dll"
 elif [ ! -f disk.img ]; then
     dd if=/dev/zero of=disk.img bs=1m count=4 2>/dev/null
     printf 'GAIA-OS TEMPLE DISK  LOVE=1.000  --  the first stone laid 2026-07-08' \

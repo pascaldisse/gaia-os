@@ -78,3 +78,16 @@ long PeMapImage(const unsigned char *img, unsigned long len, const char *tag, Pe
 // error per spec), -3 = image has no export directory.
 long pe_find_named_export(unsigned long base, unsigned long size_of_image,
                            const char *name, unsigned long *out_addr);
+
+// CHALICE C3c-2h: raw (unmapped) PE section finder -- walks an
+// UNMAPPED file's own section table (DOS/NT headers, no PeMapImage/
+// allocator involved) for an 8-byte section Name (e.g. ".apiset\0"),
+// returning its raw on-disk byte range (*out_off/*out_size, clamped to
+// SizeOfRawData/VirtualSize/file length). Built for ntboot.c's ApiSetMap
+// wiring (apisetschema.dll is read as a flat SEC_COMMIT-style mapping in
+// wine's own donor loader -- PointerToRawData IS the offset into that flat
+// mapping, no RVA translation needed, so this walks the FILE bytes
+// directly, not a PeMapImage'd image). Returns: 0 = found, -1 = not found/
+// malformed header, -2 = PointerToRawData outside the file.
+long pe_find_raw_section(const unsigned char *img, unsigned long len, const char *name8,
+                          unsigned long *out_off, unsigned long *out_size);
