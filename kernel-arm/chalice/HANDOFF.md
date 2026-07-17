@@ -1,3 +1,17 @@
+## State refresh (2026-07-17, C3c-2g) -- territory-routed, OOM gone
+HEAD `4f86687`. `nt_vm_alloc`(ntsvc.c)+`nt_blob_lookup_fs`'s 16MB-per-open
+buffer(ntfile.c) now draw from the DLL-territory bump allocator instead of
+mem.c's 64MB heap. Result: `MAlloc: OUT OF MEMORY` is GONE from pe6's trace
+-- NtCreateSection/NtMapViewOfSection fire and succeed for kernel32.dll,
+ntdll walks dozens more VM/registry/query calls well past the old OOM
+death point, then wine's loader.c itself prints "could not load
+kernel32.dll, status c0000135" and exits clean (no crash/fault). NEXT GAP:
+no second NtCreateSection/NtMapViewOfSection pair ever fires for
+kernelbase.dll (kernel32's runtime dependency) -- failure is inside
+ntdll's own kernel32.dll validation/import-walk, before it gets far enough
+to recurse into loading a dependency. No-regression gate green (chalice_
+gate.py + ramfb_gate.py -m 1G, all lines incl. stock ntdll/kernel32 pair).
+
 # CHALICE HANDOFF — Windows-ABI compatibility layer for GAIA-OS
 
 Purpose: let GAIA-OS run programs built for the Windows ABI, the same way
