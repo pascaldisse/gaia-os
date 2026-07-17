@@ -78,41 +78,41 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
 
 // =====================================================================
 // Atom B — flat page-aligned VM arena (NtAllocateVirtualMemory /
-// NtFreeVirtualMemory). HANDOFF: "flat arena OK, skip VAD tree". Backed by
-// mem.c's MAlloc (over-allocate + align, same trick pemod.c already uses
-// for PE image bases) rather than a dedicated static region — a dedicated
-// large static .bss array was considered and rejected: the kernel currently
-// links+bss's to ~0x40229688 (verified via `nm`), MemInit's HEAP_BASE is a
-// hardcoded 0x41000000 (mem.c), leaving only ~14 MB of headroom before the
-// heap base — a multi-MB static arena would risk colliding with the heap.
-// Routing through MAlloc keeps everything inside the existing 64 MB heap
-// (0x41000000-0x45000000), nowhere near KUSER_SHARED_DATA @ 0x7ffe0000 (the
-// mem.c arena-bounds check SLICE2-SPEC Atom B asks to verify — confirmed by
-// inspection: heap ceiling 0x45000000 is ~0.8 GB below 0x7ffe0000, no guard
-// needed in mem.c itself).
+// NtFreeVirtualMemory). HANDOFF: "flat arena OK, skip VAD tree".
+// CHALICE C3c-2g: no longer backed by mem.c's 64 MB MAlloc heap (that
+// starved the stock loader — ntdll's own image-load reservations alone
+// exhausted it before kernel32.dll/kernelbase.dll could ever fit). Backed
+// instead by ntfile.c's DLL-territory bump allocator (nt_territory_alloc,
+// 0x45000000-0x7ff00000, ~0.75 GB of identity-mapped RAM under QEMU -m 1G,
+// already the backing store for NtMapViewOfSection's image maps) — one
+// shared territory bump pointer for VM-arena regions, FS-fallback file
+// blobs (below), and mapped images, so none of the three can overlap.
+// nt_territory_alloc zero-fills every page it hands back (ntdll assumes
+// freshly committed VM reads as zero) and is page-rounded already, so no
+// separate raw/aligned split is needed here (unlike the old MAlloc trick).
 #define NT_PAGE_SIZE 4096UL
 #define NT_VM_MAX_REGIONS 64
 
 static struct {
-    void   *raw;        // the underlying MAlloc pointer (pre-alignment)
+    void   *raw;        // == aligned; territory is already page-aligned
     void   *aligned;     // page-aligned pointer handed to the PE side
     u64b    size;         // page-rounded size
     int     used;
 } nt_vm_regions[NT_VM_MAX_REGIONS];
 
 static void *nt_vm_alloc(u64b size) {
-    u8 *raw = (u8 *)MAlloc(size + NT_PAGE_SIZE);
-    if (!raw) return 0;
-    u8 *aligned = (u8 *)(((u64b)raw + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1));
+    u8 *aligned = nt_territory_alloc(size);   // ntfile.h; zero-filled, page-aligned
+    if (!aligned) return 0;
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (nt_vm_regions[i].used) continue;
-        nt_vm_regions[i].raw = raw;
+        nt_vm_regions[i].raw = aligned;
         nt_vm_regions[i].aligned = aligned;
         nt_vm_regions[i].size = size;
         nt_vm_regions[i].used = 1;
         return aligned;
     }
-    Free(raw);   // no tracking slot left — fail cleanly rather than leak untracked
+    // no tracking slot left — the territory bump has no reclaim anyway, so
+    // there's nothing to undo here; just fail this call cleanly.
     return 0;
 }
 
@@ -130,11 +130,15 @@ static int nt_vm_region_contains(void *addr) {
 
 // Returns page-rounded size of the freed region via *out_size, or 0 if
 // aligned wasn't a live region (unknown/already-freed base).
+// CHALICE C3c-2g: the territory backing this region is bump-only (no
+// reclaim) — matches HANDOFF's own "0.75 GB is ample for load-time, do NOT
+// over-engineer a reclaiming allocator now". Free just marks the tracking
+// slot unused (frees the *handle*, not the bump space); nt_vm_region_contains
+// correctly stops seeing it as live either way.
 static int nt_vm_free(void *aligned, u64b *out_size) {
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (!nt_vm_regions[i].used || nt_vm_regions[i].aligned != aligned) continue;
         if (out_size) *out_size = nt_vm_regions[i].size;
-        Free(nt_vm_regions[i].raw);
         nt_vm_regions[i].used = 0;
         return 1;
     }

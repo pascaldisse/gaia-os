@@ -78,14 +78,21 @@ static int nt_blob_lookup(const char *basename, const unsigned char **out_bytes,
 // big to embed as xxd byte arrays in the kernel image (~20MB combined,
 // SLICE3-SPEC Atom 3C) -- they instead live on the RedSea-spirit disk
 // (kernel-arm/chalice/mkdisk.py bakes them in at build time, lowercase
-// names). On a manifest miss, do a whole-file FsRead into a heap buffer
-// (MAlloc, 64MB arena -- "heap buffer" per spec, distinct from the
-// DLL-territory bump allocator PeMapImage's *output* uses) sized generously
-// above any real stock DLL (largest observed: kernelbase.dll ~9MB, wine
-// 11.9 aarch64-windows) then store the SAME way a manifest hit would (bytes
-// pointer + exact length FsRead reports, name = a heap-owned lowercase
+// names). On a manifest miss, do a whole-file FsRead into a buffer sized
+// generously above any real stock DLL (largest observed: kernelbase.dll
+// ~9MB, wine 11.9 aarch64-windows) then store the SAME way a manifest hit
+// would (bytes pointer + exact length FsRead reports, name = a lowercase
 // copy so nt_handle_alloc's `name` field stays valid for the handle's
 // lifetime, matching the manifest path's static-lifetime-string contract).
+// CHALICE C3c-2g: this buffer (+ the small namebuf) used to come from
+// mem.c's 64MB MAlloc heap -- one NT_FS_FALLBACK_MAX (16MB) allocation PER
+// open, and the stock loader opens kernelbase.dll+kernel32.dll+more in one
+// run, so 2-4 opens alone exhausted the *entire* 64MB heap on their own
+// (independent of the VM-arena sink in ntsvc.c). Routed to the same
+// DLL-territory bump allocator (nt_territory_alloc, below) the VM arena and
+// image maps now share -- 0.75GB of headroom easily absorbs load-time's
+// few dozen MB of raw file bytes, no reclaim needed (same bump-only
+// simplification already accepted for the VM arena and PeMapImage's maps).
 // Case-insensitive: fs.c's own on-disk names are lowercase (mkdisk.py
 // convention); this fallback lowercases the query basename before FsRead
 // so any-case PE-side path components (e.g. "C:\...\NTDLL.DLL") still hit.
@@ -103,13 +110,16 @@ static int nt_blob_lookup_fs(const char *basename, const unsigned char **out_byt
     }
     lower[n] = 0;
 
-    unsigned char *buf = (unsigned char *)MAlloc(NT_FS_FALLBACK_MAX);
+    unsigned char *buf = nt_territory_alloc(NT_FS_FALLBACK_MAX);
     if (!buf) return 0;
     long got = FsRead(lower, buf, NT_FS_FALLBACK_MAX);
-    if (got <= 0) { Free(buf); return 0; }
+    // territory is bump-only -- no Free() on a short read; the wasted
+    // pages just sit unreclaimed (same simplification as everywhere else
+    // in this file), still trivial against the 0.75GB budget.
+    if (got <= 0) return 0;
 
-    char *namebuf = (char *)MAlloc((u64b)n + 1);
-    if (!namebuf) { Free(buf); return 0; }
+    char *namebuf = (char *)nt_territory_alloc((u64b)n + 1);
+    if (!namebuf) return 0;
     for (int i = 0; i < n; i++) namebuf[i] = lower[i];
     namebuf[n] = 0;
 
