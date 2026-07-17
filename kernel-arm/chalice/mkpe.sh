@@ -20,6 +20,17 @@ CFLAGS="-target $TARGET -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=
 # TEB/PEB trapdoor walk. No DLL import (dispatch goes through TEB, not IAT).
 "$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello3.exe hello3.c ntstub.S
 
+# CHALICE C3a Atom 3A — mini.dll: no-import DLL test payload (exports
+# MiniAdd) + hello4.exe: NtOpenFile/NtCreateSection/NtMapViewOfSection
+# loader-path gate. mini.dll needs a real (if unused) entry point --
+# MiniEntry, "returns 1" per SLICE3-SPEC — lld-link's default DLL entry is
+# a CRT symbol we don't have (-nostdlib), so it's set explicitly same as
+# the exe entries above.
+"$ZIG" cc $CFLAGS -shared -Wl,-e,MiniEntry -o mini.dll minidll.c
+"$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello4.exe hello4.c ntstub.S
+
 echo "hello1.exe: $(wc -c < hello1.exe | tr -d ' ') bytes"
 echo "hello2.exe: $(wc -c < hello2.exe | tr -d ' ') bytes"
 echo "hello3.exe: $(wc -c < hello3.exe | tr -d ' ') bytes"
+echo "hello4.exe: $(wc -c < hello4.exe | tr -d ' ') bytes"
+echo "mini.dll:   $(wc -c < mini.dll | tr -d ' ') bytes"

@@ -67,7 +67,28 @@ static void putdec_signed(long v) {
     puts(&b[i]);
 }
 
-long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int use_nt) {
+// CHALICE C3a Atom 3A: PeRun's original heap allocator, graduated into a
+// PeAllocFn so PeMapImage can be shared between PeRun (exe, this alloc) and
+// NtMapViewOfSection (ntfile.c, DLL-territory bump alloc instead).
+static unsigned char *pe_heap_alloc(unsigned long size_of_image) {
+    u8 *alloc_raw = (u8 *)MAlloc((u64b)size_of_image + 4096);
+    if (!alloc_raw) return 0;
+    u8 *alloc = (u8 *)(((u64b)alloc_raw + 4095) & ~(u64b)4095);
+    for (u64b i = 0; i < size_of_image; i++) alloc[i] = 0;
+    return alloc;
+}
+
+// ---- CHALICE C3a Atom 3A: shared PE-mapping core (header parse, section
+// copy, DIR64 relocs; imports iff do_imports). Graduated out of slice-1's
+// PeRun so NtMapViewOfSection (ntfile.c) can reuse the exact same,
+// already-proven parse/reloc logic over a different allocator + skipping
+// imports entirely (SLICE3-SPEC verdict 4: DLL imports are the PE-side
+// loader's own job, never kernel-side). `allocfn` must return a ZEROED,
+// page-aligned buffer of >= size_of_image bytes (see pe_heap_alloc above /
+// ntfile.c's nt_territory_alloc for the two allocators in this codebase).
+long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, PeAllocFn allocfn,
+                 int do_imports, unsigned long *out_base, unsigned long *out_size,
+                 unsigned long *out_entry) {
     u64b len = (u64b)lenL;
 
     if (len < DOS_E_LFANEW + 4) return pe_err(tag, "file too small for DOS header");
@@ -103,18 +124,10 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int us
 
     if (entry_rva >= size_of_image) return pe_err(tag, "entry point RVA outside image");
 
-    // ---- allocate SizeOfImage RWX region, copy headers + sections ----
-    // MAlloc has no alignment guarantee (its header is 16 bytes, so returned
-    // pointers commonly land at base+0x10, not page-aligned). ARM64 PE code
-    // uses adrp (page-relative) addressing for data/import references, which
-    // is only load-address-invariant when the whole image starts on a 4096
-    // byte boundary (adrp computes Align(PC,4096)+imm*4096 against the true
-    // runtime PC, not an alloc-relative one). Over-allocate by one page and
-    // round up so the image itself is page-aligned.
-    u8 *alloc_raw = (u8 *)MAlloc((u64b)size_of_image + 4096);
-    if (!alloc_raw) return pe_err(tag, "MAlloc failed");
-    u8 *alloc = (u8 *)(((u64b)alloc_raw + 4095) & ~(u64b)4095);
-    for (u32b i = 0; i < size_of_image; i++) alloc[i] = 0;
+    // ---- allocate SizeOfImage region (zeroed, page-aligned -- allocfn's
+    // contract), copy headers + sections ----
+    u8 *alloc = allocfn(size_of_image);
+    if (!alloc) return pe_err(tag, "image allocator failed");
 
     u32b hcopy = size_of_hdrs < len ? size_of_hdrs : (u32b)len;
     if (hcopy > size_of_image) hcopy = size_of_image;
@@ -170,8 +183,9 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int us
         }
     }
 
-    // ---- imports ----
-    if (num_dirs > IMAGE_DIR_IMPORT) {
+    // ---- imports (skipped entirely for do_imports=0 -- Atom 3A DLL path,
+    // "NO import resolution", SLICE3-SPEC verdict 4) ----
+    if (do_imports && num_dirs > IMAGE_DIR_IMPORT) {
         u32b irva = rd32(dirs + IMAGE_DIR_IMPORT * 8);
         u32b isz  = rd32(dirs + IMAGE_DIR_IMPORT * 8 + 4);
         if (irva && isz) {
@@ -207,7 +221,65 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int us
 
     iflush(alloc, (int)size_of_image);
 
-    long (*entry)(void) = (long (*)(void))(alloc + entry_rva);
+    *out_base  = (u64b)alloc;
+    *out_size  = size_of_image;
+    *out_entry = (u64b)alloc + entry_rva;
+    return 0;
+}
+
+// CHALICE C3a Atom 3A export parser (pemod growth). See pemod.h for the
+// return-code contract. Standard PE/COFF IMAGE_EXPORT_DIRECTORY walk:
+// AddressOfNames[i] -> name string; AddressOfNameOrdinals[i] -> biased
+// ordinal (already a direct 0-based index into AddressOfFunctions, per
+// spec -- no Base subtraction needed, verified against a real zig-cc-built
+// export table during recon); AddressOfFunctions[ord] -> function RVA.
+// Forwarder = a function RVA that lands inside the export directory itself
+// (points at a string like "OTHERDLL.Func" instead of code) -- detected,
+// not chased (SLICE3-SPEC: "return distinct error for now").
+long pe_find_named_export(unsigned long baseL, unsigned long size_of_imageL,
+                           const char *name, unsigned long *out_addr) {
+    const u8 *base = (const u8 *)(u64b)baseL;
+    (void)size_of_imageL;
+    u32b e_lfanew = rd32(base + DOS_E_LFANEW);
+    const u8 *pe = base + e_lfanew;
+    const u8 *coff = pe + 4;
+    const u8 *opt = coff + COFF_HDR_SIZE;
+    u32b num_dirs = rd32(opt + OPT_NUMBER_OF_DIRS);
+    if (num_dirs < 1) return -3;
+    const u8 *dirs = opt + OPT_DATA_DIRS;
+    u32b exp_rva  = rd32(dirs + 0);
+    u32b exp_size = rd32(dirs + 4);
+    if (!exp_rva) return -3;
+    const u8 *exp = base + exp_rva;
+    u32b nnames        = rd32(exp + 24);
+    u32b addr_functions = rd32(exp + 28);
+    u32b addr_names     = rd32(exp + 32);
+    u32b addr_ordinals  = rd32(exp + 36);
+    for (u32b i = 0; i < nnames; i++) {
+        u32b name_rva = rd32(base + addr_names + i * 4);
+        const char *cand = (const char *)(base + name_rva);
+        const char *a = cand, *b = name;
+        while (*a && *a == *b) { a++; b++; }
+        if (*a != *b) continue;
+        u16b ord = rd16(base + addr_ordinals + i * 2);
+        u32b func_rva = rd32(base + addr_functions + (u32b)ord * 4);
+        if (func_rva >= exp_rva && func_rva < exp_rva + exp_size) return -2;   // forwarder, unsupported
+        *out_addr = (u64b)base + func_rva;
+        return 0;
+    }
+    return -1;
+}
+
+long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int use_nt) {
+    // NOTE: `unsigned long` here, not this file's own `u64b` (=`unsigned
+    // long long` in pemod.c's local typedefs) -- PeMapImage's out-params are
+    // `unsigned long *` (matches the kernel-wide LP64 convention ntsvc.c/
+    // ntfile.c use; both are 8 bytes here regardless, but C treats them as
+    // distinct pointer types).
+    unsigned long base = 0, size = 0, entry_addr = 0;
+    if (PeMapImage(img, lenL, tag, pe_heap_alloc, 1, &base, &size, &entry_addr) != 0) return -1;
+
+    long (*entry)(void) = (long (*)(void))(u64b)entry_addr;
     long ret;
     if (use_nt) {
         // CHALICE C2a Atom A: build the TEB/PEB floor (ntsvc.c, receipts
@@ -215,7 +287,7 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int us
         // NtTerminateProcess can unwind straight back here through
         // nt_setjmp/nt_longjmp, mirroring how a normal `return` from entry
         // already flows into `ret` below (SLICE2-SPEC A3 receipt).
-        void *teb = nt_build_teb(alloc, (void *)entry, size_of_image);
+        void *teb = nt_build_teb((void *)(u64b)base, (void *)entry, (unsigned long)size);
         if (!teb) return pe_err(tag, "nt_build_teb: MAlloc failed");
         static unsigned long ntjmp[14];
         nt_exit_jmpbuf = ntjmp;

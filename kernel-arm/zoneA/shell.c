@@ -43,6 +43,7 @@ static void cmd_help(void) {
     puts("  aot        run linked Shrine/zoneC AotBoot module\n");
     puts("  plot       run Shrine/zoneC GaiaPlot: HolyC draws on ramfb\n");
     puts("  pe         run CHALICE PE-ARM64 loader: hello1/2 (slice1) + hello3 (NT svc dispatch)\n");
+    puts("  pe4        run CHALICE hello4: loader-path services + DLL machinery (slice3 Atom 3A)\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -133,6 +134,10 @@ static void run_cmd(const char *line) {
         zcaot_link();
         zcaot_entry_fn();
         puts("aot: ok\n");
+        return;
+    }
+    if (streq(line, "pe4")) {
+        PeRun(pehello4_bin, pehello4_len, "pe4", 1);
         return;
     }
     if (streq(line, "pe")) {

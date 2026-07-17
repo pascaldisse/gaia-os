@@ -10,6 +10,7 @@ CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
 # fresh each build instead of hand-baked).
 ../chalice/mkpe.sh
 {
+    echo '#include "pemod.h"'
     xxd -i -n pehello1_bin ../chalice/hello1.exe | sed \
         -e 's/^unsigned char/const unsigned char/' \
         -e 's/^unsigned int pehello1_bin_len/const unsigned long pehello1_len/'
@@ -19,6 +20,32 @@ CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
     xxd -i -n pehello3_bin ../chalice/hello3.exe | sed \
         -e 's/^unsigned char/const unsigned char/' \
         -e 's/^unsigned int pehello3_bin_len/const unsigned long pehello3_len/'
+    # CHALICE C3a Atom 3A — hello4.exe + mini.dll (loader-path gate).
+    xxd -i -n pehello4_bin ../chalice/hello4.exe | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int pehello4_bin_len/const unsigned long pehello4_len/'
+    xxd -i -n peminidll_bin ../chalice/mini.dll | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int peminidll_bin_len/const unsigned long peminidll_len/'
+    # Manifest-driven blob store (SLICE3-SPEC Atom 3A): run-time-initialized
+    # (not a static initializer array) since the *_len consts above are
+    # ordinary `const` objects, not integer-constant-expressions -- C
+    # forbids using them as aggregate-initializer values even within the
+    # same translation unit. nt_blob_manifest_init() is idempotent-by-caller
+    # (ntfile.c calls it once, lazily, on first file-service use).
+    cat <<'EOF'
+NtBlobEntry nt_blob_manifest[NT_BLOB_MANIFEST_MAX];
+unsigned long nt_blob_manifest_count;
+void nt_blob_manifest_init(void) {
+    unsigned long i = 0;
+    nt_blob_manifest[i].name = "hello1.exe"; nt_blob_manifest[i].bytes = pehello1_bin; nt_blob_manifest[i].len = pehello1_len; i++;
+    nt_blob_manifest[i].name = "hello2.exe"; nt_blob_manifest[i].bytes = pehello2_bin; nt_blob_manifest[i].len = pehello2_len; i++;
+    nt_blob_manifest[i].name = "hello3.exe"; nt_blob_manifest[i].bytes = pehello3_bin; nt_blob_manifest[i].len = pehello3_len; i++;
+    nt_blob_manifest[i].name = "hello4.exe"; nt_blob_manifest[i].bytes = pehello4_bin; nt_blob_manifest[i].len = pehello4_len; i++;
+    nt_blob_manifest[i].name = "mini.dll";   nt_blob_manifest[i].bytes = peminidll_bin; nt_blob_manifest[i].len = peminidll_len; i++;
+    nt_blob_manifest_count = i;
+}
+EOF
 } > pehello_bin.c
 
 clang $CFLAGS -c boot.S -o boot.o
@@ -30,6 +57,7 @@ clang $CFLAGS -c shell.c -o shell.o
 clang $CFLAGS -c zcmod.c -o zcmod.o
 clang $CFLAGS -c ntdisp.S -o ntdisp.o
 clang $CFLAGS -c ntsvc.c -o ntsvc.o
+clang $CFLAGS -c ntfile.c -o ntfile.o
 clang $CFLAGS -c pemod.c -o pemod.o
 clang $CFLAGS -c pehello_bin.c -o pehello_bin.o
 clang $CFLAGS -c virtio.c -o virtio.o
@@ -38,7 +66,7 @@ clang $CFLAGS -c fs.c -o fs.o
 clang $CFLAGS -c hc.c -o hc.o
 clang $CFLAGS -c net.c -o net.o
 clang $CFLAGS -c tcp.c -o tcp.o
-aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
+aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o ntfile.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 

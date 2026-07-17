@@ -34,7 +34,8 @@
 #define NT_SVC_NTCREATEKEY               19
 #define NT_SVC_NTOPENKEY                 20
 #define NT_SVC_NTQUERYVALUEKEY           21
-#define NT_SERVICE_COUNT                 22
+#define NT_SVC_NTQUERYVIRTUALMEMORY      22  // CHALICE C3a Atom 3A, REAL
+#define NT_SERVICE_COUNT                 23
 
 // ---- NTSTATUS consts ----
 #define STATUS_SUCCESS                0x00000000L
@@ -43,6 +44,12 @@
 #define STATUS_INVALID_PARAMETER      0xC000000DL   // Atom B
 #define STATUS_INFO_LENGTH_MISMATCH   0xC0000004L   // Atom B
 #define STATUS_NO_MEMORY              0xC0000017L   // Atom B
+// ---- CHALICE C3a Atom 3A: loader-path service NTSTATUS consts ----
+#define STATUS_INVALID_INFO_CLASS     0xC0000003L
+#define STATUS_INVALID_HANDLE         0xC0000008L
+#define STATUS_OBJECT_NAME_INVALID    0xC0000033L
+#define STATUS_OBJECT_NAME_NOT_FOUND  0xC0000034L
+#define STATUS_INVALID_IMAGE_FORMAT   0xC000007BL
 
 // ---- Atom B: NtAllocateVirtualMemory/NtFreeVirtualMemory AllocationType/
 // FreeType bits (winnt.h). Only these are accepted; anything else in
@@ -51,6 +58,17 @@
 #define MEM_RESERVE  0x00002000L
 #define MEM_DECOMMIT 0x00004000L
 #define MEM_RELEASE  0x00008000L
+
+// ---- Atom 3A: NtCreateSection AllocationAttributes (winnt.h). Only the
+// SEC_IMAGE path is implemented -- anything else -> STATUS_INVALID_PARAMETER
+// (SLICE3-SPEC Atom 3A: "anything else -> STATUS_INVALID_PARAMETER").
+#define SEC_IMAGE    0x1000000L
+// ---- Atom 3A: MEMORY_BASIC_INFORMATION.Type / .State bits used by
+// NtQueryVirtualMemory's MemoryBasicInformation answer.
+#define MEM_IMAGE    0x1000000L
+#define MEM_FREE     0x00010000L
+#define PAGE_NOACCESS          0x01L
+#define PAGE_EXECUTE_READWRITE 0x40L
 
 // ---- TEB slot convention (offsets from TEB base; x18 holds TEB on the PE
 // side per Windows ARM64 ABI — x18 is a reserved/platform register there,

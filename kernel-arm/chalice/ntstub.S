@@ -93,3 +93,55 @@ NtContinue:
     ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
     blr  x16
     ret
+
+// ---- CHALICE C3a Atom 3A: loader-path stubs (ntfile.c). Same shape as
+// every stub above -- arg count/width is entirely the C caller's/kernel
+// handler's business (nt_dispatch marshals stack-spilled args generically,
+// ntdisp.S), the stub itself never needs to know how many. ----
+.global NtOpenFile
+NtOpenFile:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTOPENFILE
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtReadFile
+NtReadFile:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTREADFILE
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtCreateSection
+NtCreateSection:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTCREATESECTION
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtMapViewOfSection
+NtMapViewOfSection:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTMAPVIEWOFSECTION
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtProtectVirtualMemory
+NtProtectVirtualMemory:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTPROTECTVIRTUALMEMORY
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtQueryVirtualMemory
+NtQueryVirtualMemory:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTQUERYVIRTUALMEMORY
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret

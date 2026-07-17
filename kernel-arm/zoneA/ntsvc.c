@@ -10,6 +10,7 @@
 // the receipted layout — same pattern pemod.c uses for the PE header fields.
 #include "kernel.h"
 #include "ntsvc.h"
+#include "ntfile.h"   // CHALICE C3a Atom 3A: loader-path services
 
 typedef unsigned char  u8;
 typedef unsigned long  u64b;   // aarch64-none-elf LP64: `unsigned long` = 8B
@@ -51,7 +52,13 @@ long NtWriteFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcConte
     return STATUS_SUCCESS;
 }
 
-long NtClose(void *Handle) { (void)Handle; return STATUS_SUCCESS; }
+long NtClose(void *Handle) {
+    // CHALICE C3a Atom 3A: releases file/section handle-table entries too
+    // (ntfile.c); values below its handle base (e.g. NT_STDOUT_HANDLE) are
+    // simply ignored there, preserving the original no-op-success behavior.
+    nt_file_handle_close(Handle);
+    return STATUS_SUCCESS;
+}
 
 // NtTerminateProcess: "unwind to PeRun w/ exit code — same mechanism PeRun
 // already uses for entry return" (SLICE2-SPEC A3). PeRun brackets its call
@@ -109,6 +116,18 @@ static void *nt_vm_alloc(u64b size) {
     return 0;
 }
 
+// CHALICE C3a Atom 3A: does `addr` fall inside a live tracked VM region?
+// Backs NtAllocateVirtualMemory's RESERVE-then-COMMIT-at-base growth path.
+static int nt_vm_region_contains(void *addr) {
+    u64b a = (u64b)addr;
+    for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
+        if (!nt_vm_regions[i].used) continue;
+        u64b base = (u64b)nt_vm_regions[i].aligned;
+        if (a >= base && a < base + nt_vm_regions[i].size) return 1;
+    }
+    return 0;
+}
+
 // Returns page-rounded size of the freed region via *out_size, or 0 if
 // aligned wasn't a live region (unknown/already-freed base).
 static int nt_vm_free(void *aligned, u64b *out_size) {
@@ -141,10 +160,19 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
     // DEVIATION (documented, not silent): a caller-supplied *BaseAddress
     // hint can't be honored by a flat bump/free-list arena (no VAD tree, no
     // control over where MAlloc's free list happens to have room) --
-    // rejected explicitly rather than silently ignored. hello3's probe
-    // always passes NULL (system-chosen base), so this path isn't exercised
-    // by the Atom B gate.
-    if (*BaseAddress != 0) return STATUS_INVALID_PARAMETER;
+    // rejected explicitly rather than silently ignored, UNLESS it's the
+    // Atom 3A growth path below. hello3's probe always passes NULL
+    // (system-chosen base), so this path isn't exercised by the Atom B gate.
+    if (*BaseAddress != 0) {
+        // CHALICE C3a Atom 3A: RESERVE-then-COMMIT-at-given-base growth
+        // (RtlCreateHeap prerequisite) -- *BaseAddress inside an
+        // already-tracked region + MEM_COMMIT => bookkeeping no-op success
+        // (flat arena: every tracked page is already committed). Untracked
+        // base => keep rejecting (spec: "keep rejecting").
+        if (!(AllocationType & MEM_COMMIT)) return STATUS_INVALID_PARAMETER;
+        if (!nt_vm_region_contains(*BaseAddress)) return STATUS_INVALID_PARAMETER;
+        return STATUS_SUCCESS;
+    }
 
     void *mem = nt_vm_alloc(pages);
     if (!mem) return STATUS_NO_MEMORY;
@@ -301,6 +329,20 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATION] = 4 * 8;
     nt_svc_table0[NT_SVC_NTCONTINUE] = (void *)NtContinue;
     nt_svc_argtable0[NT_SVC_NTCONTINUE] = 2 * 8;
+
+    // ---- CHALICE C3a Atom 3A: loader-path services (ntfile.c) ----
+    nt_svc_table0[NT_SVC_NTOPENFILE] = (void *)NtOpenFile;
+    nt_svc_argtable0[NT_SVC_NTOPENFILE] = 6 * 8;
+    nt_svc_table0[NT_SVC_NTREADFILE] = (void *)NtReadFile;
+    nt_svc_argtable0[NT_SVC_NTREADFILE] = 9 * 8;
+    nt_svc_table0[NT_SVC_NTCREATESECTION] = (void *)NtCreateSection;
+    nt_svc_argtable0[NT_SVC_NTCREATESECTION] = 7 * 8;
+    nt_svc_table0[NT_SVC_NTMAPVIEWOFSECTION] = (void *)NtMapViewOfSection;
+    nt_svc_argtable0[NT_SVC_NTMAPVIEWOFSECTION] = 10 * 8;
+    nt_svc_table0[NT_SVC_NTPROTECTVIRTUALMEMORY] = (void *)NtProtectVirtualMemory;
+    nt_svc_argtable0[NT_SVC_NTPROTECTVIRTUALMEMORY] = 5 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYVIRTUALMEMORY] = (void *)NtQueryVirtualMemory;
+    nt_svc_argtable0[NT_SVC_NTQUERYVIRTUALMEMORY] = 6 * 8;
 
     nt_service_tables[0].ServiceTable  = nt_svc_table0;
     nt_service_tables[0].CounterTable  = 0;
