@@ -224,22 +224,57 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
     return STATUS_SUCCESS;
 }
 
+// CHALICE C3c-2f p1: NtFreeVirtualMemory I/O trace, gated on the same
+// nt_dispatch_log_enabled flag nt_avm_log above uses -- logs the in-out
+// *BaseAddress/*RegionSize pair full 64-bit plus FreeType/status, AND
+// whether nt_vm_free actually found the region (a partial/base-offset
+// release from a live over-reservation would miss the exact-match lookup
+// and surface here as "found=0" rather than silently doing nothing).
+static void nt_fvm_log(const char *tag, void *base, u64b size, u64b ftype,
+                        int found, long status) {
+    if (!nt_dispatch_log_enabled) return;
+    puts("CHALICE FVM "); puts(tag);
+    puts(" base="); puthex((u64b)base);
+    puts(" size="); puthex(size);
+    puts(" ftype="); puthex(ftype);
+    puts(" found="); puthex((u64b)found);
+    puts(" status="); puthex((u64b)status);
+    puts("\n");
+}
+
 long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
                           unsigned long FreeType) {
     (void)ProcessHandle;
-    if (!BaseAddress || !*BaseAddress) return STATUS_INVALID_PARAMETER;
-    if (FreeType != MEM_RELEASE && FreeType != MEM_DECOMMIT) return STATUS_INVALID_PARAMETER;
+
+    void *in_base = BaseAddress ? *BaseAddress : 0;
+    u64b  in_size = RegionSize  ? *RegionSize  : 0;
+    nt_fvm_log("IN ", in_base, in_size, FreeType, -1, 0);
+
+    if (!BaseAddress || !*BaseAddress) {
+        nt_fvm_log("OUT", in_base, in_size, FreeType, 0, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (FreeType != MEM_RELEASE && FreeType != MEM_DECOMMIT) {
+        nt_fvm_log("OUT", in_base, in_size, FreeType, 0, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
 
     if (FreeType == MEM_RELEASE) {
         u64b freed = 0;
-        if (!nt_vm_free(*BaseAddress, &freed)) return STATUS_INVALID_PARAMETER;
+        int found = nt_vm_free(*BaseAddress, &freed);
+        if (!found) {
+            nt_fvm_log("OUT", in_base, in_size, FreeType, 0, STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        }
         if (RegionSize) *RegionSize = freed;
+        nt_fvm_log("OUT", in_base, freed, FreeType, 1, STATUS_SUCCESS);
         return STATUS_SUCCESS;
     }
     // MEM_DECOMMIT: flat arena has no separate commit/decommit state (every
     // page is committed at alloc time) -- no-op success, matches HANDOFF's
     // "flat arena OK" simplification.
     if (RegionSize) *RegionSize = (*RegionSize + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    nt_fvm_log("OUT", in_base, RegionSize ? *RegionSize : 0, FreeType, 1, STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }
 

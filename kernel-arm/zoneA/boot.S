@@ -81,6 +81,34 @@ hang:
     add     sp, sp, #176
 .endm
 
+// CHALICE C3c-2f p1: sync_entry-only full-GPR frame (x0-x30, 256B incl.
+// 8B pad for 16-alignment) -- the plain SAVEALL above omits x19-x28
+// (fine for IRQ, which only needs x0-x18/x29/x30 for the PC-sampling
+// profiler), but a fault dump needs every register a live caller might
+// have been using, and sync_entry never RESTOREALLs/erets back (the
+// handler loops forever), so no matching RESTORE is needed here. Word
+// index i (8B slots from [sp,#0]) maps directly to xN for N<=29, word 30
+// (offset 240) = x30 -- simpler than the old x0-x18,x29,x30 mapping.
+.macro SAVEALL_SYNC
+    sub     sp, sp, #256
+    stp     x0, x1,   [sp, #0]
+    stp     x2, x3,   [sp, #16]
+    stp     x4, x5,   [sp, #32]
+    stp     x6, x7,   [sp, #48]
+    stp     x8, x9,   [sp, #64]
+    stp     x10, x11, [sp, #80]
+    stp     x12, x13, [sp, #96]
+    stp     x14, x15, [sp, #112]
+    stp     x16, x17, [sp, #128]
+    stp     x18, x19, [sp, #144]
+    stp     x20, x21, [sp, #160]
+    stp     x22, x23, [sp, #176]
+    stp     x24, x25, [sp, #192]
+    stp     x26, x27, [sp, #208]
+    stp     x28, x29, [sp, #224]
+    str     x30,      [sp, #240]
+.endm
+
 irq_entry:
     // CHALICE C3c Atom 3C-2b: pass elr_el1 (the interrupted PC) to
     // irq_handler so a PC-sampling profiler can be driven from the
@@ -95,19 +123,20 @@ sync_entry:
     // CHALICE C3c Atom 3C-2a: pass esr/elr/far/orig-sp/regs-frame-ptr so
     // sync_handler can print a full CHALICE FAULT dump (image-relative
     // ELR/FAR resolution lives kernel-side, kmain.c). x3 = sp as it was
-    // BEFORE this exception's SAVEALL pushed its 176B frame (there is no
-    // separate SPx/SP0 stack switch here -- curEL SPx group, same stack
-    // throughout -- so orig-sp is simply current sp + 176). x4 = pointer
-    // to the SAVEALL frame itself, for x0-x7/x16-x18/lr readback.
-    SAVEALL
+    // BEFORE this exception's frame push (there is no separate SPx/SP0
+    // stack switch here -- curEL SPx group, same stack throughout -- so
+    // orig-sp is simply current sp + frame size). x4 = pointer to the
+    // frame itself, for full x0-x30 readback.
+    // CHALICE C3c-2f p1: SAVEALL_SYNC (full x0-x30, 256B) replaces the
+    // plain 176B SAVEALL here -- sync_entry never RESTOREALLs/erets back
+    // (handler loops forever), so widening this frame is free.
+    SAVEALL_SYNC
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #176
+    add     x3, sp, #256
     mov     x4, sp
     bl      sync_handler        // does not return
-    RESTOREALL
-    eret
 
 // ---- vector table: 16 slots, 0x80 apart ----
 .align 11
