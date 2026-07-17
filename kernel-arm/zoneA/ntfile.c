@@ -218,6 +218,21 @@ static NtImageEntry *nt_image_find_containing(u64b addr) {
     return 0;
 }
 
+// CHALICE C3c Atom 3C-2a: exported so kmain.c's fault dump (boot.S
+// sync_entry -> sync_handler) can resolve ELR/FAR against the same
+// registry NtQueryVirtualMemory already answers from -- no parallel
+// lookup. Returns 1 + name_out/off_out filled if addr falls inside a
+// mapped image, 0 (untouched outputs) otherwise.
+int nt_image_resolve(u64b addr, char *name_out, u64b namelen, u64b *off_out) {
+    NtImageEntry *img = nt_image_find_containing(addr);
+    if (!img) return 0;
+    u64b i = 0;
+    for (; img->name[i] && i + 1 < namelen; i++) name_out[i] = img->name[i];
+    name_out[i] = 0;
+    if (off_out) *off_out = addr - img->base;
+    return 1;
+}
+
 // =====================================================================
 // DLL-territory bump allocator (SLICE3-SPEC Atom 3A): 0x45000000 upward --
 // right past mem.c's 64MB heap ceiling (HEAP_BASE 0x41000000 + 64MB =

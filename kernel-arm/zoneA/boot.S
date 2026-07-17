@@ -88,9 +88,19 @@ irq_entry:
     eret
 
 sync_entry:
+    // CHALICE C3c Atom 3C-2a: pass esr/elr/far/orig-sp/regs-frame-ptr so
+    // sync_handler can print a full CHALICE FAULT dump (image-relative
+    // ELR/FAR resolution lives kernel-side, kmain.c). x3 = sp as it was
+    // BEFORE this exception's SAVEALL pushed its 176B frame (there is no
+    // separate SPx/SP0 stack switch here -- curEL SPx group, same stack
+    // throughout -- so orig-sp is simply current sp + 176). x4 = pointer
+    // to the SAVEALL frame itself, for x0-x7/x16-x18/lr readback.
     SAVEALL
     mrs     x0, esr_el1
     mrs     x1, elr_el1
+    mrs     x2, far_el1
+    add     x3, sp, #176
+    mov     x4, sp
     bl      sync_handler        // does not return
     RESTOREALL
     eret

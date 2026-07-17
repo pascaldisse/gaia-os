@@ -81,8 +81,50 @@ void irq_handler(void) {
     asm volatile("msr S3_0_C12_C12_1, %0" :: "r"(iar));
 }
 
-void sync_handler(u64 esr, u64 elr) {
-    puts("\n!SYNC esr="); puthex(esr); puts(" elr="); puthex(elr); puts("\n");
+// CHALICE C3c Atom 3C-2a: image-relative resolve for ELR/FAR, from the
+// same registry NtQueryVirtualMemory/nt_boot_process already populate
+// (ntfile.c). Declared here rather than pulling in ntfile.h (which drags
+// pemod.h/ntids.h) -- same file-local prototype-duplication convention
+// this codebase already uses for struct offsets.
+int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
+
+// CHALICE C3c Atom 3C-2a: sync_entry (boot.S) now hands over esr/elr/far/
+// orig-sp/regs-frame-ptr -- turn a silent CPU fault into one dense serial
+// dump instead of the old bare "!SYNC esr=.. elr=.." line. regs[] is the
+// SAVEALL frame (boot.S): x0..x18,x29@0..152, x30(lr)@160, 8B slots ->
+// index i corresponds to xN at word offset i for N<=18, word 19=x29,
+// word 20=x30.
+void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
+    u64 ec = (esr >> 26) & 0x3F;
+    puts("\nCHALICE FAULT esr="); puthex(esr);
+    puts(" ec="); puthex(ec);
+    puts(" elr="); puthex(elr);
+    puts(" far="); puthex(far);
+    puts(" sp="); puthex(sp_orig);
+    puts("\n");
+
+    puts("  x0=");  puthex(regs[0]);  puts(" x1=");  puthex(regs[1]);
+    puts(" x2=");   puthex(regs[2]);  puts(" x3=");  puthex(regs[3]); puts("\n");
+    puts("  x4=");  puthex(regs[4]);  puts(" x5=");  puthex(regs[5]);
+    puts(" x6=");   puthex(regs[6]);  puts(" x7=");  puthex(regs[7]); puts("\n");
+    puts("  x16="); puthex(regs[16]); puts(" x17="); puthex(regs[17]);
+    puts(" x18=");  puthex(regs[18]); puts(" lr=");  puthex(regs[20]); puts("\n");
+
+    // IMAGE-RELATIVE line: the gold -- resolves ELR/FAR to "<name>+0x<off>"
+    // when inside a mapped image (3A/3B image registry, ntfile.c). This is
+    // what points straight at the faulting ntdll instruction.
+    char name[64]; u64 off;
+    if (nt_image_resolve(elr, name, sizeof(name), &off)) {
+        puts("  elr: "); puts(name); puts("+"); puthex(off); puts("\n");
+    } else {
+        puts("  elr: (not in any mapped image)\n");
+    }
+    if (nt_image_resolve(far, name, sizeof(name), &off)) {
+        puts("  far: "); puts(name); puts("+"); puthex(off); puts("\n");
+    } else {
+        puts("  far: (not in any mapped image)\n");
+    }
+
     for (;;) asm volatile("wfe");
 }
 
