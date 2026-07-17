@@ -139,10 +139,25 @@ Gate 3B:
   ⚠ Version skew: shipped DLLs = wine 11.9; recon-A receipts came from the
   wine/ donor checkout — at 3C re-verify contract details against the actual
   binaries (export set, unixlib table arity), not the donor tree.
-- Embed the 3 DLLs, `pe6` boots exe against stock ntdll. Expected gap classes:
-  keyed events, TLS info classes, extended query infos, arena growth, CRT
-  probes. Each gap: implement smallest honest handler, re-gate. Splits into
-  3C-1 (artifacts+first walk w/ fault log) and 3C-2+ (gap burn-down) as needed.
+- **Delivery DECIDED: disk, not embed** — zoneA has virtio-blk (virtio.c) +
+  RedSea-spirit FS (fs.c) + disk.img built in build.sh. 10MB+ DLLs would make
+  monster xxd arrays; instead: grow disk.img, place stock DLLs in the FS at
+  build time, ntfile.c blob-store lookup falls back to FS read on miss.
+  Small test payloads stay embedded.
+- 3C-1 (artifacts + first walk): fetch script kernel-arm/chalice/
+  fetch-stock-dlls.sh (curl Hangover 11.9 deb per extraction recipe above →
+  chalice/stock/{ntdll,kernel32,kernelbase}.dll, gitignored, cached) ·
+  disk.img sized to fit + populated · FS-backed store fallback · dispatcher
+  call-log (serial line per service id, first ~64 calls + every unknown id) ·
+  `pe6` = nt_boot_process(exe, stock ntdll.dll), driven LAST in gate (may not
+  survive). Gate: "CHALICE: stock ntdll mapped" + "CHALICE: stock thunk
+  enters" + fault log captured — walk depth = DELIVERABLE, not pass criterion.
+  Prior lines + ramfb stay green.
+- 3C-2+ (gap burn-down): per fault-log finding, smallest honest handler,
+  re-gate; repeat until a kernel32-linked console exe prints and exits.
+  Expected gap classes: keyed events, TLS info classes, extended query infos,
+  arena growth, CRT probes, version-skew surprises (re-verify vs 11.9
+  binaries, not donor tree).
 
 ## Sizing / worker notes
 - 3A ≈ 450-550 loc across ntsvc.c/pemod.c/build.sh/mkpe.sh + 2 test binaries —

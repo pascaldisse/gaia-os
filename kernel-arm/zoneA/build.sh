@@ -80,7 +80,23 @@ aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o nt
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 
-if [ ! -f disk.img ]; then
+# CHALICE C3c Atom 3C-1: grow disk.img to fit the 3 stock DLLs (+headroom)
+# and populate the RedSea-spirit FS with them directly (host-side,
+# ../chalice/mkdisk.py speaks fs.c's on-disk layout -- no QEMU boot needed
+# to populate, and the gate never runs QEMU by hand). 64MB comfortably fits
+# ntdll+kernel32+kernelbase (~20MB combined, wine 11.9 aarch64-windows)
+# with ample headroom. "Keep existing contents": mkdisk.py only grows
+# (truncate, zero-fill new tail) and reuses an already-valid FS rather than
+# reformatting. Falls back to the old signature-only 4MB disk if
+# ../chalice/stock/ isn't populated yet (fetch-stock-dlls.sh not run) --
+# keeps earlier slice-2/3A/3B gates buildable from a fresh clone.
+STOCK_DIR=../chalice/stock
+if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ]; then
+    python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
+        ntdll.dll="$STOCK_DIR/ntdll.dll" \
+        kernel32.dll="$STOCK_DIR/kernel32.dll" \
+        kernelbase.dll="$STOCK_DIR/kernelbase.dll"
+elif [ ! -f disk.img ]; then
     dd if=/dev/zero of=disk.img bs=1m count=4 2>/dev/null
     printf 'GAIA-OS TEMPLE DISK  LOVE=1.000  --  the first stone laid 2026-07-08' \
         | dd of=disk.img conv=notrunc 2>/dev/null

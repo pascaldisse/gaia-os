@@ -4,6 +4,7 @@
 #include "zcmod.h"
 #include "pemod.h"
 #include "ntboot.h"
+#include "ntsvc.h"   // CHALICE C3c Atom 3C-1: nt_dispatch_log_reset/enabled (pe6)
 
 #define UART_DR   0x09000000UL
 #define UART_FR   0x09000018UL
@@ -46,6 +47,7 @@ static void cmd_help(void) {
     puts("  pe         run CHALICE PE-ARM64 loader: hello1/2 (slice1) + hello3 (NT svc dispatch)\n");
     puts("  pe4        run CHALICE hello4: loader-path services + DLL machinery (slice3 Atom 3A)\n");
     puts("  pe5        run CHALICE hello5 over fake-ntdll: boot protocol dress rehearsal (slice3 Atom 3B)\n");
+    puts("  pe6        run CHALICE hello5 over STOCK wine ntdll.dll (FS-backed): first walk + fault log (slice3 Atom 3C-1)\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -143,7 +145,20 @@ static void run_cmd(const char *line) {
         return;
     }
     if (streq(line, "pe5")) {
-        nt_boot_process("hello5.exe", "fake-ntdll.dll");
+        nt_boot_process("hello5.exe", "fake-ntdll.dll", 0);
+        return;
+    }
+    if (streq(line, "pe6")) {
+        // CHALICE C3c Atom 3C-1: stock ntdll.dll (from FS, mkdisk.py-baked)
+        // + hello5.exe (reused exe payload). Dispatcher call-log turned on
+        // only for this call (nt_dispatch_log_reset + enabled=1) -- the
+        // fault log IS the deliverable here; a crash/hang after thunk-entry
+        // is expected (SLICE3-SPEC: "the shell may not survive pe6"), so
+        // this verb is deliberately LAST in any driven sequence.
+        nt_dispatch_log_reset();
+        nt_dispatch_log_enabled = 1;
+        nt_boot_process("hello5.exe", "ntdll.dll", 1);
+        nt_dispatch_log_enabled = 0;
         return;
     }
     if (streq(line, "pe")) {

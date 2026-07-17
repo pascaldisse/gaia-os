@@ -119,6 +119,27 @@ copy_args:
 have_args:
     ldr  x10, [x21]                 // ->ServiceTable
     ldr  x10, [x10, x20, lsl #3]    // handler fn ptr
+
+    // ---- CHALICE C3c Atom 3C-1: dispatcher call-log hook (ntsvc.c
+    // nt_dispatch_log, runtime-flag-gated -- see ntsvc.h). Called BEFORE
+    // the x0..x7 frame reload below (so no need to preserve those, they're
+    // reloaded fresh from the frame afterward regardless). x23 stashes the
+    // resolved handler ptr across the call (x10 is caller-saved, would not
+    // survive); x24 stashes x18 (TEB) -- our own kernel C is free to treat
+    // x18 as ordinary scratch (file header note), so a plain `bl` into it
+    // is not safe to assume TEB-preserving, unlike the PE-side `blr x10`
+    // below which gets the deliberate x22 stash/restore for the same reason.
+    // x19/x20/x21 (frame/id/table-entry) are callee-saved -- an AAPCS64-
+    // compliant C callee preserves them automatically, no manual stash
+    // needed for those three. ----
+    mov  x23, x10                   // stash handler ptr
+    mov  x24, x18                   // stash TEB
+    mov  x0, x20                    // arg0 = service id
+    mov  x1, x10                    // arg1 = handler ptr (0 never reaches here)
+    bl   nt_dispatch_log
+    mov  x18, x24                   // restore TEB
+    mov  x10, x23                   // restore handler ptr
+
     ldp  x0, x1, [x19, #0x00]       // reload x0..x7 fresh from the frame
     ldp  x2, x3, [x19, #0x10]
     ldp  x4, x5, [x19, #0x20]
@@ -128,6 +149,15 @@ have_args:
     mov  x18, x22                   // restore TEB before returning to PE side
     b    dispatch_return
 bad_service:
+    // ---- same call-log hook, "unknown" sentinel (handler=0 -- id was
+    // beyond ServiceLimit, no handler ever resolved). Always logged
+    // (nt_dispatch_log's own unknown/unimplemented-bypass-the-counter
+    // rule), not just the first NT_DISPATCH_LOG_FIRST_N calls. ----
+    mov  x24, x18
+    mov  x0, x20
+    mov  x1, #0
+    bl   nt_dispatch_log
+    mov  x18, x24
     mov  x0, #0xc0000000
     movk x0, #0x001c                // STATUS_INVALID_SYSTEM_SERVICE
 dispatch_return:

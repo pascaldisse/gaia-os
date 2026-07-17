@@ -69,3 +69,23 @@ long NtQuerySystemInformation(unsigned long SystemInformationClass, void *System
 // physical address, identity-mapped normal memory per kmain.c's mmu_on).
 // Idempotent-by-caller: invoked once from nt_service_tables_init().
 void nt_kuser_init(void);
+
+// CHALICE C3c Atom 3C-1: dispatcher call-log. Cheap, removable-later debug
+// aid -- serial line per incoming service id for the first
+// NT_DISPATCH_LOG_FIRST_N calls after a caller-chosen point (nt_dispatch_
+// log_reset, called by shell.c's pe6 verb right before nt_boot_process)
+// PLUS every unknown (id beyond ServiceLimit, ntdisp.S bad_service path)
+// or unimplemented (handler == NtStub) id hit regardless of the counter --
+// this is what makes it useful as a fault log for stock ntdll's first walk
+// (SLICE3-SPEC Atom 3C-1 deliverable). Gated by a runtime flag
+// (nt_dispatch_log_enabled, default 0 -- shell.c's pe6 verb turns it on
+// only around the nt_boot_process call so pe1-pe5/zc/aot/etc. stay quiet);
+// called from ntdisp.S's nt_dispatch via `bl nt_dispatch_log`, x18 (TEB)
+// stashed/restored around the call there since our own kernel C is free to
+// clobber it (header note, ntdisp.S). handler==0 is the "unknown/
+// out-of-range id" sentinel (bad_service path never resolves a handler
+// ptr); any other value is compared against NtStub to detect
+// "unimplemented but in-range".
+extern int nt_dispatch_log_enabled;
+void nt_dispatch_log_reset(void);
+void nt_dispatch_log(unsigned long id, void *handler);

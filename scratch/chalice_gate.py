@@ -46,6 +46,15 @@ try:
     for cmd in (b"zc\n", b"say\n", b"aot\n", b"pe\n", b"pe4\n", b"pe5\n"):
         ser.send(cmd)
         full += drain(ser, 15.0)
+
+    # CHALICE C3c Atom 3C-1: pe6 (stock ntdll first walk) driven LAST -- a
+    # crash/hang after thunk-entry is EXPECTED (SLICE3-SPEC: "the shell may
+    # not survive pe6"), so this is the final command sent and gets a
+    # longer drain to capture as much of the fault log as possible before
+    # the harness tears QEMU down regardless of whether the shell prompt
+    # ever returns.
+    ser.send(b"pe6\n")
+    full += drain(ser, 25.0)
 finally:
     qemu.terminate()
     try: qemu.wait(timeout=5)
@@ -70,6 +79,13 @@ need = [
     "CHALICE: thunk enters",
     "CHALICE: the chain speaks",
     "pe5 ret=99",
+    # CHALICE C3c Atom 3C-1: the two new lines only (not any deeper
+    # progress, e.g. "pe6 ret=" -- the shell surviving pe6 to completion is
+    # not a pass criterion, SLICE3-SPEC: "a crash/hang after entry is
+    # EXPECTED and fine"). The fault log itself is captured in the full
+    # serial dump above/console output, not asserted line-by-line here.
+    "CHALICE: stock ntdll mapped",
+    "CHALICE: stock thunk enters",
 ]
 ok = True
 for n in need:

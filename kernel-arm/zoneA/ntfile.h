@@ -37,5 +37,16 @@ int nt_file_handle_close(void *handle);
 // entries)" instruction -- no parallel/duplicate mechanism.
 void nt_blob_ensure_init(void);
 unsigned char *nt_territory_alloc(unsigned long size_of_image);
+
+// CHALICE C3c Atom 3C-1: blob-manifest lookup with FS fallback (stock DLLs
+// too big to embed, live on the RedSea-spirit disk instead -- fs.c/
+// mkdisk.py). Case-insensitive. On an FS-fallback hit, *out_bytes/*out_name
+// are heap-owned (MAlloc, live for the kernel's lifetime like everything
+// else this atom allocates -- no free path needed, matching the
+// DLL-territory bump allocator's own never-free simplification). Used by
+// NtOpenFile (this file) and ntboot.c's nt_boot_process (pe6: stock
+// ntdll.dll comes from here).
+int nt_blob_lookup_or_fs(const char *basename, const unsigned char **out_bytes, unsigned long *out_len,
+                          const char **out_name);
 void nt_image_register(const char *name, unsigned long base, unsigned long size,
                         unsigned long entry, int is_dll);

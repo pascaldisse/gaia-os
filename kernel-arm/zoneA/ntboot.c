@@ -31,17 +31,6 @@ static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
 static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
 
-static int streq_ci(const char *a, const char *b) {
-    while (*a && *b) {
-        char ca = *a, cb = *b;
-        if (ca >= 'A' && ca <= 'Z') ca += 'a' - 'A';
-        if (cb >= 'A' && cb <= 'Z') cb += 'a' - 'A';
-        if (ca != cb) return 0;
-        a++; b++;
-    }
-    return *a == 0 && *b == 0;
-}
-
 static u64b strlen_local(const char *s) { u64b n = 0; while (s[n]) n++; return n; }
 
 static void putdec_signed(long v) {
@@ -57,14 +46,14 @@ static long boot_err(const char *msg) {
     return -1;
 }
 
+// CHALICE C3c Atom 3C-1: was manifest-only (nt_blob_manifest[] direct
+// walk); now routes through ntfile.c's nt_blob_lookup_or_fs so stock
+// ntdll.dll (too big to embed, lives on the RedSea-spirit disk -- fs.c/
+// mkdisk.py) resolves the same way NtOpenFile's loader-path already does.
+// Single mechanism, no parallel lookup (SLICE3-SPEC 3A precedent).
 static int boot_blob_lookup(const char *name, const unsigned char **out_bytes, u64b *out_len) {
-    for (u64b i = 0; i < nt_blob_manifest_count; i++) {
-        if (!streq_ci(name, nt_blob_manifest[i].name)) continue;
-        *out_bytes = nt_blob_manifest[i].bytes;
-        *out_len   = nt_blob_manifest[i].len;
-        return 1;
-    }
-    return 0;
+    const char *unused_name;
+    return nt_blob_lookup_or_fs(name, out_bytes, out_len, &unused_name);
 }
 
 // =====================================================================
@@ -182,7 +171,7 @@ static void widen_ascii(const char *s, u16b *out, u64b n) {
 
 #define NT_BOOT_STACK_SIZE 0x10000UL
 
-long nt_boot_process(const char *exe_name, const char *ntdll_name) {
+long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
     nt_blob_ensure_init();
 
     const unsigned char *ntdll_bytes, *exe_bytes;
@@ -227,6 +216,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name) {
     nt_unix_call_funcs_ensure_init();
     wr64((u8 *)(u64b)sdisp_addr, (u64b)nt_unix_call_shim);
     wr64((u8 *)(u64b)uhandle_addr, (u64b)nt_unix_call_funcs);
+    if (stock) puts("CHALICE: stock ntdll mapped\n");
 
     // ---- 64K thread stack, DLL territory (same bump allocator as the DLL
     // images themselves -- SLICE3-SPEC: "alloc 64K thread stack in DLL
@@ -284,12 +274,13 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name) {
     nt_exit_jmpbuf = ntjmp;
     long ret;
     if (nt_setjmp(ntjmp) == 0) {
+        if (stock) puts("CHALICE: stock thunk enters\n");
         ret = pe_enter1((long (*)(void *))(u64b)thunk_addr, teb, (void *)ctx_addr);
     } else {
         ret = nt_exit_code;
     }
     nt_exit_jmpbuf = 0;
 
-    puts("pe5"); puts(" ret="); putdec_signed(ret); puts("\n");
+    puts(stock ? "pe6" : "pe5"); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
 }

@@ -28,6 +28,11 @@ static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (
 // shape ntsvc.c's NtWriteFile uses (receipted there).
 typedef struct { u64b status; u64b information; } NtIoStatusBlock;
 
+// Moved ahead of first use (nt_blob_lookup_fs, below) -- originally
+// introduced further down alongside NtOpenFile's OBJECT_ATTRIBUTES/
+// UNICODE_STRING offsets; same constant, single definition.
+#define NT_PATH_MAX 128
+
 static int nt_streq_ci(const char *a, const char *b) {
     while (*a && *b) {
         char ca = *a, cb = *b;
@@ -66,6 +71,61 @@ static int nt_blob_lookup(const char *basename, const unsigned char **out_bytes,
         return 1;
     }
     return 0;
+}
+
+// =====================================================================
+// CHALICE C3c Atom 3C-1: blob-store miss -> FS fallback. Stock DLLs are too
+// big to embed as xxd byte arrays in the kernel image (~20MB combined,
+// SLICE3-SPEC Atom 3C) -- they instead live on the RedSea-spirit disk
+// (kernel-arm/chalice/mkdisk.py bakes them in at build time, lowercase
+// names). On a manifest miss, do a whole-file FsRead into a heap buffer
+// (MAlloc, 64MB arena -- "heap buffer" per spec, distinct from the
+// DLL-territory bump allocator PeMapImage's *output* uses) sized generously
+// above any real stock DLL (largest observed: kernelbase.dll ~9MB, wine
+// 11.9 aarch64-windows) then store the SAME way a manifest hit would (bytes
+// pointer + exact length FsRead reports, name = a heap-owned lowercase
+// copy so nt_handle_alloc's `name` field stays valid for the handle's
+// lifetime, matching the manifest path's static-lifetime-string contract).
+// Case-insensitive: fs.c's own on-disk names are lowercase (mkdisk.py
+// convention); this fallback lowercases the query basename before FsRead
+// so any-case PE-side path components (e.g. "C:\...\NTDLL.DLL") still hit.
+// =====================================================================
+#define NT_FS_FALLBACK_MAX (16UL * 1024 * 1024)   // headroom over largest stock DLL (~9MB)
+
+static int nt_blob_lookup_fs(const char *basename, const unsigned char **out_bytes, u64b *out_len,
+                              const char **out_name) {
+    char lower[NT_PATH_MAX];
+    int n = 0;
+    for (; basename[n] && n < NT_PATH_MAX - 1; n++) {
+        char c = basename[n];
+        if (c >= 'A' && c <= 'Z') c += 'a' - 'A';
+        lower[n] = c;
+    }
+    lower[n] = 0;
+
+    unsigned char *buf = (unsigned char *)MAlloc(NT_FS_FALLBACK_MAX);
+    if (!buf) return 0;
+    long got = FsRead(lower, buf, NT_FS_FALLBACK_MAX);
+    if (got <= 0) { Free(buf); return 0; }
+
+    char *namebuf = (char *)MAlloc((u64b)n + 1);
+    if (!namebuf) { Free(buf); return 0; }
+    for (int i = 0; i < n; i++) namebuf[i] = lower[i];
+    namebuf[n] = 0;
+
+    *out_bytes = buf;
+    *out_len   = (u64b)got;
+    *out_name  = namebuf;
+    return 1;
+}
+
+// Combined lookup: manifest first (cheap, embedded test artifacts), then FS
+// fallback (stock DLLs). Used by both NtOpenFile (below) and ntboot.c's
+// nt_boot_process (pe6: stock ntdll.dll comes from here).
+int nt_blob_lookup_or_fs(const char *basename, const unsigned char **out_bytes, u64b *out_len,
+                          const char **out_name) {
+    if (nt_blob_lookup(basename, out_bytes, out_len, out_name)) return 1;
+    return nt_blob_lookup_fs(basename, out_bytes, out_len, out_name);
 }
 
 // =====================================================================
@@ -200,7 +260,6 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
 #define OA_OBJECTNAME_OFF 0x10
 #define US_LENGTH_OFF     0x00
 #define US_BUFFER_OFF     0x08
-#define NT_PATH_MAX 128
 
 long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttributes,
                  void *IoStatusBlock, unsigned long ShareAccess, unsigned long OpenOptions) {
@@ -229,7 +288,7 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
     for (u32b i = 0; i < nchars; i++) if (path[i] == '\\') base = &path[i + 1];
 
     const unsigned char *bytes; u64b bloblen; const char *manifest_name;
-    if (!nt_blob_lookup(base, &bytes, &bloblen, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
+    if (!nt_blob_lookup_or_fs(base, &bytes, &bloblen, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
 
     void *h = nt_handle_alloc(NTH_FILE, bytes, bloblen, manifest_name);
     if (!h) return STATUS_NO_MEMORY;

@@ -298,6 +298,71 @@ void nt_kuser_init(void) {
     k[NT_KUSER_PROCESSORFEATURES_OFF + 29] = 1;   // PF_ARM_V8_INSTRUCTIONS_AVAILABLE
 }
 
+// =====================================================================
+// CHALICE C3c Atom 3C-1 — dispatcher call-log (removable-later debug aid,
+// see ntsvc.h). Runtime-flag-gated (default OFF); shell.c's pe6 verb turns
+// it on only around nt_boot_process so earlier gates (pe1-pe5, zc, aot,
+// ...) stay quiet. Called from ntdisp.S's nt_dispatch on every service
+// entry (`bl nt_dispatch_log`, both the resolved-handler path and the
+// bad_service/out-of-range path).
+// =====================================================================
+int nt_dispatch_log_enabled;
+static u64b nt_dispatch_log_count;
+#define NT_DISPATCH_LOG_FIRST_N 64
+
+static const char *nt_svc_name(u64b id) {
+    switch (id) {
+    case NT_SVC_NTALLOCATEVIRTUALMEMORY:    return "NtAllocateVirtualMemory";
+    case NT_SVC_NTFREEVIRTUALMEMORY:        return "NtFreeVirtualMemory";
+    case NT_SVC_NTPROTECTVIRTUALMEMORY:     return "NtProtectVirtualMemory";
+    case NT_SVC_NTCREATESECTION:            return "NtCreateSection";
+    case NT_SVC_NTMAPVIEWOFSECTION:         return "NtMapViewOfSection";
+    case NT_SVC_NTCREATEFILE:               return "NtCreateFile";
+    case NT_SVC_NTOPENFILE:                 return "NtOpenFile";
+    case NT_SVC_NTREADFILE:                 return "NtReadFile";
+    case NT_SVC_NTWRITEFILE:                return "NtWriteFile";
+    case NT_SVC_NTCLOSE:                    return "NtClose";
+    case NT_SVC_NTCREATETHREAD:             return "NtCreateThread";
+    case NT_SVC_NTRESUMETHREAD:             return "NtResumeThread";
+    case NT_SVC_NTTERMINATETHREAD:          return "NtTerminateThread";
+    case NT_SVC_NTTERMINATEPROCESS:         return "NtTerminateProcess";
+    case NT_SVC_NTWAITFORSINGLEOBJECT:      return "NtWaitForSingleObject";
+    case NT_SVC_NTCREATEEVENT:              return "NtCreateEvent";
+    case NT_SVC_NTQUERYINFORMATIONPROCESS:  return "NtQueryInformationProcess";
+    case NT_SVC_NTQUERYSYSTEMINFORMATION:   return "NtQuerySystemInformation";
+    case NT_SVC_NTCONTINUE:                 return "NtContinue";
+    case NT_SVC_NTCREATEKEY:                return "NtCreateKey";
+    case NT_SVC_NTOPENKEY:                  return "NtOpenKey";
+    case NT_SVC_NTQUERYVALUEKEY:            return "NtQueryValueKey";
+    case NT_SVC_NTQUERYVIRTUALMEMORY:       return "NtQueryVirtualMemory";
+    default: return 0;
+    }
+}
+
+static void nt_log_putdec(u64b v) {
+    char b[21]; int i = 20; b[i] = 0;
+    do { b[--i] = '0' + (char)(v % 10); v /= 10; } while (v);
+    puts(&b[i]);
+}
+
+void nt_dispatch_log_reset(void) { nt_dispatch_log_count = 0; }
+
+void nt_dispatch_log(unsigned long id_arg, void *handler) {
+    if (!nt_dispatch_log_enabled) return;
+    u64b id = (u64b)id_arg;
+    nt_dispatch_log_count++;
+    int unknown = (handler == 0);
+    int unimpl  = (!unknown && handler == (void *)NtStub);
+    if (!unknown && !unimpl && nt_dispatch_log_count > NT_DISPATCH_LOG_FIRST_N) return;
+
+    puts("CHALICE: svc id="); nt_log_putdec(id);
+    const char *name = unknown ? 0 : nt_svc_name(id);
+    if (name) { puts(" ("); puts(name); puts(")"); }
+    if (unknown) puts(" UNKNOWN");
+    else if (unimpl) puts(" UNIMPLEMENTED");
+    puts("\n");
+}
+
 static void  *nt_svc_table0[NT_SERVICE_COUNT];
 static u8     nt_svc_argtable0[NT_SERVICE_COUNT];
 NtServiceTable nt_service_tables[4];

@@ -9,3 +9,4 @@ wine/
 *.elf
 *.img
 .DS_Store
+kernel-arm/chalice/stock/

@@ -11,4 +11,10 @@
 // path already uses). Returns the exit code, or -1 on any boot-time
 // failure (blob missing, required export missing, map failure) -- error
 // already printed to serial in that case.
-long nt_boot_process(const char *exe_name, const char *ntdll_name);
+// `stock`: CHALICE C3c Atom 3C-1 -- when nonzero (pe6, real Wine ntdll.dll,
+// as opposed to pe5's synthetic fake-ntdll.dll dress rehearsal), also
+// prints "CHALICE: stock ntdll mapped" right after the map+unixlib wiring
+// step and "CHALICE: stock thunk enters" right before the jump into
+// LdrInitializeThunk -- the two markers SLICE3-SPEC's fault log needs to
+// bracket "whatever happens next".
+long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock);
