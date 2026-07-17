@@ -413,6 +413,34 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // NtTerminateProcess (called from deep inside the booted chain) longjmps
     // straight back to the nt_setjmp point below, same channel PeRun's
     // use_nt=1 path already proves (slice-2/3A). ----
+    // ---- CHALICE C3c-2m: PROBE -- simulate the guest's OWN base-
+    // discovery path (donor: wine/dlls/ntdll/loader.c build_ntdll_module,
+    // quoted in HANDOFF) before entering the thunk. Wine's ntdll learns
+    // ITS OWN module base by calling NtQueryVirtualMemory on an address it
+    // already knows is inside itself (LdrInitializeThunk) and reading
+    // meminfo.AllocationBase back -- every later find_named_export (incl.
+    // KERNEL32.dll's import of ntdll.dll.__wine_dbg_header) keys off that
+    // value. Reuse our OWN NtQueryVirtualMemory (ntfile.c) on thunk_addr,
+    // the exact address the real loader queries, to see EXACTLY what the
+    // guest sees -- no guessing, same tool, same input. ----
+    if (stock) {
+        unsigned char mbi[0x30];   // real Win64 sizeof(MEMORY_BASIC_INFORMATION), C3c-2m fix
+        for (int i = 0; i < 0x30; i++) mbi[i] = 0;
+        long qrc = NtQueryVirtualMemory(0, (void *)(u64b)thunk_addr, 0, mbi, sizeof(mbi), 0);
+        u64b guest_base = rd64(mbi + 0x08 /* MBI_ALLOCATIONBASE_OFF */);
+        int match = (guest_base == ntdll_base);
+        u64b probe_addr = 0;
+        long probe_rc = pe_find_named_export(guest_base, ntdll_size, "__wine_dbg_header", &probe_addr);
+        puts("CHALICE PROBE: thunk="); puthex(thunk_addr);
+        puts(" qrc="); putdec_signed(qrc);
+        puts(" allocbase="); puthex(guest_base);
+        puts(" ntdll_base="); puthex(ntdll_base);
+        puts(" match="); putdec_signed(match);
+        puts(" find_named_export_rc="); putdec_signed(probe_rc);
+        puts(" addr="); puthex(probe_addr);
+        puts("\n");
+    }
+
     static unsigned long ntjmp[14];
     nt_exit_jmpbuf = ntjmp;
     long ret;

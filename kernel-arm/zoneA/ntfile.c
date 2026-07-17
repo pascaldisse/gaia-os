@@ -24,6 +24,7 @@ typedef unsigned short u16b;
 static void wr16(u8 *p, u16b v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
 static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
+static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
 
 // IO_STATUS_BLOCK: {NTSTATUS/PVOID Status; ULONG_PTR Information;} 16B, same
 // shape ntsvc.c's NtWriteFile uses (receipted there).
@@ -555,24 +556,52 @@ long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned lo
 // =====================================================================
 // NtQueryVirtualMemory -- MemoryBasicInformation only. Answers from the
 // image registry (mapped DLL/exe views) + one sane free region for unknown
-// addresses. MEMORY_BASIC_INFORMATION (LP64): BaseAddress@0,
-// AllocationBase@8, AllocationProtect(4,pad4)@0x10, RegionSize@0x18,
-// State(4,pad4)@0x20, Protect(4,pad4)@0x28, Type(4,pad4)@0x30 -- size 0x38
-// (matches the well-known public Win64 sizeof(MEMORY_BASIC_INFORMATION)).
+// addresses.
+//
+// CHALICE C3c-2m fix: the offsets below were WRONG -- padded a spurious
+// 4B gap after BOTH Protect and Type as if each DWORD field were followed
+// by its own alignment pad. Real Win64 MEMORY_BASIC_INFORMATION
+// (winternl.h) packs State/Protect/Type as three CONSECUTIVE DWORDs (only
+// ONE pad exists in the whole struct, between AllocationProtect and
+// RegionSize, to 8-align RegionSize/SIZE_T): BaseAddress@0(8),
+// AllocationBase@8(8), AllocationProtect@0x10(4), <4B pad>,
+// RegionSize@0x18(8), State@0x20(4), Protect@0x24(4), Type@0x28(4), <4B
+// trailing pad to 8-align the struct> -- total size 0x30 (48), NOT 0x38.
+// Proved live this atom: the real Wine ntdll guest's OWN build_ntdll_module
+// bootstrap call (donor wine/dlls/ntdll/loader.c) passes
+// MemoryInformationLength=0x30 for exactly this call -- our old `< 0x38`
+// check rejected it with STATUS_INFO_LENGTH_MISMATCH on EVERY boot, so
+// meminfo.AllocationBase (the guest's own ntdll base) was NEVER filled in,
+// derailing every self-referential export lookup downstream (incl.
+// KERNEL32.dll's import of ntdll.dll.__wine_dbg_header). CHALICE PROBE
+// (this atom, ntboot.c) independently confirmed our OWN NtQueryVirtualMemory
+// on the same address returns the CORRECT AllocationBase when the call is
+// allowed to succeed -- the bug was purely the struct-layout/size
+// mismatch, not the image-registry lookup.
 // =====================================================================
-#define MBI_SIZE               0x38
+#define MBI_SIZE               0x30
 #define MBI_BASEADDRESS_OFF    0x00
 #define MBI_ALLOCATIONBASE_OFF 0x08
 #define MBI_ALLOCPROTECT_OFF   0x10
 #define MBI_REGIONSIZE_OFF     0x18
 #define MBI_STATE_OFF          0x20
-#define MBI_PROTECT_OFF        0x28
-#define MBI_TYPE_OFF           0x30
+#define MBI_PROTECT_OFF        0x24
+#define MBI_TYPE_OFF           0x28
 
 long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long MemoryInformationClass,
                            void *MemoryInformation, unsigned long MemoryInformationLength,
                            unsigned long *ReturnLength) {
     (void)ProcessHandle;
+    // CHALICE C3c-2m: log EVERY call including ones the early-return checks
+    // below would otherwise swallow silently (e.g. a non-MemoryBasicInformation
+    // class -- the guest's OWN runtime call during pe7 hits exactly this).
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtQueryVirtualMemory ENTRY base="); puthex((u64b)BaseAddress);
+        puts(" class="); puthex((u64b)MemoryInformationClass);
+        puts(" buf="); puthex((u64b)MemoryInformation);
+        puts(" len="); puthex((u64b)MemoryInformationLength);
+        puts("\n");
+    }
     if (MemoryInformationClass != 0 /* MemoryBasicInformation */) return STATUS_INVALID_INFO_CLASS;
     if (!MemoryInformation) return STATUS_INVALID_PARAMETER;
     if (MemoryInformationLength < MBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
@@ -599,6 +628,28 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
         wr32(out + MBI_STATE_OFF, MEM_FREE);
         wr32(out + MBI_PROTECT_OFF, PAGE_NOACCESS);
         wr32(out + MBI_TYPE_OFF, 0);
+    }
+
+    // CHALICE C3c-2m: unconditional log of every NtQueryVirtualMemory call
+    // (not gated behind the dispatch-log 64-cap -- this atom's probe fires
+    // late in a long boot and must not be silently dropped) when
+    // nt_dispatch_log_enabled is armed. Reports which branch answered
+    // (image-registry hit vs free-region fallback) + the exact
+    // AllocationBase/RegionSize/State/Type the guest's own loader would see
+    // for this BaseAddress -- this IS what build_ntdll_module's
+    // NtQueryVirtualMemory(LdrInitializeThunk) call reads to learn its own
+    // module base (donor: wine/dlls/ntdll/loader.c build_ntdll_module).
+    if (nt_dispatch_log_enabled) {
+        u32b state = (u32b)out[MBI_STATE_OFF] | ((u32b)out[MBI_STATE_OFF+1]<<8) |
+                     ((u32b)out[MBI_STATE_OFF+2]<<16) | ((u32b)out[MBI_STATE_OFF+3]<<24);
+        u32b type  = (u32b)out[MBI_TYPE_OFF]  | ((u32b)out[MBI_TYPE_OFF+1]<<8) |
+                     ((u32b)out[MBI_TYPE_OFF+2]<<16) | ((u32b)out[MBI_TYPE_OFF+3]<<24);
+        puts("CHALICE: NtQueryVirtualMemory addr="); puthex(addr);
+        puts(" branch="); puts(img ? "image" : "fallback");
+        puts(" allocbase="); puthex(rd64(out + MBI_ALLOCATIONBASE_OFF));
+        puts(" regionsize="); puthex(rd64(out + MBI_REGIONSIZE_OFF));
+        puts(" state="); puthex((u64b)state);
+        puts(" type="); puthex((u64b)type); puts("\n");
     }
 
     if (ReturnLength) *ReturnLength = MBI_SIZE;
