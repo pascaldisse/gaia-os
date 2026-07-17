@@ -19,6 +19,41 @@ load and run. Donors cloned as read-only quarry (gitignored): `wine/`,
 
 ---
 
+## State refresh (2026-07-17, C3c-2f) -- Slice 3 IN PROGRESS
+HEAD `75100bd`. pe6 (stock Wine ntdll, FS-backed) now walks past heap init
+(7 clean RESERVE/COMMIT pairs) AND its first NtFreeVirtualMemory, through
+NtOpenFile/NtOpenKey(soft-fail)/NtQuerySystemInformation/more VM calls, to
+a clean NtTerminateProcess when kernel32.dll load fails on kernel-heap
+exhaustion (`MAlloc: OUT OF MEMORY` -> STATUS_DLL_NOT_FOUND) -- no crash.
+No regression: chalice_gate.py + ramfb_gate.py -m 1G both green.
+NEXT GAP: kernel's 64MB heap (mem.c) backs the VM arena's MAlloc-based
+regions 1:1 -- ntdll's own image-load reservations (0x800000, 0xFD0000 x2,
+seen stacking up while resolving kernel32.dll) exhaust it well before a
+real kernel32.dll (3.5MB) + kernelbase.dll (9MB) pair of SEC_IMAGE maps
+could ever fit; likely needs either a bigger/dedicated arena or NtCreateSection/
+NtMapViewOfSection (HANDOFF's own "SEC_IMAGE path is load-bearing" note)
+replacing PE-side raw NtAllocateVirtualMemory-driven image loading.
+
+### SCAR -- C3c-2f: the third unixlib slot
+`__wine_unix_call_dispatcher` is a THIRD writable ntdll data pointer
+(RVA adjacent to `__wine_syscall_dispatcher`/`__wine_unixlib_handle`, a
+3-pointer struct, confirmed via `llvm-objdump -p stock/ntdll.dll`), not
+just the two SLICE3-SPEC Architecture-verdict-3 named exports -- stock
+ntdll's own always-on `__wine_dbg_output` trace helper (fires from inside
+`RtlCreateAtomTable` during heap init, no WINEDEBUG needed) calls straight
+through it. Left unwritten (kernel BSS zero) it's a null indirect branch.
+LAW (extends the trapdoor-pointer discipline): any *_dispatcher/*_handle-
+shaped export triplet found via objdump's export table with adjacent RVAs
+is probably one wiring struct, not independent symbols -- check neighbors,
+not just the named export you already know about. `nt_unix_call_shim`
+(built for exactly this (handle,code,args) shape) was sitting unused in
+the kernel since C3c-2b -- built for the right job, just never plugged in.
+STOCK-ONLY gate matters here: `fake-ntdll.c` (stock=0) exports the SAME
+NAME as a real CODE function -- writing this slot unconditionally would
+have corrupted it.
+
+---
+
 ## State: Slice 2 COMPLETE, NOT pushed
 
 Last local commit: **"CHALICE C2b: NtContinue + VM arena + KUSER floor —
