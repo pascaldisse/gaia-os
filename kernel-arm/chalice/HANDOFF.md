@@ -19,26 +19,37 @@ load and run. Donors cloned as read-only quarry (gitignored): `wine/`,
 
 ---
 
-## State: Slice 2 Atom A DONE, NOT pushed
+## State: Slice 2 COMPLETE, NOT pushed
 
-Last local commit: **"CHALICE C2a: NT service dispatch + TEB/PEB floor +
-console gate"** (parent `1d91982`). `origin/main` still at slice-1 `f6b8aa7` —
-DO NOT push per operator instruction, next worker should confirm before
-pushing.
+Last local commit: **"CHALICE C2b: NtContinue + VM arena + KUSER floor —
+slice 2 complete"** (parent `3956c5b`, C2a). `origin/main` still at slice-1
+`f6b8aa7` — DO NOT push per operator instruction, next worker should confirm
+before pushing.
 
-What Atom A delivers, proven at `T:/>` (`pe` verb, gate script
-`scratch/chalice_gate.py`, gitignored, drives serial over a unix socket):
+Gate proven via `scratch/chalice_gate.py` (unix-socket harness — ALWAYS use
+it, never QEMU on stdio) + `scratch/ramfb_gate.py` at `-m 1G`, all lines
+green incl:
 ```
-pe1 ret=42
-CHALICE: the cup fills
-pe2 ret=7
 CHALICE: the cup speaks
+CHALICE: NT10 floor
+CHALICE: continue lands
 pe3 ret=99
 ```
-Plus `scratch/ramfb_gate.py` regression still green (unrelated surface,
-re-run as a whole-kernel sanity check).
 
-### Bug found + fixed while closing out the partial work
+Delivered (Atoms A+B):
+- NT service-table dispatch (`ntdisp.S`, `syscall_frame` 0x330B +
+  `frame->stub_lr`@0x110 donor-shape LR fix)
+- TEB/PEB floor w/ 4 trapdoor ptrs
+- `NtWriteFile`/`NtClose`/`NtTerminateProcess`/`NtAllocateVirtualMemory`/
+  `NtFreeVirtualMemory`/`NtQueryInformationProcess`/
+  `NtQuerySystemInformation` real, rest `STATUS_NOT_IMPLEMENTED`
+- `NtContinue` full-CONTEXT leap
+- `KUSER_SHARED_DATA` @ `0x7ffe0000` behind `-m 1G` bump
+
+NEXT: slice 3 = stock ntdll→kernel32 PE chain over this floor (per existing
+Road section below).
+
+### Bug found + fixed while closing out the partial work (Atom A)
 The previous worker's `ntstub.S` PE-side stubs (`NtWriteFile`/`NtClose`/
 `NtTerminateProcess`) were non-leaf functions (each does `blr` into
 `nt_dispatch`) but never saved their own incoming `x30` (LR) across that
@@ -85,6 +96,15 @@ PE image reads literally) was 2 MB stale → `br x16` faulted. Fix: `linker.ld`
 `. = 0x40200000` + boot header `image_size = _file_size` (true on-disk size, not
 BSS-inclusive memsz). First PE import was the canary that exposed a day-one bug
 HolyC alone never could.
+
+### SCARS — slice 2 Atom B
+(1) x30 bounce: PE stub's bare `ret` after `blr` into dispatcher looped
+silently inside `nt_dispatch` — fix = `frame->stub_lr`, donor shape.
+(2) ⚠ LLP64: aarch64-windows-gnu `unsigned long` = 32-bit; by-VALUE 32-bit
+args are safe (w-reg write zero-extends) but by-POINTER width mismatch is
+deadly — `RegionSize` was a 4-byte slot the LP64 kernel read 8 bytes from →
+garbage size → alloc fail. LAW: every PE-side pointer-target integer =
+explicit 64-bit (`SIZE_T` semantics).
 
 ---
 

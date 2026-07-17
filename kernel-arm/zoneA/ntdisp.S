@@ -2,8 +2,9 @@
 // no trap (HANDOFF: "the Temple-native gift" — Wine's ARM64 path never
 // traps either, ref wine/dlls/ntdll/unix/signal_arm64.c:1630-1785; we mirror
 // its table-dispatch shape but on one shared stack, since there is no
-// user/kernel split here). Also carries pe_enter (A4 TEB-install shim) and
-// nt_setjmp/nt_longjmp (NtTerminateProcess unwind primitive, ntsvc.c).
+// user/kernel split here). Also carries pe_enter (A4 TEB-install shim),
+// nt_setjmp/nt_longjmp (NtTerminateProcess unwind primitive, ntsvc.c), and
+// (Atom B) NtContinue (full CONTEXT restore, ntids.h receipt).
 //
 // Register discipline notes (deviations from donor called out inline):
 //  - x16/x17 are AAPCS64 intra-procedure scratch (IP0/IP1) — never trusted
@@ -12,6 +13,37 @@
 //  - x18 = TEB on the PE (Windows ABI) side, but our own kernel C
 //    (aarch64-none-elf) may treat x18 as ordinary scratch — stash/restore
 //    around the C handler call so the PE side never sees it clobbered.
+//
+// ---- Atom B correctness fix: stub-side x30 (LR) preservation ----
+// Task-flagged bug: Atom A's PE-side stubs (ntstub.S) stashed their own
+// pre-blr x30 into x23 — CALLEE-SAVED per the Windows ARM64 AAPCS64. A
+// stub squatting on a callee-saved register without saving/restoring the
+// CALLER's incoming value violates the stub's own ABI contract with
+// whatever compiler-generated code calls it (latent corruption for any
+// real caller, not just our own hand-written hello3.c). Verified against
+// the donor return-path shape (wine/dlls/ntdll/unix/signal_arm64.c:1630-
+// 1785): donor's __wine_syscall_dispatcher entry does
+//   `mov x19, sp` ; `stp x9, x19, [x10, #0xf0]`   (frame+0xf0=x9, +0xf8=sp)
+//   ... and on return: `ldp x30, x17, [sp, #0xf0]` ; `mov sp, x17` ; `ret x16`
+// i.e. x30 is restored from frame+0xf0 = whatever the donor's real PE-side
+// stub placed in (caller-saved) x9 before its `blr` — donor's stub is a
+// PURE TAIL CALL (nothing after the blr at all: wine/include/wine/asm.h
+// __ASM_SYSCALL_FUNC's aarch64 branch, quoted in ntids.h) so frame->pc
+// (dispatcher-entry x30) IS the real original-caller return address, and
+// `ret x16` skips the stub's own frame entirely. Our stubs are NOT pure
+// tail calls (each has cleanup after the blr), so we keep frame->pc's role
+// (return INTO the stub) but ALSO restore the true x30 via a GAIA-OS
+// extension slot (NT_FRAME_STUB_LR_OFF, ntids.h receipt) — functionally
+// the same donor mechanism (capture a caller-saved temp into the frame at
+// entry, before the C handler can clobber it; restore into x30 at return),
+// adapted to our stubs' non-tail-call shape. Register choice: x14 (never
+// touched anywhere in nt_dispatch, confirmed by inspection below — x9 was
+// unavailable, already used here as the stack-arg base, unlike donor which
+// uses x19 for that role) — caller-saved per task's requirement (x9-x17),
+// and specifically one nt_dispatch itself never reassigns before the
+// capture, so the stub's value survives intact into the frame.
+// ntstub.S mirrors this: `mov x14, x30` before `blr x16`, no post-blr
+// restore instruction needed (nt_dispatch fixes x30 before `ret x16`).
 
 .text
 
@@ -39,12 +71,19 @@ nt_dispatch:
     // DEVIATION vs donor (signal_arm64.c:1630+ spills all of x0-x28 and
     // q0-q31): Atom A only spills x0-x7 (the args every real handler here
     // needs) + fp/lr/sp/pc/cpsr/id. None of NtWriteFile/NtClose/
-    // NtTerminateProcess touch x8-x28 or vector regs; NtContinue (Atom B,
-    // full CONTEXT restore) will need the fuller spill and should extend
-    // this. Noted in HANDOFF.md State.
+    // NtTerminateProcess touch x8-x28 or vector regs. Atom B's NtContinue
+    // also fits this spill range unchanged: its only real arguments are x0
+    // (ContextRecord ptr) and x1 (TestAlert), both within x0-x7 -- the full
+    // x0-x30 restore it performs reads directly from *ContextRecord in
+    // memory, not from this frame's spilled registers.
     str  x29, [x19, #0xe8]          // frame->fp
     str  x9,  [x19, #0xf0]          // frame->sp  (caller's original sp)
     str  x30, [x19, #0x100]         // frame->pc  (return addr into PE stub)
+    str  x14, [x19, #0x110]         // frame->stub_lr (Atom B fix, see header:
+                                     // the STUB's own pre-blr x30 -- captured
+                                     // here, before the C handler gets a
+                                     // chance to clobber x14, restored into
+                                     // the real x30 at dispatch_return below)
     mrs  x10, NZCV
     str  w10, [x19, #0x108]         // frame->cpsr (condition flags only —
                                      // DEVIATION: donor stores full PSTATE
@@ -98,6 +137,7 @@ dispatch_return:
     ldr  x10, [x18, #0x378]
     ldr  x16, [x10, #0x100]         // frame->pc  ("ret x16" pattern, donor)
     ldr  x17, [x10, #0xf0]          // frame->sp
+    ldr  x30, [x10, #0x110]         // frame->stub_lr (Atom B fix, see header)
     mov  sp, x17
     str  xzr, [x18, #0x378]         // Atom A: one-shot frame, no re-entrancy
     ret  x16
@@ -149,3 +189,75 @@ nt_longjmp:
     mov  sp, x2
     mov  x0, x1                     // val becomes nt_setjmp's "return value"
     ret
+
+// ---- NtContinue: Atom B slice-2 boss. Full ARM64 CONTEXT restore (layout
+// per reactos/sdk/include/xdk/arm64/ke.h _CONTEXT, receipted below), "the
+// loader's leap off its own stack" -- lands directly at Context->Pc with
+// Context->Sp as the new stack, NEVER returning to nt_dispatch's normal
+// dispatch_return path (which only round-trips frame->pc/sp, not a full
+// register file -- insufficient for this). Called via the same `blr x10`
+// handler-call slot as any other service (x0=ContextRecord, x1=TestAlert,
+// AAPCS64, per nt_dispatch's arg reload before the blr).
+//
+// CONTEXT layout (ke.h _CONTEXT, LP64/_STRUCT64, all fields naturally
+// aligned so no padding surprises): ContextFlags(u32)@0x00, Cpsr(u32)@0x04,
+// X[31](u64 each, =X0..X28,Fp(X29),Lr(X30))@0x08..0x100, Sp@0x100, Pc@0x108,
+// V[32](NEON128,16B each)@0x110..0x310, Fpcr/Fpsr@0x310/0x314,
+// Bcr[8]@0x318, Bvr[8]@0x338, Wcr[2]@0x378, Wvr[2]@0x380 (size 0x390 --
+// matches the well-known public Win64 CONTEXT size for ARM64).
+//
+// DEVIATION (Atom B minimal, noted per HANDOFF style): only the integer
+// GPRs (X0-X28,Fp,Lr), Sp and Pc are restored -- NEON/FP (V/Fpcr/Fpsr) and
+// debug regs (Bcr/Bvr/Wcr/Wvr) are NOT, matching the actual scope of the
+// hello3 probe ("CONTEXT{pc=part2, sp, x0=cookie}"); a fuller restore is
+// straightforward to add here (same pattern) if a later slice needs it.
+// Cpsr/NZCV also not restored -- no code here depends on condition flags
+// across the leap.
+//
+// Register-choice deviation: X16/X17 (IP0/IP1, AAPCS64 intra-procedure
+// scratch -- see file header, never trusted to survive a call/blr, and
+// specifically not meaningful to preserve across an arbitrary control
+// transfer like this) are used as the jump-target/new-sp scratch instead of
+// being restored to their literal Context->X16/X17 values -- the only two
+// GPRs where exact restore fidelity is sacrificed, and only because they're
+// the two registers the ARM64 ABI itself says no caller may rely on anyway.
+.global NtContinue
+NtContinue:
+    str  xzr, [x18, #0x378]          // one-shot: clear syscall_frame slot
+                                      // (mirrors dispatch_return's cleanup,
+                                      // bypassed here since we never reach
+                                      // dispatch_return -- we jump straight
+                                      // to Context->Pc instead). x18 is
+                                      // still the pre-restore TEB at this
+                                      // point (nt_dispatch hasn't touched it
+                                      // yet -- see its x22 stash/blr/restore
+                                      // sequence, which happens around US).
+    mov  x9, x0                      // x9 = ContextRecord ptr
+    ldr  x16, [x9, #0x108]           // scratch: target Pc (Context->Pc)
+    ldr  x17, [x9, #0x100]           // scratch: target Sp (Context->Sp)
+    ldp  x0,  x1,  [x9, #0x08]       // Context->X0,X1
+    ldp  x2,  x3,  [x9, #0x18]       // Context->X2,X3
+    ldp  x4,  x5,  [x9, #0x28]       // Context->X4,X5
+    ldp  x6,  x7,  [x9, #0x38]       // Context->X6,X7
+    ldr  x8,       [x9, #0x48]       // Context->X8
+    // X9 deliberately skipped here (x9 IS the ContextRecord pointer we're
+    // still reading through) -- its real value is loaded LAST, below.
+    ldp  x10, x11, [x9, #0x58]       // Context->X10,X11
+    ldp  x12, x13, [x9, #0x68]       // Context->X12,X13
+    ldp  x14, x15, [x9, #0x78]       // Context->X14,X15
+    // X16,X17 deliberately skipped (see deviation note above).
+    ldr  x18,      [x9, #0x98]       // Context->X18 -- TEB continuity: the
+                                      // caller (hello3.c) sets this to its
+                                      // own current x18 so PE code at
+                                      // Context->Pc can keep calling NT
+                                      // services (they dereference TEB+0x380)
+    ldp  x19, x20, [x9, #0xa0]       // Context->X19,X20
+    ldp  x21, x22, [x9, #0xb0]       // Context->X21,X22
+    ldp  x23, x24, [x9, #0xc0]       // Context->X23,X24
+    ldp  x25, x26, [x9, #0xd0]       // Context->X25,X26
+    ldp  x27, x28, [x9, #0xe0]       // Context->X27,X28
+    ldp  x29, x30, [x9, #0xf0]       // Context->Fp(X29),Lr(X30)
+    ldr  x9,       [x9, #0x50]       // Context->X9 -- last use of x9 as the
+                                      // pointer, must be the final load
+    mov  sp, x17                     // switch to Context->Sp
+    br   x16                         // leap to Context->Pc -- never returns

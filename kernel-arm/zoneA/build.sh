@@ -54,7 +54,14 @@ fi
 #   gate overrides GAIA_SERIAL (e.g. a unix socket) and adds its own -monitor.
 QEMU_DISPLAY="${GAIA_DISPLAY:-none}"
 QEMU_SERIAL="${GAIA_SERIAL:-mon:stdio}"
-exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m 256M \
+# CHALICE C2b Atom B: 256M -> 1G so KUSER_SHARED_DATA @ 0x7ffe0000 (fixed
+# physical address the kernel writes directly, ntsvc.c nt_kuser_init) is
+# actually backed by real DRAM. QEMU virt RAM starts at 0x40000000; with
+# -m 1G it spans 0x40000000-0x80000000, landing 0x7ffe0000 128KB under the
+# ceiling (SLICE2-SPEC Atom B receipt). mem.c's own heap arena tops out at
+# 0x45000000 (HEAP_BASE 0x41000000 + HEAP_SIZE 64MB) -- verified nowhere
+# near 0x7ffe0000 (~0.8GB of headroom), no guard needed there.
+exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m 1G \
     -global virtio-mmio.force-legacy=false \
     -drive if=none,file=disk.img,format=raw,id=hd \
     -device virtio-blk-device,drive=hd \

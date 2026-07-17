@@ -40,6 +40,17 @@
 #define STATUS_SUCCESS                0x00000000L
 #define STATUS_NOT_IMPLEMENTED        0xC0000002L
 #define STATUS_INVALID_SYSTEM_SERVICE 0xC000001CL
+#define STATUS_INVALID_PARAMETER      0xC000000DL   // Atom B
+#define STATUS_INFO_LENGTH_MISMATCH   0xC0000004L   // Atom B
+#define STATUS_NO_MEMORY              0xC0000017L   // Atom B
+
+// ---- Atom B: NtAllocateVirtualMemory/NtFreeVirtualMemory AllocationType/
+// FreeType bits (winnt.h). Only these are accepted; anything else in
+// AllocationType -> STATUS_INVALID_PARAMETER (SLICE2-SPEC Atom B).
+#define MEM_COMMIT   0x00001000L
+#define MEM_RESERVE  0x00002000L
+#define MEM_DECOMMIT 0x00004000L
+#define MEM_RELEASE  0x00008000L
 
 // ---- TEB slot convention (offsets from TEB base; x18 holds TEB on the PE
 // side per Windows ARM64 ABI — x18 is a reserved/platform register there,
@@ -68,5 +79,38 @@
 // RTL_USER_PROCESS_PARAMETERS+0x28 (StandardOutput — receipt in ntsvc.c)
 // and checked for equality by NtWriteFile.
 #define NT_STDOUT_HANDLE 0x14
+
+// ---- Atom B: syscall_frame extension. Donor's __wine_syscall_dispatcher
+// (wine/dlls/ntdll/unix/signal_arm64.c:1630-1785) stashes the PE stub's own
+// pre-blr x30 at frame+0xf0 (paired stp with frame+0xf8=entry sp) and
+// restores x30 from there right before its final `ret x16` — meaning real
+// Wine stubs are pure tail calls (`blr x16`, nothing after: frame->pc IS the
+// original caller's return address, so `ret x16` skips the stub entirely).
+// Our stubs are NOT pure tail calls (each has trailing cleanup/`ret`), so we
+// keep frame->pc's role (0x100: dispatcher-entry x30 = return-into-stub
+// address, used by `ret x16`) but ALSO need the stub's true pre-blr x30
+// restored into the real x30 register before that `ret x16` lands, so the
+// stub's OWN trailing `ret` later returns to the stub's actual caller (this
+// is the bugfixed replacement for Atom A's callee-saved-x23 stash, which
+// violated the Windows AAPCS64 ABI contract with whatever calls our stubs
+// — see ntdisp.S/ntstub.S receipts). NT_FRAME_STUB_LR_OFF is GAIA-OS's own
+// extension slot (not a donor-pinned offset — donor's equivalent role lives
+// at its frame+0xf0, but our frame+0xf0 is already taken by frame->sp);
+// placed in the gap between cpsr(0x108) and id(0x120), 24 bytes free there.
+#define NT_FRAME_STUB_LR_OFF 0x110
+
+// ---- Atom B: KUSER_SHARED_DATA, fixed physical address (HANDOFF: "we ARE
+// the unix side"). Offsets receipted against reactos/sdk/include/ndk/
+// ketypes.h _KUSER_SHARED_DATA (has inline // 0x... comments per field,
+// matches well-known public Win64 KUSER_SHARED_DATA offsets).
+#define NT_KUSER_SHARED_DATA_ADDR      0x7ffe0000UL
+#define NT_KUSER_NTBUILDNUMBER_OFF     0x260   // ketypes.h:568 (WIN10+ branch)
+#define NT_KUSER_NTMAJORVERSION_OFF    0x26c   // ketypes.h:580
+#define NT_KUSER_NTMINORVERSION_OFF    0x270   // ketypes.h:581
+#define NT_KUSER_PROCESSORFEATURES_OFF 0x274   // ketypes.h:582, 64 BOOLEAN
+#define NT_KUSER_NUMBEROFPHYSICALPAGES_OFF 0x2e8  // ketypes.h:615
+// -m 1G (build.sh, Atom B) / 4096 -- "sane" per SLICE2-SPEC, not dynamically
+// probed (no physical page allocator here; RAM size is a build-time given).
+#define NT_KUSER_NUM_PHYS_PAGES        262144
 
 #endif

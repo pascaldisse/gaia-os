@@ -24,6 +24,11 @@ long nt_dispatch(void);                             // blr target from PE stubs
 long pe_enter(long (*entry)(void), void *teb);       // A4 TEB-install shim
 long nt_setjmp(unsigned long *buf);
 void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
+// Atom B slice-2 boss: full ARM64 CONTEXT restore, never returns to its
+// caller (the loader's leap off its own stack — lands directly at
+// Context->Pc). Implemented in asm (ntdisp.S) since it must restore x0-x30
+// as raw registers, not something a C function signature can express.
+void NtContinue(void) __attribute__((noreturn));
 
 // NtTerminateProcess unwind channel (PeRun sets jmpbuf before pe_enter;
 // NtTerminateProcess sets exit_code then longjmps — see ntsvc.c receipt).
@@ -42,3 +47,20 @@ long NtWriteFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcConte
                   void *ByteOffset, unsigned long *Key);
 long NtClose(void *Handle);
 long NtTerminateProcess(void *ProcessHandle, long ExitStatus);
+
+// Atom B real handlers.
+long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
+                              unsigned long *RegionSize, unsigned long AllocationType,
+                              unsigned long Protect);
+long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
+                          unsigned long FreeType);
+long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
+                                void *ProcessInformation, unsigned long ProcessInformationLength,
+                                unsigned long *ReturnLength);
+long NtQuerySystemInformation(unsigned long SystemInformationClass, void *SystemInformation,
+                               unsigned long SystemInformationLength, unsigned long *ReturnLength);
+
+// Atom B: populate KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed
+// physical address, identity-mapped normal memory per kmain.c's mmu_on).
+// Idempotent-by-caller: invoked once from nt_service_tables_init().
+void nt_kuser_init(void);

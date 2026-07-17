@@ -69,6 +69,207 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
     return STATUS_SUCCESS;   // unreachable
 }
 
+// =====================================================================
+// Atom B — flat page-aligned VM arena (NtAllocateVirtualMemory /
+// NtFreeVirtualMemory). HANDOFF: "flat arena OK, skip VAD tree". Backed by
+// mem.c's MAlloc (over-allocate + align, same trick pemod.c already uses
+// for PE image bases) rather than a dedicated static region — a dedicated
+// large static .bss array was considered and rejected: the kernel currently
+// links+bss's to ~0x40229688 (verified via `nm`), MemInit's HEAP_BASE is a
+// hardcoded 0x41000000 (mem.c), leaving only ~14 MB of headroom before the
+// heap base — a multi-MB static arena would risk colliding with the heap.
+// Routing through MAlloc keeps everything inside the existing 64 MB heap
+// (0x41000000-0x45000000), nowhere near KUSER_SHARED_DATA @ 0x7ffe0000 (the
+// mem.c arena-bounds check SLICE2-SPEC Atom B asks to verify — confirmed by
+// inspection: heap ceiling 0x45000000 is ~0.8 GB below 0x7ffe0000, no guard
+// needed in mem.c itself).
+#define NT_PAGE_SIZE 4096UL
+#define NT_VM_MAX_REGIONS 64
+
+static struct {
+    void   *raw;        // the underlying MAlloc pointer (pre-alignment)
+    void   *aligned;     // page-aligned pointer handed to the PE side
+    u64b    size;         // page-rounded size
+    int     used;
+} nt_vm_regions[NT_VM_MAX_REGIONS];
+
+static void *nt_vm_alloc(u64b size) {
+    u8 *raw = (u8 *)MAlloc(size + NT_PAGE_SIZE);
+    if (!raw) return 0;
+    u8 *aligned = (u8 *)(((u64b)raw + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1));
+    for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
+        if (nt_vm_regions[i].used) continue;
+        nt_vm_regions[i].raw = raw;
+        nt_vm_regions[i].aligned = aligned;
+        nt_vm_regions[i].size = size;
+        nt_vm_regions[i].used = 1;
+        return aligned;
+    }
+    Free(raw);   // no tracking slot left — fail cleanly rather than leak untracked
+    return 0;
+}
+
+// Returns page-rounded size of the freed region via *out_size, or 0 if
+// aligned wasn't a live region (unknown/already-freed base).
+static int nt_vm_free(void *aligned, u64b *out_size) {
+    for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
+        if (!nt_vm_regions[i].used || nt_vm_regions[i].aligned != aligned) continue;
+        if (out_size) *out_size = nt_vm_regions[i].size;
+        Free(nt_vm_regions[i].raw);
+        nt_vm_regions[i].used = 0;
+        return 1;
+    }
+    return 0;
+}
+
+long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
+                              unsigned long *RegionSize, unsigned long AllocationType,
+                              unsigned long Protect) {
+    (void)ProcessHandle; (void)ZeroBits; (void)Protect;
+    if (!BaseAddress || !RegionSize) return STATUS_INVALID_PARAMETER;
+
+    // exotic flags -> STATUS_INVALID_PARAMETER (SLICE2-SPEC Atom B); must
+    // specify at least one of COMMIT/RESERVE, both together also accepted
+    // ("MEM_COMMIT|MEM_RESERVE both = alloc").
+    if (AllocationType == 0 || (AllocationType & ~(u64b)(MEM_COMMIT | MEM_RESERVE)) != 0)
+        return STATUS_INVALID_PARAMETER;
+
+    u64b size = *RegionSize;
+    if (size == 0) return STATUS_INVALID_PARAMETER;
+    u64b pages = (size + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+
+    // DEVIATION (documented, not silent): a caller-supplied *BaseAddress
+    // hint can't be honored by a flat bump/free-list arena (no VAD tree, no
+    // control over where MAlloc's free list happens to have room) --
+    // rejected explicitly rather than silently ignored. hello3's probe
+    // always passes NULL (system-chosen base), so this path isn't exercised
+    // by the Atom B gate.
+    if (*BaseAddress != 0) return STATUS_INVALID_PARAMETER;
+
+    void *mem = nt_vm_alloc(pages);
+    if (!mem) return STATUS_NO_MEMORY;
+
+    *BaseAddress = mem;
+    *RegionSize = pages;
+    return STATUS_SUCCESS;
+}
+
+long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
+                          unsigned long FreeType) {
+    (void)ProcessHandle;
+    if (!BaseAddress || !*BaseAddress) return STATUS_INVALID_PARAMETER;
+    if (FreeType != MEM_RELEASE && FreeType != MEM_DECOMMIT) return STATUS_INVALID_PARAMETER;
+
+    if (FreeType == MEM_RELEASE) {
+        u64b freed = 0;
+        if (!nt_vm_free(*BaseAddress, &freed)) return STATUS_INVALID_PARAMETER;
+        if (RegionSize) *RegionSize = freed;
+        return STATUS_SUCCESS;
+    }
+    // MEM_DECOMMIT: flat arena has no separate commit/decommit state (every
+    // page is committed at alloc time) -- no-op success, matches HANDOFF's
+    // "flat arena OK" simplification.
+    if (RegionSize) *RegionSize = (*RegionSize + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    return STATUS_SUCCESS;
+}
+
+// =====================================================================
+// Atom B — NtQueryInformationProcess / NtQuerySystemInformation. Only the
+// two classes SLICE2-SPEC calls out; everything else STATUS_NOT_IMPLEMENTED.
+// =====================================================================
+
+// PROCESS_BASIC_INFORMATION (winternl.h), LP64 layout: ExitStatus(NTSTATUS,
+// 4B+4 pad)@0, PebBaseAddress@0x08, AffinityMask@0x10, BasePriority(8,
+// padded to keep UniqueProcessId 8-aligned)@0x18, UniqueProcessId@0x20,
+// InheritedFromUniqueProcessId@0x28 -- size 0x30 (48B, matches the
+// well-known public sizeof(PROCESS_BASIC_INFORMATION) on x64/ARM64).
+#define PBI_SIZE 0x30
+#define PBI_PEBBASEADDRESS_OFF 0x08
+#define PBI_AFFINITYMASK_OFF   0x10
+#define PBI_BASEPRIORITY_OFF   0x18
+#define PBI_UNIQUEPROCESSID_OFF 0x20
+
+long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
+                                void *ProcessInformation, unsigned long ProcessInformationLength,
+                                unsigned long *ReturnLength) {
+    (void)ProcessHandle;
+    if (ProcessInformationClass != 0 /* ProcessBasicInformation */) return STATUS_NOT_IMPLEMENTED;
+    if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
+    if (ProcessInformationLength < PBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+
+    // Current TEB (x18, Windows ARM64 ABI reserved platform reg) -> PEB.
+    // Single-address-space, single-"process" kernel: reading our own live
+    // x18 at call time is the only "current process" we have.
+    u64b teb; __asm__ volatile("mov %0, x18" : "=r"(teb));
+    u64b peb = 0;
+    if (teb) peb = *(u64b *)(teb + 0x60);   // TEB_PEB_OFF (A4 section below, ~line 314)
+
+    u8 *out = (u8 *)ProcessInformation;
+    for (int i = 0; i < PBI_SIZE; i++) out[i] = 0;
+    wr64(out + PBI_PEBBASEADDRESS_OFF, peb);
+    wr64(out + PBI_AFFINITYMASK_OFF, 1);        // single logical CPU (KUSER floor, ntsvc.c)
+    wr64(out + PBI_BASEPRIORITY_OFF, 8);        // NORMAL_PRIORITY_CLASS-ish, not load-bearing
+    wr64(out + PBI_UNIQUEPROCESSID_OFF, 1);     // single-process kernel: PID is always 1
+
+    if (ReturnLength) *ReturnLength = PBI_SIZE;
+    return STATUS_SUCCESS;
+}
+
+// SYSTEM_BASIC_INFORMATION (ntsvc.c receipt: reactos/sdk/include/ndk/
+// extypes.h _SYSTEM_BASIC_INFORMATION), LP64 layout: Reserved(4)@0,
+// TimerResolution(4)@4, PageSize(4)@8, NumberOfPhysicalPages(4)@0xC,
+// LowestPhysicalPageNumber(4)@0x10, HighestPhysicalPageNumber(4)@0x14,
+// AllocationGranularity(4)@0x18 + 4 pad, MinimumUserModeAddress(8)@0x20,
+// MaximumUserModeAddress(8)@0x28, ActiveProcessorsAffinityMask(8)@0x30,
+// NumberOfProcessors(1)@0x38 -- size 0x40 (64B).
+#define SBI_SIZE 0x40
+#define SBI_PAGESIZE_OFF 0x08
+#define SBI_NUMBEROFPHYSICALPAGES_OFF 0x0C
+#define SBI_NUMBEROFPROCESSORS_OFF 0x38
+
+long NtQuerySystemInformation(unsigned long SystemInformationClass, void *SystemInformation,
+                               unsigned long SystemInformationLength, unsigned long *ReturnLength) {
+    if (SystemInformationClass != 0 /* SystemBasicInformation */) return STATUS_NOT_IMPLEMENTED;
+    if (!SystemInformation) return STATUS_INVALID_PARAMETER;
+    if (SystemInformationLength < SBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+
+    u8 *out = (u8 *)SystemInformation;
+    for (int i = 0; i < SBI_SIZE; i++) out[i] = 0;
+    wr32(out + SBI_PAGESIZE_OFF, (u32b)NT_PAGE_SIZE);
+    wr32(out + SBI_NUMBEROFPHYSICALPAGES_OFF, NT_KUSER_NUM_PHYS_PAGES);
+    out[SBI_NUMBEROFPROCESSORS_OFF] = 1;
+
+    if (ReturnLength) *ReturnLength = SBI_SIZE;
+    return STATUS_SUCCESS;
+}
+
+// =====================================================================
+// Atom B — KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed physical
+// address, we populate directly — HANDOFF: "we ARE the unix side").
+// =====================================================================
+void nt_kuser_init(void) {
+    u8 *k = (u8 *)(u64b)NT_KUSER_SHARED_DATA_ADDR;
+    // Zero the page first: QEMU RAM content at an address never previously
+    // written is otherwise unspecified, and only a handful of fields below
+    // are populated -- the rest of KUSER_SHARED_DATA must read as zero, not
+    // whatever pattern happened to be in DRAM.
+    for (u64b i = 0; i < NT_PAGE_SIZE; i++) k[i] = 0;
+
+    wr32(k + NT_KUSER_NTBUILDNUMBER_OFF, 19041);   // arbitrary Win10 build, not load-bearing
+    wr32(k + NT_KUSER_NTMAJORVERSION_OFF, 10);
+    wr32(k + NT_KUSER_NTMINORVERSION_OFF, 0);
+    wr32(k + NT_KUSER_NUMBEROFPHYSICALPAGES_OFF, NT_KUSER_NUM_PHYS_PAGES);
+
+    // ProcessorFeatures[]: sane subset a real cortex-a72 (our -cpu, build.sh)
+    // genuinely has, indices per reactos/sdk/include/xdk/ketypes.h PF_* --
+    // not an exhaustive/authoritative CPUID probe (none exists here), just
+    // "sane" per SLICE2-SPEC Atom B, rest of the array left zero (=absent).
+    k[NT_KUSER_PROCESSORFEATURES_OFF + 18] = 1;   // PF_ARM_VFP_32_REGISTERS_AVAILABLE
+    k[NT_KUSER_PROCESSORFEATURES_OFF + 19] = 1;   // PF_ARM_NEON_INSTRUCTIONS_AVAILABLE
+    k[NT_KUSER_PROCESSORFEATURES_OFF + 25] = 1;   // PF_ARM_64BIT_LOADSTORE_ATOMIC
+    k[NT_KUSER_PROCESSORFEATURES_OFF + 29] = 1;   // PF_ARM_V8_INSTRUCTIONS_AVAILABLE
+}
+
 static void  *nt_svc_table0[NT_SERVICE_COUNT];
 static u8     nt_svc_argtable0[NT_SERVICE_COUNT];
 NtServiceTable nt_service_tables[4];
@@ -89,12 +290,28 @@ void nt_service_tables_init(void) {
     nt_svc_table0[NT_SVC_NTTERMINATEPROCESS] = (void *)NtTerminateProcess;
     nt_svc_argtable0[NT_SVC_NTTERMINATEPROCESS] = 2 * 8;
 
+    // ---- Atom B real handlers ----
+    nt_svc_table0[NT_SVC_NTALLOCATEVIRTUALMEMORY] = (void *)NtAllocateVirtualMemory;
+    nt_svc_argtable0[NT_SVC_NTALLOCATEVIRTUALMEMORY] = 6 * 8;
+    nt_svc_table0[NT_SVC_NTFREEVIRTUALMEMORY] = (void *)NtFreeVirtualMemory;
+    nt_svc_argtable0[NT_SVC_NTFREEVIRTUALMEMORY] = 4 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYINFORMATIONPROCESS] = (void *)NtQueryInformationProcess;
+    nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONPROCESS] = 5 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYSYSTEMINFORMATION] = (void *)NtQuerySystemInformation;
+    nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATION] = 4 * 8;
+    nt_svc_table0[NT_SVC_NTCONTINUE] = (void *)NtContinue;
+    nt_svc_argtable0[NT_SVC_NTCONTINUE] = 2 * 8;
+
     nt_service_tables[0].ServiceTable  = nt_svc_table0;
     nt_service_tables[0].CounterTable  = 0;
     nt_service_tables[0].ServiceLimit  = NT_SERVICE_COUNT;
     nt_service_tables[0].ArgumentTable = nt_svc_argtable0;
     // tables[1..3]: zero-initialized statics -> ServiceLimit=0 -> any id on
     // them is STATUS_INVALID_SYSTEM_SERVICE (spec A3: "1-3 limit=0").
+
+    nt_kuser_init();   // Atom B: populate KUSER_SHARED_DATA before any PE
+                        // code (which reads it before its first service
+                        // call, per HANDOFF's trapdoor framing) can run.
 }
 
 // =====================================================================

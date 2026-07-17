@@ -10,39 +10,86 @@
 
 .text
 
-// NOTE (bugfix during Atom A integration): each stub is a non-leaf fn (it
-// blr's into nt_dispatch) but nt_dispatch's own internal `blr x10` handler
-// call clobbers x30 before it returns control here via `ret x16` (frame->pc
-// deliberately points back at THIS stub's post-blr instruction, not at our
-// caller). So x30 must be saved across the blr in a register nt_dispatch
-// never touches (x23: nt_dispatch only uses x0-x22,x29 + the frame) --
-// NOT on the stack, which would shift the outgoing stack-arg base (x9 in
-// nt_dispatch, used by the ArgumentTable stack-arg marshal for calls like
-// NtWriteFile's 9th arg) out from under the caller's actual arg placement.
-
+// ---- Atom B correctness fix (task-flagged, full receipt in
+// zoneA/ntdisp.S's file header — read that first) ----
+// Atom A stashed each stub's own pre-blr x30 into x23, a CALLEE-SAVED
+// register per the Windows ARM64 AAPCS64 — clobbering it without
+// saving/restoring the caller's incoming value violates our own stub's ABI
+// contract with whatever calls it. Fixed by using x14 instead: (a)
+// caller-saved, so no contract violation, and (b) nt_dispatch (ntdisp.S)
+// now captures x14 into the syscall_frame at NT_FRAME_STUB_LR_OFF *before*
+// the C handler runs (so the handler is free to clobber x14 as ordinary
+// scratch — its saved copy already lives in memory by then) and restores
+// the real x30 from that frame slot immediately before its own
+// `ret x16` — meaning by the time control lands back here (right after
+// each stub's `blr x16`), x30 is *already* correct. No post-blr restore
+// instruction is needed or present anymore.
 .global NtWriteFile
 NtWriteFile:
-    mov  x23, x30
+    mov  x14, x30
     mov  x8, #NT_SVC_NTWRITEFILE
     ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
     blr  x16
-    mov  x30, x23
     ret
 
 .global NtClose
 NtClose:
-    mov  x23, x30
+    mov  x14, x30
     mov  x8, #NT_SVC_NTCLOSE
     ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
     blr  x16
-    mov  x30, x23
     ret
 
 .global NtTerminateProcess
 NtTerminateProcess:
-    mov  x23, x30
+    mov  x14, x30
     mov  x8, #NT_SVC_NTTERMINATEPROCESS
     ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
     blr  x16
-    mov  x30, x23
+    ret
+
+// ---- Atom B new stubs ----
+.global NtAllocateVirtualMemory
+NtAllocateVirtualMemory:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTALLOCATEVIRTUALMEMORY
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtFreeVirtualMemory
+NtFreeVirtualMemory:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTFREEVIRTUALMEMORY
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtQueryInformationProcess
+NtQueryInformationProcess:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTQUERYINFORMATIONPROCESS
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+.global NtQuerySystemInformation
+NtQuerySystemInformation:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTQUERYSYSTEMINFORMATION
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
+    ret
+
+// NtContinue never actually returns here (the kernel-side handler jumps
+// straight to the target Context->Pc, bypassing nt_dispatch's normal
+// return path entirely — see ntdisp.S). The trailing `ret` below is
+// mechanically present for shape-uniformity with the other stubs but is
+// unreachable dead code on every real call.
+.global NtContinue
+NtContinue:
+    mov  x14, x30
+    mov  x8, #NT_SVC_NTCONTINUE
+    ldr  x16, [x18, #NT_TEB_DISPATCH_ENTRY_OFF]
+    blr  x16
     ret
