@@ -19,6 +19,7 @@ typedef unsigned int   u32b;
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr16(u8 *p, u16 v)  { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
+static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
 
 static void *nt_zalloc(u64b size) {
     u8 *p = (u8 *)MAlloc(size);
@@ -647,7 +648,11 @@ void nt_service_tables_init(void) {
 #define MOD_DLLBASE_OFF            0x30
 #define MOD_ENTRYPOINT_OFF         0x38
 #define MOD_SIZEOFIMAGE_OFF        0x40
+#define MOD_BASEDLLNAME_OFF        0x58   // UNICODE_STRING, 16B (FullDllName@0x48 left unset)
 #define MOD_SIZE                   0xA0
+#define US_LENGTH_OFF              0x00
+#define US_MAXLENGTH_OFF           0x02
+#define US_BUFFER_OFF              0x08
 
 void *nt_build_teb(void *image_base, void *entry, unsigned long image_size) {
     nt_service_tables_init();
@@ -706,4 +711,89 @@ void *nt_build_teb(void *image_base, void *entry, unsigned long image_size) {
     wr32(mod + MOD_SIZEOFIMAGE_OFF, (u32b)image_size);
 
     return teb;
+}
+
+// CHALICE C3c-2l Atom A/B — nt_ldr_add_module: insert a SECOND (or Nth)
+// LDR_DATA_TABLE_ENTRY into an already-built TEB's PEB.Ldr module list.
+// nt_build_teb (above) only ever registers ONE self-entry (the image it
+// was called with, always the EXE for nt_boot_process) -- ntdll itself
+// (mapped directly by ntboot.c's own C code via nt_territory_alloc,
+// bypassing the guest's own NtCreateSection/NtMapViewOfSection dependency-
+// load path that kernel32/kernelbase go through) never gets a module-list
+// entry at all. Phase-A receipt (C3c-2l): the guest's own find_named_export
+// module lookup for "ntdll.dll" during KERNEL32's __wine_dbg_header import
+// fixup walks PEB.Ldr looking for a module named "ntdll.dll" -- with zero
+// such entries present, the lookup can't succeed regardless of base
+// alignment; this is the missing-registration gap, not a base-math bug.
+// Inserts at the TAIL of all three circular doubly-linked lists (InLoad/
+// InMemory/InInit order) -- same list-splice pattern nt_build_teb already
+// uses for its single self-node, generalized to N nodes.
+void nt_ldr_add_module(void *teb_v, void *image_base, void *entry, unsigned long image_size,
+      const unsigned short *name_utf16, unsigned long name_chars) {
+    u8 *teb = (u8 *)teb_v;
+    u8 *peb = (u8 *)(u64b)rd64(teb + TEB_PEB_OFF);
+    u8 *ldr = (u8 *)(u64b)rd64(peb + PEB_LDR_OFF);
+    u8 *mod = (u8 *)nt_zalloc(MOD_SIZE);
+    if (!ldr || !mod) return;
+
+    // splice `mod` in before the list head (== insert at tail, since the
+    // head's Blink is the current tail) for each of the 3 lists.
+    for (int li = 0; li < 3; li++) {
+        u64b off = li == 0 ? LDR_INLOADORDER_OFF : li == 1 ? LDR_INMEMORYORDER_OFF : LDR_INEINITORDER_OFF;
+        u64b modoff = li == 0 ? MOD_INLOADORDER_OFF : li == 1 ? MOD_INMEMORYORDER_OFF : MOD_ININITORDER_OFF;
+        u8 *head = ldr + off;
+        u64b head_flink = rd64(head + 0);
+        u64b old_tail = rd64(head + 8);   // head->Blink
+        // new_node->Flink = head; new_node->Blink = old_tail
+        wr64(mod + modoff + 0, (u64b)head);
+        wr64(mod + modoff + 8, old_tail);
+        // old_tail->Flink = new_node (old_tail's LIST_ENTRY is at old_tail
+        // itself -- it's a raw LIST_ENTRY* into some node's modoff field)
+        wr64((u8 *)old_tail + 0, (u64b)(mod + modoff));
+        // head->Blink = new_node
+        wr64(head + 8, (u64b)(mod + modoff));
+        (void)head_flink;
+    }
+
+    wr64(mod + MOD_DLLBASE_OFF, (u64b)image_base);
+    wr64(mod + MOD_ENTRYPOINT_OFF, (u64b)entry);
+    wr32(mod + MOD_SIZEOFIMAGE_OFF, (u32b)image_size);
+    if (name_utf16 && name_chars) {
+        wr16(mod + MOD_BASEDLLNAME_OFF + US_LENGTH_OFF, (u16)(name_chars * 2));
+        wr16(mod + MOD_BASEDLLNAME_OFF + US_MAXLENGTH_OFF, (u16)(name_chars * 2));
+        wr64(mod + MOD_BASEDLLNAME_OFF + US_BUFFER_OFF, (u64b)name_utf16);
+    }
+}
+
+// CHALICE C3c-2l Phase-A instrument: dump every node currently on
+// PEB.Ldr.InLoadOrderModuleList (count + DllBase + SizeOfImage + raw
+// BaseDllName char count) -- the direct receipt for "does the guest's own
+// module list contain an ntdll.dll entry" before any fix is applied.
+void nt_ldr_dump(void *teb_v) {
+    u8 *teb = (u8 *)teb_v;
+    u8 *peb = (u8 *)(u64b)rd64(teb + TEB_PEB_OFF);
+    u8 *ldr = (u8 *)(u64b)rd64(peb + PEB_LDR_OFF);
+    if (!ldr) { puts("CHALICE: ldr-dump: no Ldr\n"); return; }
+    u8 *head = ldr + LDR_INLOADORDER_OFF;
+    u64b cur = rd64(head + 0);
+    int n = 0;
+    puts("CHALICE: ldr-dump InLoadOrderModuleList:\n");
+    while (cur != (u64b)head && n < 16) {
+        u8 *mod = (u8 *)cur - MOD_INLOADORDER_OFF;
+        u64b base = rd64(mod + MOD_DLLBASE_OFF);
+        u64b sz   = rd64(mod + MOD_SIZEOFIMAGE_OFF) & 0xFFFFFFFFULL;
+        u16 nlen = (u16)rd64(mod + MOD_BASEDLLNAME_OFF + US_LENGTH_OFF);
+        u64b nbuf = rd64(mod + MOD_BASEDLLNAME_OFF + US_BUFFER_OFF);
+        puts("  ["); nt_log_putdec((u64b)n); puts("] base="); puthex(base);
+        puts(" size="); puthex(sz); puts(" namelen="); nt_log_putdec(nlen);
+        if (nbuf && nlen) {
+            puts(" name=");
+            u16 *w = (u16 *)nbuf;
+            for (int i = 0; i < nlen / 2 && i < 32; i++) putc((char)w[i]);
+        }
+        puts("\n");
+        cur = rd64(mod + MOD_INLOADORDER_OFF + 0);
+        n++;
+    }
+    puts("CHALICE: ldr-dump count="); nt_log_putdec((u64b)n); puts("\n");
 }

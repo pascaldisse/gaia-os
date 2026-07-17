@@ -44,6 +44,12 @@ extern long nt_exit_code;
 // LDR_DATA_TABLE_ENTRY for one PE image, wire the 4 trapdoor pointers +
 // dispatch slots. Returns the TEB pointer (what x18 must hold).
 void *nt_build_teb(void *image_base, void *entry, unsigned long image_size);
+// CHALICE C3c-2l: insert an ADDITIONAL LDR_DATA_TABLE_ENTRY (e.g. ntdll
+// itself, kernel-mapped and otherwise absent from the module list) into an
+// already-built TEB's PEB.Ldr, and a diagnostic dump of that list.
+void nt_ldr_add_module(void *teb, void *image_base, void *entry, unsigned long image_size,
+      const unsigned short *name_utf16, unsigned long name_chars);
+void nt_ldr_dump(void *teb);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).

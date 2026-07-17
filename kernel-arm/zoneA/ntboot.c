@@ -351,6 +351,25 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     wr64(teb + TEB_NTTIB_STACKBASE_OFF, stack_top);     // StackBase = highest addr
     wr64(teb + TEB_NTTIB_STACKLIMIT_OFF, stack_base);   // StackLimit = lowest addr
 
+    // ---- CHALICE C3c-2l Phase A: nt_build_teb only ever registers ONE
+    // self-entry (the exe) in PEB.Ldr -- ntdll itself (mapped directly by
+    // this file's own C code above, bypassing the guest's own
+    // NtCreateSection/NtMapViewOfSection dependency-load path kernel32/
+    // kernelbase go through) never gets a module-list entry. Receipt dump
+    // BEFORE the fix, then Phase B: register it, dump again after. ----
+    if (stock) {
+        puts("CHALICE: ldr state before ntdll self-registration:\n");
+        nt_ldr_dump(teb);
+        u64b ntdll_namelen = strlen_local(ntdll_name);
+        u16b *ntdll_wname = (u16b *)MAlloc((ntdll_namelen + 1) * 2);
+        if (!ntdll_wname) return boot_err("ntdll ldr name alloc failed");
+        widen_ascii(ntdll_name, ntdll_wname, ntdll_namelen);
+        nt_ldr_add_module(teb, (void *)ntdll_base, (void *)ntdll_entry, ntdll_size,
+                          ntdll_wname, ntdll_namelen);
+        puts("CHALICE: ldr state after ntdll self-registration:\n");
+        nt_ldr_dump(teb);
+    }
+
     u8 *peb    = (u8 *)(u64b)rd64(teb + TEB_PEB_OFF);
     u8 *params = (u8 *)(u64b)rd64(peb + PEB_PROCESSPARAMETERS_OFF);
     wr64(params + PARAMS_STANDARDINPUT_OFF, NT_STDOUT_HANDLE);
