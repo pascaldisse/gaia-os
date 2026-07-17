@@ -213,8 +213,25 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock) {
 
     // ---- unixlib wiring: pointer WRITES into the mapped ntdll's data
     // exports (Architecture verdict 3), no syscall. ----
+    // CHALICE C3c-2d fix: *__wine_syscall_dispatcher is the REAL NT-service
+    // dispatch slot (every Zw* stub's literal-pool target, verified against
+    // stock/ntdll.dll -- ZwAllocateVirtualMemory's own literal resolves to
+    // this exact export RVA) -- it must hold our x8-id table dispatcher
+    // (nt_dispatch, ntdisp.S), NOT nt_unix_call_shim (a DIFFERENT donor
+    // mechanism, (handle,code,args)-shaped, meant for *__wine_unixlib_handle
+    // consumers only). Pre-fix this slot always got nt_unix_call_shim,
+    // which happens to run harmlessly (STATUS_NOT_IMPLEMENTED, its own
+    // ArgumentTable-less bounds check on a garbage "code") then `ret`s
+    // straight back into the stub's own trailing `ret` -- the actual cause
+    // of the ntdll.dll+0x64E24 self-loop (unrelated to the syscall-number/
+    // x9 fix above, which never got a chance to run at all). fake-ntdll.c's
+    // OWN hand-rolled __wine_unix_call_dispatcher (pe5/stock=0 dress
+    // rehearsal only) still deliberately reads *__wine_syscall_dispatcher
+    // as the unix-call shim by its own design (fake-ntdll.c comment), so
+    // stock=0 keeps the old wiring unchanged -- only stock=1 (real Wine
+    // ntdll, pe6) gets the fix.
     nt_unix_call_funcs_ensure_init();
-    wr64((u8 *)(u64b)sdisp_addr, (u64b)nt_unix_call_shim);
+    wr64((u8 *)(u64b)sdisp_addr, stock ? (u64b)nt_dispatch : (u64b)nt_unix_call_shim);
     wr64((u8 *)(u64b)uhandle_addr, (u64b)nt_unix_call_funcs);
     if (stock) puts("CHALICE: stock ntdll mapped\n");
 

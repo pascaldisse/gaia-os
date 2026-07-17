@@ -9,33 +9,42 @@
 #ifndef GAIA_CHALICE_NTIDS_H
 #define GAIA_CHALICE_NTIDS_H
 
-// ---- table-0 service ids. Order = HANDOFF.md "ordered boot service list".
-// Real in Atom A: NtWriteFile, NtClose, NtTerminateProcess (marked REAL below).
-// Everything else stubs STATUS_NOT_IMPLEMENTED (boot survives per HANDOFF).
-#define NT_SVC_NTALLOCATEVIRTUALMEMORY    0
-#define NT_SVC_NTFREEVIRTUALMEMORY        1
-#define NT_SVC_NTPROTECTVIRTUALMEMORY     2
-#define NT_SVC_NTCREATESECTION            3
-#define NT_SVC_NTMAPVIEWOFSECTION         4
-#define NT_SVC_NTCREATEFILE               5
-#define NT_SVC_NTOPENFILE                 6
-#define NT_SVC_NTREADFILE                 7
-#define NT_SVC_NTWRITEFILE                8   // REAL
-#define NT_SVC_NTCLOSE                    9   // REAL
-#define NT_SVC_NTCREATETHREAD            10
-#define NT_SVC_NTRESUMETHREAD            11
-#define NT_SVC_NTTERMINATETHREAD         12
-#define NT_SVC_NTTERMINATEPROCESS        13   // REAL
-#define NT_SVC_NTWAITFORSINGLEOBJECT     14
-#define NT_SVC_NTCREATEEVENT             15
-#define NT_SVC_NTQUERYINFORMATIONPROCESS 16
-#define NT_SVC_NTQUERYSYSTEMINFORMATION  17
-#define NT_SVC_NTCONTINUE                18   // slice-2 boss, Atom B
-#define NT_SVC_NTCREATEKEY               19
-#define NT_SVC_NTOPENKEY                 20
-#define NT_SVC_NTQUERYVALUEKEY           21
-#define NT_SVC_NTQUERYVIRTUALMEMORY      22  // CHALICE C3a Atom 3A, REAL
-#define NT_SERVICE_COUNT                 23
+// ---- table-0 service ids. CHALICE C3c-2d: renumbered to the REAL stock
+// Wine ARM64 syscall-number map (decoded from stock ntdll.dll, committed at
+// chalice/wine-arm64-syscalls.txt, 260 entries name->num) so stock ntdll's
+// own syscall stubs (x8=<num>) land on the handler we mean, instead of our
+// old arbitrary sequential Atom-A numbering. 13 REAL (handler registered,
+// ntsvc.c) + NtWriteFile (REAL, already matched by luck pre-renumber); the
+// rest keep their OWN real Wine number too (STATUS_NOT_IMPLEMENTED stub,
+// ntsvc.c never registers a handler for them) purely so every macro has a
+// distinct value (nt_svc_name()'s switch below would collision-error on a
+// duplicate case otherwise) and so a later slice implementing one of these
+// needs no renumber. NT_SERVICE_COUNT is now table CAPACITY (>= highest
+// real id here, 85, headroom for later real handlers), not entry count.
+#define NT_SVC_NTALLOCATEVIRTUALMEMORY    24  // REAL
+#define NT_SVC_NTFREEVIRTUALMEMORY        30  // REAL
+#define NT_SVC_NTPROTECTVIRTUALMEMORY     80  // REAL
+#define NT_SVC_NTCREATESECTION            74  // REAL
+#define NT_SVC_NTMAPVIEWOFSECTION         40  // REAL
+#define NT_SVC_NTCREATEFILE               85
+#define NT_SVC_NTOPENFILE                 51  // REAL
+#define NT_SVC_NTREADFILE                  6  // REAL
+#define NT_SVC_NTWRITEFILE                 8   // REAL
+#define NT_SVC_NTCLOSE                    15   // REAL
+#define NT_SVC_NTCREATETHREAD             78
+#define NT_SVC_NTRESUMETHREAD             82
+#define NT_SVC_NTTERMINATETHREAD          83
+#define NT_SVC_NTTERMINATEPROCESS         44   // REAL
+#define NT_SVC_NTWAITFORSINGLEOBJECT       4
+#define NT_SVC_NTCREATEEVENT              72
+#define NT_SVC_NTQUERYINFORMATIONPROCESS  25  // REAL
+#define NT_SVC_NTQUERYSYSTEMINFORMATION   54  // REAL
+#define NT_SVC_NTCONTINUE                 67   // REAL, slice-2 boss, Atom B
+#define NT_SVC_NTCREATEKEY                29
+#define NT_SVC_NTOPENKEY                  18
+#define NT_SVC_NTQUERYVALUEKEY            23
+#define NT_SVC_NTQUERYVIRTUALMEMORY       35  // REAL, CHALICE C3a Atom 3A
+#define NT_SERVICE_COUNT                 128
 
 // ---- NTSTATUS consts ----
 #define STATUS_SUCCESS                0x00000000L

@@ -1,0 +1,260 @@
+# Real Wine ARM64 syscall numbers — decoded from stock/ntdll.dll (Hangover 11.9)
+# via: llvm-objdump -d ntdll.dll, each Zw* stub's 'mov x8,#N'. num(dec) hex Name
+  0  0x000  NtAccessCheck
+  1  0x001  NtWorkerFactoryWorkerReady
+ 16  0x010  NtQueryObject
+256  0x100  NtWaitForDebugEvent
+257  0x101  NtWaitForKeyedEvent
+ 17  0x011  NtQueryInformationFile
+ 18  0x012  NtOpenKey
+ 19  0x013  NtEnumerateValueKey
+ 20  0x014  NtFindAtom
+ 21  0x015  NtQueryDefaultLocale
+ 22  0x016  NtQueryKey
+ 23  0x017  NtQueryValueKey
+ 24  0x018  NtAllocateVirtualMemory
+ 25  0x019  NtQueryInformationProcess
+ 26  0x01a  NtWaitForMultipleObjects32
+ 27  0x01b  NtWriteFileGather
+ 28  0x01c  NtSetInformationProcess
+ 29  0x01d  NtCreateKey
+ 30  0x01e  NtFreeVirtualMemory
+ 31  0x01f  NtImpersonateClientOfPort
+  2  0x002  NtAcceptConnectPort
+ 32  0x020  NtReleaseMutant
+ 33  0x021  NtQueryInformationToken
+ 34  0x022  NtRequestWaitReplyPort
+ 35  0x023  NtQueryVirtualMemory
+ 36  0x024  NtOpenThreadToken
+ 37  0x025  NtQueryInformationThread
+ 38  0x026  NtOpenProcess
+ 39  0x027  NtSetInformationFile
+ 40  0x028  NtMapViewOfSection
+ 41  0x029  NtAccessCheckAndAuditAlarm
+ 42  0x02a  NtUnmapViewOfSection
+ 43  0x02b  NtReplyWaitReceivePortEx
+ 44  0x02c  NtTerminateProcess
+ 45  0x02d  NtSetEventBoostPriority
+ 46  0x02e  NtReadFileScatter
+ 47  0x02f  NtOpenThreadTokenEx
+  3  0x003  NtMapUserPhysicalPagesScatter
+ 48  0x030  NtOpenProcessTokenEx
+ 49  0x031  NtQueryPerformanceCounter
+ 50  0x032  NtEnumerateKey
+ 51  0x033  NtOpenFile
+ 52  0x034  NtDelayExecution
+ 53  0x035  NtQueryDirectoryFile
+ 54  0x036  NtQuerySystemInformation
+ 55  0x037  NtOpenSection
+ 56  0x038  NtQueryTimer
+ 57  0x039  NtFsControlFile
+ 58  0x03a  NtWriteVirtualMemory
+ 59  0x03b  NtCloseObjectAuditAlarm
+ 60  0x03c  NtDuplicateObject
+ 61  0x03d  NtQueryAttributesFile
+ 62  0x03e  NtClearEvent
+ 63  0x03f  NtReadVirtualMemory
+  4  0x004  NtWaitForSingleObject
+ 64  0x040  NtOpenEvent
+ 65  0x041  NtAdjustPrivilegesToken
+ 66  0x042  NtDuplicateToken
+ 67  0x043  NtContinue
+ 68  0x044  NtQueryDefaultUILanguage
+ 69  0x045  NtQueueApcThread
+ 70  0x046  NtYieldExecution
+ 71  0x047  NtAddAtom
+ 72  0x048  NtCreateEvent
+ 73  0x049  NtQueryVolumeInformationFile
+ 74  0x04a  NtCreateSection
+ 75  0x04b  NtFlushBuffersFile
+ 76  0x04c  NtApphelpCacheControl
+ 77  0x04d  NtCreateProcessEx
+ 78  0x04e  NtCreateThread
+ 79  0x04f  NtIsProcessInJob
+  5  0x005  NtCallbackReturn
+ 80  0x050  NtProtectVirtualMemory
+ 81  0x051  NtQuerySection
+ 82  0x052  NtResumeThread
+ 83  0x053  NtTerminateThread
+ 84  0x054  NtReadRequestData
+ 85  0x055  NtCreateFile
+ 86  0x056  NtQueryEvent
+ 87  0x057  NtWriteRequestData
+ 88  0x058  NtOpenDirectoryObject
+ 89  0x059  NtAccessCheckByTypeAndAuditAlarm
+ 90  0x05a  NtQuerySystemTime
+ 91  0x05b  NtWaitForMultipleObjects
+ 92  0x05c  NtSetInformationObject
+ 93  0x05d  NtCancelIoFile
+ 94  0x05e  NtTraceEvent
+ 95  0x05f  NtPowerInformation
+  6  0x006  NtReadFile
+ 96  0x060  NtSetValueKey
+ 97  0x061  NtCancelTimer
+ 98  0x062  NtSetTimer
+ 99  0x063  NtAdjustGroupsToken
+100  0x064  NtAlertMultipleThreadByThreadId
+101  0x065  NtAlertResumeThread
+102  0x066  NtAlertThread
+103  0x067  NtAlertThreadByThreadId
+104  0x068  NtAllocateLocallyUniqueId
+105  0x069  NtAllocateReserveObject
+106  0x06a  NtAllocateUuids
+107  0x06b  NtAllocateVirtualMemoryEx
+108  0x06c  NtAreMappedFilesTheSame
+109  0x06d  NtAssignProcessToJobObject
+110  0x06e  NtCancelIoFileEx
+111  0x06f  NtCancelSynchronousIoFile
+  7  0x007  NtDeviceIoControlFile
+112  0x070  NtCommitTransaction
+113  0x071  NtCompareObjects
+114  0x072  NtCompareTokens
+115  0x073  NtCompleteConnectPort
+116  0x074  NtConnectPort
+117  0x075  NtContinueEx
+118  0x076  NtConvertBetweenAuxiliaryCounterAndPerformanceCounter
+119  0x077  NtCreateDirectoryObject
+120  0x078  NtCreateIoCompletion
+121  0x079  NtCreateJobObject
+122  0x07a  NtCreateKeyTransacted
+123  0x07b  NtCreateKeyedEvent
+124  0x07c  NtCreateLowBoxToken
+125  0x07d  NtCreateMailslotFile
+126  0x07e  NtCreateMutant
+127  0x07f  NtCreateNamedPipeFile
+  8  0x008  NtWriteFile
+128  0x080  NtCreatePagingFile
+129  0x081  NtCreatePort
+130  0x082  NtCreateSectionEx
+131  0x083  NtCreateSemaphore
+132  0x084  NtCreateSymbolicLinkObject
+133  0x085  NtCreateThreadEx
+134  0x086  NtCreateTimer
+135  0x087  NtCreateToken
+136  0x088  NtCreateTransaction
+137  0x089  NtCreateUserProcess
+138  0x08a  NtDebugActiveProcess
+139  0x08b  NtDebugContinue
+140  0x08c  NtDeleteAtom
+141  0x08d  NtDeleteFile
+142  0x08e  NtDeleteKey
+143  0x08f  NtDeleteValueKey
+  9  0x009  NtRemoveIoCompletion
+144  0x090  NtDisplayString
+145  0x091  NtFilterToken
+146  0x092  NtFlushBuffersFileEx
+147  0x093  NtFlushInstructionCache
+148  0x094  NtFlushKey
+149  0x095  NtFlushProcessWriteBuffers
+150  0x096  NtFlushVirtualMemory
+151  0x097  NtGetContextThread
+152  0x098  NtGetCurrentProcessorNumber
+153  0x099  NtGetNextProcess
+154  0x09a  NtGetNextThread
+155  0x09b  NtGetNlsSectionPtr
+156  0x09c  NtGetWriteWatch
+157  0x09d  NtImpersonateAnonymousToken
+158  0x09e  NtInitializeNlsFiles
+159  0x09f  NtInitiatePowerAction
+ 10  0x00a  NtReleaseSemaphore
+160  0x0a0  NtListenPort
+161  0x0a1  NtLoadDriver
+162  0x0a2  NtLoadKey
+163  0x0a3  NtLoadKey2
+164  0x0a4  NtLoadKeyEx
+165  0x0a5  NtLockFile
+166  0x0a6  NtCreateDebugObject
+167  0x0a7  NtLockVirtualMemory
+168  0x0a8  NtMakePermanentObject
+169  0x0a9  NtMakeTemporaryObject
+170  0x0aa  NtMapViewOfSectionEx
+171  0x0ab  NtNotifyChangeDirectoryFile
+172  0x0ac  NtNotifyChangeKey
+173  0x0ad  NtNotifyChangeMultipleKeys
+174  0x0ae  NtOpenIoCompletion
+175  0x0af  NtOpenJobObject
+ 11  0x00b  NtReplyWaitReceivePort
+176  0x0b0  NtOpenKeyEx
+177  0x0b1  NtOpenKeyTransacted
+178  0x0b2  NtOpenKeyTransactedEx
+179  0x0b3  NtOpenKeyedEvent
+180  0x0b4  NtOpenMutant
+181  0x0b5  NtOpenProcessToken
+182  0x0b6  NtOpenSemaphore
+183  0x0b7  NtOpenSymbolicLinkObject
+184  0x0b8  NtOpenThread
+185  0x0b9  NtOpenTimer
+186  0x0ba  NtPrivilegeCheck
+187  0x0bb  NtPulseEvent
+188  0x0bc  NtQueryDirectoryObject
+189  0x0bd  NtQueryEaFile
+190  0x0be  NtQueryFullAttributesFile
+191  0x0bf  NtQueryInformationAtom
+ 12  0x00c  NtReplyPort
+192  0x0c0  NtQueryInformationJobObject
+193  0x0c1  NtQueryInstallUILanguage
+194  0x0c2  NtQueryIoCompletion
+195  0x0c3  NtQueryLicenseValue
+196  0x0c4  NtQueryMultipleValueKey
+197  0x0c5  NtQueryMutant
+198  0x0c6  NtQuerySecurityObject
+199  0x0c7  NtQuerySemaphore
+200  0x0c8  NtQuerySymbolicLinkObject
+201  0x0c9  NtQuerySystemEnvironmentValue
+202  0x0ca  NtQuerySystemEnvironmentValueEx
+203  0x0cb  NtQuerySystemInformationEx
+204  0x0cc  NtQueryTimerResolution
+205  0x0cd  NtQueueApcThreadEx
+206  0x0ce  NtQueueApcThreadEx2
+207  0x0cf  NtRaiseException
+ 13  0x00d  NtSetInformationThread
+208  0x0d0  NtRaiseHardError
+209  0x0d1  NtRegisterThreadTerminatePort
+210  0x0d2  NtReleaseKeyedEvent
+211  0x0d3  NtRemoveIoCompletionEx
+212  0x0d4  NtRemoveProcessDebug
+213  0x0d5  NtRenameKey
+214  0x0d6  NtReplaceKey
+215  0x0d7  NtResetEvent
+216  0x0d8  NtResetWriteWatch
+217  0x0d9  NtRestoreKey
+218  0x0da  NtResumeProcess
+219  0x0db  NtRollbackTransaction
+220  0x0dc  NtSaveKey
+221  0x0dd  NtSecureConnectPort
+222  0x0de  NtSetContextThread
+223  0x0df  NtSetDebugFilterState
+ 14  0x00e  NtSetEvent
+224  0x0e0  NtSetDefaultLocale
+225  0x0e1  NtSetDefaultUILanguage
+226  0x0e2  NtSetEaFile
+227  0x0e3  NtSetInformationDebugObject
+228  0x0e4  NtSetInformationJobObject
+229  0x0e5  NtSetInformationKey
+230  0x0e6  NtSetInformationToken
+231  0x0e7  NtSetInformationVirtualMemory
+232  0x0e8  NtSetIntervalProfile
+233  0x0e9  NtSetIoCompletion
+234  0x0ea  NtSetIoCompletionEx
+235  0x0eb  NtSetLdtEntries
+236  0x0ec  NtSetSecurityObject
+237  0x0ed  NtSetSystemInformation
+238  0x0ee  NtSetSystemTime
+239  0x0ef  NtSetThreadExecutionState
+ 15  0x00f  NtClose
+240  0x0f0  NtSetTimerResolution
+241  0x0f1  NtSetVolumeInformationFile
+242  0x0f2  NtShutdownSystem
+243  0x0f3  NtSignalAndWaitForSingleObject
+244  0x0f4  NtSuspendProcess
+245  0x0f5  NtSuspendThread
+246  0x0f6  NtSystemDebugControl
+247  0x0f7  NtTerminateJobObject
+248  0x0f8  NtTestAlert
+249  0x0f9  NtTraceControl
+250  0x0fa  NtUnloadDriver
+251  0x0fb  NtUnloadKey
+252  0x0fc  NtUnlockFile
+253  0x0fd  NtUnlockVirtualMemory
+254  0x0fe  NtUnmapViewOfSectionEx
+255  0x0ff  NtWaitForAlertByThreadId

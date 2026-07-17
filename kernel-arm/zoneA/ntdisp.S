@@ -36,14 +36,21 @@
 // extension slot (NT_FRAME_STUB_LR_OFF, ntids.h receipt) — functionally
 // the same donor mechanism (capture a caller-saved temp into the frame at
 // entry, before the C handler can clobber it; restore into x30 at return),
-// adapted to our stubs' non-tail-call shape. Register choice: x14 (never
-// touched anywhere in nt_dispatch, confirmed by inspection below — x9 was
-// unavailable, already used here as the stack-arg base, unlike donor which
-// uses x19 for that role) — caller-saved per task's requirement (x9-x17),
-// and specifically one nt_dispatch itself never reassigns before the
-// capture, so the stub's value survives intact into the frame.
-// ntstub.S mirrors this: `mov x14, x30` before `blr x16`, no post-blr
-// restore instruction needed (nt_dispatch fixes x30 before `ret x16`).
+
+
+// ---- CHALICE C3c-2d: real-Wine-stub calling convention ----
+// Stock Wine ARM64 syscall stubs (decoded from stock ntdll.dll) are:
+//   `mov x8,#num ; mov x9,x30 ; ldr x16,[disp] ; blr x16 ; ret` -- caller LR
+// travels in **x9**, not the x14 this floor used pre-C3c-2d (that was our
+// own stub-only convention, ntstub.S, never matched what stock ntdll's PE
+// image actually contains -- x30 on return was wrong for any stock stub,
+// so its trailing `ret` bounced to itself). Fix: nt_dispatch now stashes
+// the incoming x9 (real caller LR) first thing, before x9 gets reused below
+// as the stack-arg base, into the same NT_FRAME_STUB_LR_OFF frame slot the
+// old x14 path used -- return-path restore (dispatch_return) is unchanged.
+// ntstub.S (our OWN PE-side stubs) migrated to match: `mov x9, x30` before
+// `blr x16`, same as a stock stub. This is the same donor mechanism the
+// prior Atom-B paragraph above describes, just on the donor's own register.
 
 .text
 
@@ -51,6 +58,10 @@
 // x8 = table_idx<<12 | id (low 12 bits). x18 = TEB base.
 .global nt_dispatch
 nt_dispatch:
+    mov  x11, x9                    // stash real caller LR (x9, the ACTUAL
+                                     // Windows-ABI stub convention — see
+                                     // header C3c-2d note) before the
+                                     // stack-arg-base clobber below
     mov  x9, sp                     // x9 = caller sp -> base of any AAPCS64
                                      // stack-passed args (single stack, no
                                      // privilege split: PE stub's caller
@@ -79,11 +90,10 @@ nt_dispatch:
     str  x29, [x19, #0xe8]          // frame->fp
     str  x9,  [x19, #0xf0]          // frame->sp  (caller's original sp)
     str  x30, [x19, #0x100]         // frame->pc  (return addr into PE stub)
-    str  x14, [x19, #0x110]         // frame->stub_lr (Atom B fix, see header:
-                                     // the STUB's own pre-blr x30 -- captured
-                                     // here, before the C handler gets a
-                                     // chance to clobber x14, restored into
-                                     // the real x30 at dispatch_return below)
+    str  x11, [x19, #0x110]         // frame->stub_lr (C3c-2d: real x9 caller
+                                     // LR, stashed into x11 above before the
+                                     // stack-arg-base clobber -- restored
+                                     // into the real x30 at dispatch_return)
     mrs  x10, NZCV
     str  w10, [x19, #0x108]         // frame->cpsr (condition flags only —
                                      // DEVIATION: donor stores full PSTATE
