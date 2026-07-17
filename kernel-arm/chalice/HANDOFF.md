@@ -1,3 +1,24 @@
+## State refresh (2026-07-17, C3c-2h) -- PEB.ApiSetMap wired, kernel32 imports resolve
+HEAD `36401a7`. apisetschema.dll fetched (196608B, Machine=0xAA64) + baked onto the
+FS disk; ntboot.c's nt_wire_apiset (stock=1 only) locates its `.apiset` section
+raw (pemod.c's new pe_find_raw_section, no PeMapImage needed -- flat SEC_COMMIT-
+style offsets), validates Version==6/Size<=VirtualSize, writes PEB+0x68 (donor-
+verified 64-bit offset, NOT +0x38). Result: kernel32.dll's api-ms-win-* imports
+no longer die at STATUS_DLL_NOT_FOUND pre-file-open -- ntdll now runs a real
+open/NtCreateSection/NtQuerySection/NtReadFileX2/NtClose probe cycle per search-
+path candidate (4 candidates observed) for kernelbase.dll's dependency chain.
+NEXT GAP (confirmed against donor, not guessed): NtQuerySection(id=81,
+SectionImageInformation) is unimplemented -> image_info->Machine never
+populated -> loader.c's is_valid_binary() rejects every real candidate as
+wrong-arch -> STATUS_NOT_SUPPORTED per candidate -> find_dll_file translates to
+STATUS_INVALID_IMAGE_FORMAT (wine/dlls/ntdll/loader.c:3323) once all paths are
+exhausted -> "could not load kernel32.dll, status c000007b". Fix = wire
+NtQuerySection(SectionImageInformation) to report Machine=0xAA64 (+ the other
+SECTION_IMAGE_INFORMATION fields the image registry already has: entry point,
+image base/size). No-regression gate green (chalice_gate.py + ramfb_gate.py,
+-m 1G already build.sh-default): all lines incl. stock ntdll/kernel32 pair +
+ApiSetMap wired + ramfb pattern correct.
+
 ## State refresh (2026-07-17, C3c-2g) -- territory-routed, OOM gone
 HEAD `4f86687`. `nt_vm_alloc`(ntsvc.c)+`nt_blob_lookup_fs`'s 16MB-per-open
 buffer(ntfile.c) now draw from the DLL-territory bump allocator instead of
