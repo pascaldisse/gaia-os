@@ -1,0 +1,3 @@
+LIBRARY gaia.dll
+EXPORTS
+KPutS

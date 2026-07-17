@@ -9,7 +9,10 @@ _start:
     b       real_start
     .long   0
     .quad   0x0                 // text_offset
-    .quad   _kernel_size
+    .quad   _file_size          // image_size: true on-disk size (excludes
+                                     // BSS, which has no file bytes) -- a too-
+                                     // large value here misleads QEMU's kernel
+                                     // placement math and shifts the load base
     .quad   0                   // flags: LE, 4K
     .quad   0, 0, 0
     .ascii  "ARM\x64"

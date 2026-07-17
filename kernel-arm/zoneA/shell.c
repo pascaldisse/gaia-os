@@ -2,6 +2,7 @@
 // Lsh (Shrine) gets ported once HolyC lands; this is the bootstrap voice.
 #include "kernel.h"
 #include "zcmod.h"
+#include "pemod.h"
 
 #define UART_DR   0x09000000UL
 #define UART_FR   0x09000018UL
@@ -41,6 +42,7 @@ static void cmd_help(void) {
     puts("  say        run Shrine/zoneC GaiaSay via kernel puts\n");
     puts("  aot        run linked Shrine/zoneC AotBoot module\n");
     puts("  plot       run Shrine/zoneC GaiaPlot: HolyC draws on ramfb\n");
+    puts("  pe         run CHALICE PE-ARM64 loader on hello1.exe + hello2.exe\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -131,6 +133,11 @@ static void run_cmd(const char *line) {
         zcaot_link();
         zcaot_entry_fn();
         puts("aot: ok\n");
+        return;
+    }
+    if (streq(line, "pe")) {
+        PeRun(pehello1_bin, pehello1_len, "pe1");
+        PeRun(pehello2_bin, pehello2_len, "pe2");
         return;
     }
     if (streq(line, "plot")) {
