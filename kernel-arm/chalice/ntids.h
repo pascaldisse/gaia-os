@@ -53,6 +53,7 @@
 #define NT_SVC_NTSETVALUEKEY               96  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt, 0x60)
 #define NT_SVC_NTQUERYDEFAULTLOCALE        21  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt:12, 0x15)
 #define NT_SVC_NTQUERYINFORMATIONTHREAD    37  // REAL, CHALICE C4-9 (wine-arm64-syscalls.txt:29, 0x25) -- ThreadWow64Context(29) only, see ntsvc.c receipt
+#define NT_SVC_NTSETINFORMATIONTHREAD      13  // REAL, CHALICE C4-11 (wine-arm64-syscalls.txt:210, 0xd) -- instrument-first stub, see ntsvc.c receipt
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via

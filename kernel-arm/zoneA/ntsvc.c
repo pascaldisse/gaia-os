@@ -677,6 +677,31 @@ long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformatio
     return STATUS_SUCCESS;
 }
 
+// =====================================================================
+// CHALICE C4-11: NtSetInformationThread -- instrument-first stub. pe10
+// fires this (svc id=13, NtSetInformationThread, wine-arm64-syscalls.txt:
+// 210) right before wowbox64.dll's own BTCpuProcessInit-chain faults
+// (Data Abort, wowbox64.dll+0xF88BC, far=0x2 -- a small-integer deref,
+// the signature of a caller that assumed our (previously silent NtStub->
+// STATUS_NOT_IMPLEMENTED) call succeeded and dereferenced through an
+// uninitialized/garbage-seeded pointer built from the unanswered result).
+// This atom ONLY logs (ThreadInformationClass, data ptr, length) and
+// keeps returning STATUS_NOT_IMPLEMENTED (behavior-preserving) so the
+// next probe run reveals which THREADINFOCLASS (winternl.h enum) is
+// actually requested before committing to a real per-class fix --
+// measure, don't guess (HANDOFF doctrine).
+// =====================================================================
+long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationClass,
+                             const void *ThreadInformation, unsigned long ThreadInformationLength) {
+    (void)ThreadHandle;
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtSetInformationThread class="); puthex((u64b)ThreadInformationClass);
+        puts(" data="); puthex((u64b)ThreadInformation);
+        puts(" len="); puthex((u64b)ThreadInformationLength); puts("\n");
+    }
+    return STATUS_NOT_IMPLEMENTED;
+}
+
 // SYSTEM_BASIC_INFORMATION (ntsvc.c receipt: reactos/sdk/include/ndk/
 // extypes.h _SYSTEM_BASIC_INFORMATION), LP64 layout: Reserved(4)@0,
 // TimerResolution(4)@4, PageSize(4)@8, NumberOfPhysicalPages(4)@0xC,
@@ -817,6 +842,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTCREATEEVENT:              return "NtCreateEvent";
     case NT_SVC_NTQUERYINFORMATIONPROCESS:  return "NtQueryInformationProcess";
     case NT_SVC_NTQUERYINFORMATIONTHREAD:   return "NtQueryInformationThread";
+    case NT_SVC_NTSETINFORMATIONTHREAD:      return "NtSetInformationThread";
     case NT_SVC_NTQUERYSYSTEMINFORMATION:   return "NtQuerySystemInformation";
     case NT_SVC_NTQUERYSYSTEMINFORMATIONEX: return "NtQuerySystemInformationEx";
     case NT_SVC_NTCONTINUE:                 return "NtContinue";
@@ -888,6 +914,10 @@ void nt_service_tables_init(void) {
     nt_svc_table0[NT_SVC_NTQUERYINFORMATIONPROCESS] = (void *)NtQueryInformationProcess;
     nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONPROCESS] = 5 * 8;
     nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONTHREAD] = 5 * 8;
+    // CHALICE C4-11: NtSetInformationThread(ThreadHandle, ThreadInformationClass,
+    // ThreadInformation, ThreadInformationLength) -- 4 args.
+    nt_svc_table0[NT_SVC_NTSETINFORMATIONTHREAD] = (void *)NtSetInformationThread;
+    nt_svc_argtable0[NT_SVC_NTSETINFORMATIONTHREAD] = 4 * 8;
     nt_svc_table0[NT_SVC_NTQUERYSYSTEMINFORMATION] = (void *)NtQuerySystemInformation;
     nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATION] = 4 * 8;
     // CHALICE C4-6: NtQuerySystemInformationEx(class, query, query_len,
