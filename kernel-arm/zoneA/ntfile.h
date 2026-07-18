@@ -15,6 +15,15 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
 // (same per-boot-scoped-state discipline as nt_territory_mark/release).
 void nt_wow64_set_active(int active);
 int  nt_wow64_is_active(void);
+// CHALICE C4-12 leg-12: CPU-backend A/B seam. The real wow64.dll boot path
+// never takes a backend param (unlike nt_boot_wow64_probe) -- it just opens
+// the literal basename "wowbox64.dll" via NtOpenFile like any other DLL.
+// This override lets an isolated probe redirect that ONE lookup to a
+// different on-disk backend name (e.g. "libwow64fex.dll") with zero guest-
+// code changes, to test whether the leg-11 null-opcode-table fault is
+// backend-specific. NULL/empty = default behavior (unchanged, what pe9/
+// pe10's canonical gates always see). Per-boot scoped like nt_wow64_active.
+void nt_wow64_set_backend_override(const char *name);
 long NtReadFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcContext,
                 void *IoStatusBlock, void *Buffer, unsigned long Length,
                 void *ByteOffset, unsigned long *Key);

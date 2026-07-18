@@ -757,6 +757,13 @@ static int nt_wow64_process_active;
 void nt_wow64_set_active(int active) { nt_wow64_process_active = active; }
 int  nt_wow64_is_active(void) { return nt_wow64_process_active; }
 
+// CHALICE C4-12 leg-12: CPU-backend A/B seam (see ntfile.h receipt). Bare
+// static string pointer, same per-boot-scoped-state discipline as the
+// wow64-active flag above -- caller (an isolated probe only) sets it
+// before nt_boot_process, must clear it after.
+static const char *nt_wow64_backend_override_name;
+void nt_wow64_set_backend_override(const char *name) { nt_wow64_backend_override_name = name; }
+
 // Case-insensitive length-bounded segment compare (nt_streq_ci needs
 // NUL-terminated strings on both sides; this file's path[] IS NUL-terminated
 // mid-buffer per-segment via the caller slicing below, so nt_streq_ci
@@ -852,6 +859,18 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
             puts("CHALICE: recheck __wine_dbg_header rc="); puthex((u64b)rc);
             puts(" addr="); puthex(a); puts("\n");
         }
+    }
+
+    // CHALICE C4-12 leg-12: backend A/B override -- redirect ONLY the
+    // literal "wowbox64.dll" open (the real wow64.dll init's hardcoded
+    // default backend name) to whatever nt_wow64_set_backend_override was
+    // given, e.g. "libwow64fex.dll". Never touches any other name/path
+    // (dirname redirect above already resolved lookup_name; this compares
+    // the ORIGINAL basename so "syswow64\wowbox64.dll" etc are unaffected
+    // -- there is no such file anyway, this is strictly the system32-root
+    // CPU-backend open the real boot path performs).
+    if (nt_wow64_backend_override_name && nt_streq_ci(base, "wowbox64.dll")) {
+        lookup_name = nt_wow64_backend_override_name;
     }
 
     const unsigned char *bytes; u64b bloblen; const char *manifest_name;

@@ -5,6 +5,7 @@
 #include "pemod.h"
 #include "ntboot.h"
 #include "ntsvc.h"   // CHALICE C3c Atom 3C-1: nt_dispatch_log_reset/enabled (pe6)
+#include "ntfile.h"  // CHALICE C4-12 leg-12: nt_wow64_set_backend_override (pe10 <backend> A/B)
 
 #define UART_DR   0x09000000UL
 #define UART_FR   0x09000018UL
@@ -51,7 +52,7 @@ static void cmd_help(void) {
     puts("  pe7        run CHALICE hello6 (real KERNEL32.dll import) over STOCK wine ntdll.dll: import-table/IAT gate (slice3 Atom 3C-2j)\n");
     puts("  pe8        run CHALICE hello7 (widened KERNEL32.dll surface) over STOCK wine ntdll.dll (slice3 Atom 3C-2r)\n");
     puts("  pe9 [fex]  CHALICE C4-2: map wow64.dll + CPU backend (default wowbox64, 'fex'=libwow64fex) into DLL territory\n");
-    puts("  pe10       CHALICE C4-5: nt_boot_process w/ hello8_x86.exe (i386) as main image -- boot-path measure, not a working WOW64 boot\n");
+    puts("  pe10 [fex] CHALICE C4-5/12: nt_boot_process w/ hello8_x86.exe (i386) as main image -- boot-path measure; 'fex' A/B-overrides the CPU backend to libwow64fex.dll\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -222,7 +223,7 @@ static void run_cmd(const char *line) {
         nt_dispatch_log_enabled = 0;
         return;
     }
-    if (streq(line, "pe10")) {
+    if ((line[0] == 'p' && line[1] == 'e' && line[2] == '1' && line[3] == '0') && (line[4] == 0 || line[4] == ' ')) {
         // CHALICE C4-5: boot-path switch diagnostic -- reuses
         // nt_boot_process UNCHANGED (native stock ARM64 ntdll.dll always
         // enters at its own LdrInitializeThunk, per that function's
@@ -235,11 +236,20 @@ static void run_cmd(const char *line) {
         // this is a MEASURE, not a claim of a working WOW64 boot: whatever
         // real stock ntdll's own loader does when it meets a non-native-
         // machine main image is the whole point of running it.
+        // CHALICE C4-12 leg-12: opt-in 2nd token `pe10 fex` sets the backend
+        // A/B override (ntfile.c) so the real boot path's own "wowbox64.dll"
+        // open resolves to libwow64fex.dll instead -- default `pe10` (no
+        // token) is UNCHANGED (override left NULL), the canonical/no-
+        // regression form.
+        const char *arg = line + 4;
+        while (*arg == ' ') arg++;
+        if (streq(arg, "fex")) nt_wow64_set_backend_override("libwow64fex.dll");
         nt_dispatch_log_enabled = 1;
         profile_armed = 1;
         nt_boot_process("hello8_x86.exe", "ntdll.dll", 1, "pe10");
         profile_armed = 0;
         nt_dispatch_log_enabled = 0;
+        nt_wow64_set_backend_override(0);
         return;
     }
     if (streq(line, "pe")) {
