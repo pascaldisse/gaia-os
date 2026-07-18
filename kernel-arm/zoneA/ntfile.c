@@ -795,3 +795,138 @@ long NtGetNlsSectionPtr(unsigned long Type, unsigned long Id, void *Unknown,
     }
     return STATUS_SUCCESS;
 }
+
+// =====================================================================
+// CHALICE C3c-2o: minimal in-memory registry floor.
+//
+// Donor contract (dlls/kernelbase/locale.c, wine/ gitignored -- quoted per
+// HANDOFF's FRAMING NOTE, this repo's summon text has the exact lines):
+// init_locale() does RegCreateKeyExW(HKEY_CURRENT_USER,
+// "Control Panel\\International", ..., &intl_key) then, if that succeeds,
+// RegQueryValueExW(intl_key, "LocaleName", ..., bufferW, &count) and only
+// reads bufferW when RegQueryValueExW reports success; NlsValidateLocale()
+// separately walks the same key's subkeys and "Sorting\\Ids". None of
+// this data exists on this floor -- the fix is to make every leg of that
+// probe resolve the way the real registry resolves on a box with no user
+// locale override configured: key-open succeeds (callers of
+// RegCreateKeyExW/RegOpenKeyExW expect a usable key back), but every
+// value read comes back NOT-FOUND so callers take their own documented
+// empty-registry fallback path (NLS defaults) instead of trusting an
+// uninitialized output buffer. No hive, no persistence -- every key is
+// the same interchangeable dummy handle, every value is permanently
+// absent, exactly enough surface for stock kernelbase's init path to fall
+// through cleanly.
+// =====================================================================
+
+// CHALICE C3c-2o diagnostic: decode a UNICODE_STRING* (ValueName) the same
+// way NtOpenFile decodes ObjectAttributes->ObjectName (US_LENGTH_OFF/
+// US_BUFFER_OFF, this file) -- names the value/key being probed in the
+// log so a live trace can confirm which locale-override paths kernelbase
+// asks for (e.g. "LocaleName", "Control Panel\International") instead of
+// just counting anonymous hits.
+static void nt_log_unicode_string(const void *us) {
+    if (!us) { puts("(null)"); return; }
+    const u8 *p = (const u8 *)us;
+    u16b wlen_bytes = *(const u16b *)(p + US_LENGTH_OFF);
+    const u16b *wbuf = *(const u16b **)(p + US_BUFFER_OFF);
+    if (!wbuf || wlen_bytes == 0) { puts("(empty)"); return; }
+    u32b nchars = wlen_bytes / 2;
+    if (nchars > 63) nchars = 63;
+    char buf[64];
+    for (u32b i = 0; i < nchars; i++) buf[i] = (char)wbuf[i];
+    buf[nchars] = 0;
+    puts(buf);
+}
+
+// Decode ObjectAttributes->ObjectName (OA_OBJECTNAME_OFF, this file).
+static void nt_log_object_attributes_name(const void *oa) {
+    if (!oa) { puts("(null-OA)"); return; }
+    const u8 *p = (const u8 *)oa;
+    nt_log_unicode_string(*(void **)(p + OA_OBJECTNAME_OFF));
+}
+
+long NtCreateKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes,
+                  unsigned long TitleIndex, void *Class, unsigned long CreateOptions,
+                  unsigned long *Disposition) {
+    (void)DesiredAccess; (void)ObjectAttributes; (void)TitleIndex; (void)Class; (void)CreateOptions;
+    if (!KeyHandle) return STATUS_INVALID_PARAMETER;
+    // FIXED pseudo-handle (NT_REGISTRY_KEY_HANDLE, ntids.h), same idiom as
+    // the pre-existing NT_STDOUT_HANDLE singleton constant -- deliberately
+    // NOT allocated from ntfile.c's shared {file,section} handle table
+    // (NT_HANDLE_MAX=32). First cut used that table and it broke: the
+    // DLL-load-heavy boot path (kernel32+kernelbase+apisetschema, each
+    // several NtOpenFile/NtCreateSection calls) exhausts all 32 slots
+    // before locale-init's NtCreateKey ever runs, so it returned
+    // STATUS_NO_MEMORY (confirmed live: STATUS_NO_MEMORY/0xC0000017 sitting
+    // on the fault-time stack backtrace) -- a DIFFERENT failure that still
+    // left kernelbase's registry-key local in a state its init_locale
+    // couldn't cleanly recover from. A fixed sentinel needs no table slot,
+    // never exhausts, and every key is interchangeable anyway (no hive).
+    *KeyHandle = (void *)NT_REGISTRY_KEY_HANDLE;
+    if (Disposition) *Disposition = 2;   // REG_CREATED_NEW_KEY (winreg.h)
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtCreateKey name="); nt_log_object_attributes_name(ObjectAttributes);
+        puts(" -> dummy handle\n");
+    }
+    return STATUS_SUCCESS;
+}
+
+long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes) {
+    (void)DesiredAccess;
+    // No key exists to open (no hive) -- NOT_FOUND lets RegOpenKeyExW-style
+    // callers take their own "key absent" fallback. If a future trace shows
+    // a boot path that needs NtOpenKey to succeed, switch this one call
+    // site to the same fixed-handle answer NtCreateKey uses.
+    if (KeyHandle) *KeyHandle = 0;
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
+        puts(" -> NOT_FOUND\n");
+    }
+    return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,
+                      void *KeyValueInformation, unsigned long Length, unsigned long *ResultLength) {
+    // Load-bearing return: STATUS_OBJECT_NAME_NOT_FOUND (not
+    // STATUS_NOT_IMPLEMENTED). RegQueryValueExW maps this NTSTATUS to a
+    // clean "value absent" Win32 failure, so kernelbase's
+    // `if (!RegQueryValueExW(...))` is false and it SKIPS reading its
+    // (uninitialized) output buffer -- the wcslen-on-garbage fault's root
+    // cause. Never write KeyValueInformation/ResultLength on this path.
+    (void)KeyHandle; (void)KeyValueInformationClass; (void)KeyValueInformation; (void)Length;
+    if (ResultLength) *ResultLength = 0;
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtQueryValueKey name="); nt_log_unicode_string(ValueName);
+        puts(" -> NOT_FOUND\n");
+    }
+    return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+long NtSetValueKey(void *KeyHandle, void *ValueName, unsigned long TitleIndex,
+                    unsigned long Type, void *Data, unsigned long DataSize) {
+    // No-op success: init_locale writes Locale/LocaleName back after
+    // reading them (locale.c ~1896/1940) -- accept and discard, matches
+    // the "no hive, no persistence" contract (nothing downstream on this
+    // floor ever reads a value back through NtQueryValueKey, which always
+    // answers NOT_FOUND regardless of any prior NtSetValueKey call).
+    (void)KeyHandle; (void)TitleIndex; (void)Type; (void)Data; (void)DataSize;
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtSetValueKey name="); nt_log_unicode_string(ValueName);
+        puts(" -> SUCCESS (discarded)\n");
+    }
+    return STATUS_SUCCESS;
+}
+
+long NtQueryDefaultLocale(unsigned char UserProfile, unsigned long *DefaultLocaleId) {
+    // NtInitializeNlsFiles (C3c-2n) already writes *DefaultLocaleId=0x0409
+    // into its own out-param on the SAME call path, but NlsValidateLocale's
+    // separate NtQueryDefaultLocale(TRUE, &user_lcid) call (locale.c:1966)
+    // was still an unregistered NtStub -- STATUS_NOT_IMPLEMENTED there
+    // leaves user_lcid uninitialized on stock kernelbase's stack, a second
+    // possible garbage-deref source alongside the registry value read.
+    // en-US (0x0409) matches this floor's only staged NLS data set.
+    (void)UserProfile;
+    if (DefaultLocaleId) *DefaultLocaleId = 0x0409;
+    if (nt_dispatch_log_enabled) puts("CHALICE: NtQueryDefaultLocale -> 0x0409\n");
+    return STATUS_SUCCESS;
+}

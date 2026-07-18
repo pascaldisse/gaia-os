@@ -49,6 +49,8 @@
 #define NT_SVC_NTRAISEHARDERROR           208  // REAL, CHALICE C3c-2k p1 (wine-arm64-syscalls.txt:211)
 #define NT_SVC_NTINITIALIZENLSFILES       158  // REAL, CHALICE C3c-2n (wine-arm64-syscalls.txt:157, 0x9e)
 #define NT_SVC_NTGETNLSSECTIONPTR         155  // REAL, CHALICE C3c-2n (wine-arm64-syscalls.txt:154, 0x9b)
+#define NT_SVC_NTSETVALUEKEY               96  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt, 0x60)
+#define NT_SVC_NTQUERYDEFAULTLOCALE        21  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt:12, 0x15)
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via
@@ -118,6 +120,18 @@
 // RTL_USER_PROCESS_PARAMETERS+0x28 (StandardOutput — receipt in ntsvc.c)
 // and checked for equality by NtWriteFile.
 #define NT_STDOUT_HANDLE 0x14
+
+// ---- CHALICE C3c-2o: fixed pseudo-handle for the registry floor's dummy
+// keys (NtCreateKey). Same singleton-constant idiom as NT_STDOUT_HANDLE --
+// deliberately NOT drawn from ntfile.c's shared {file,section} handle
+// table (NT_HANDLE_BASE 0x100+, NT_HANDLE_MAX slots), which the DLL-load-
+// heavy boot path exhausts well before locale-init's NtCreateKey runs
+// (confirmed live, C3c-2o receipt in ntfile.c). Below NT_HANDLE_BASE so
+// nt_file_handle_close's `v < NT_HANDLE_BASE` guard already treats it as
+// pseudo-handle territory (silent no-op) -- NtClose (ntsvc.c) always
+// answers STATUS_SUCCESS regardless, so this handle closes cleanly for
+// free, same as NT_STDOUT_HANDLE already does.
+#define NT_REGISTRY_KEY_HANDLE 0x84UL
 
 // ---- Atom B: syscall_frame extension. Donor's __wine_syscall_dispatcher
 // (wine/dlls/ntdll/unix/signal_arm64.c:1630-1785) stashes the PE stub's own

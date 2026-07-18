@@ -37,6 +37,21 @@ long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,
 long NtGetNlsSectionPtr(unsigned long Type, unsigned long Id, void *Unknown,
                          void **BaseAddress, unsigned long *Size);
 
+// CHALICE C3c-2o: minimal in-memory registry floor -- keys open, values
+// come back absent, so kernelbase's init_locale (dlls/kernelbase/locale.c)
+// falls back to NLS defaults instead of dereferencing an uninitialized
+// WCHAR* from a "successful" value read. No real hive, no persistence.
+// See ntfile.c for the per-handler NTSTATUS-contract receipts.
+long NtCreateKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes,
+                  unsigned long TitleIndex, void *Class, unsigned long CreateOptions,
+                  unsigned long *Disposition);
+long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes);
+long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,
+                      void *KeyValueInformation, unsigned long Length, unsigned long *ResultLength);
+long NtSetValueKey(void *KeyHandle, void *ValueName, unsigned long TitleIndex,
+                    unsigned long Type, void *Data, unsigned long DataSize);
+long NtQueryDefaultLocale(unsigned char UserProfile, unsigned long *DefaultLocaleId);
+
 // NtClose (ntsvc.c) also releases handle-table entries allocated here --
 // this is the release hook it calls for any handle value >= the table's
 // base (values below stay the pre-existing pseudo-handle no-op path, e.g.

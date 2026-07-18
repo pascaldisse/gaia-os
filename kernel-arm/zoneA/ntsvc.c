@@ -478,6 +478,8 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTRAISEHARDERROR:            return "NtRaiseHardError";
     case NT_SVC_NTINITIALIZENLSFILES:        return "NtInitializeNlsFiles";
     case NT_SVC_NTGETNLSSECTIONPTR:           return "NtGetNlsSectionPtr";
+    case NT_SVC_NTSETVALUEKEY:                return "NtSetValueKey";
+    case NT_SVC_NTQUERYDEFAULTLOCALE:          return "NtQueryDefaultLocale";
     default: return 0;
     }
 }
@@ -571,6 +573,18 @@ void nt_service_tables_init(void) {
     // Size) -- 5 args (ntfile.c) ----
     nt_svc_table0[NT_SVC_NTGETNLSSECTIONPTR] = (void *)NtGetNlsSectionPtr;
     nt_svc_argtable0[NT_SVC_NTGETNLSSECTIONPTR] = 5 * 8;
+    // CHALICE C3c-2o: minimal in-memory registry floor -- see ntfile.c for
+    // the per-handler NTSTATUS-contract receipts.
+    nt_svc_table0[NT_SVC_NTCREATEKEY] = (void *)NtCreateKey;
+    nt_svc_argtable0[NT_SVC_NTCREATEKEY] = 7 * 8;
+    nt_svc_table0[NT_SVC_NTOPENKEY] = (void *)NtOpenKey;
+    nt_svc_argtable0[NT_SVC_NTOPENKEY] = 3 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYVALUEKEY] = (void *)NtQueryValueKey;
+    nt_svc_argtable0[NT_SVC_NTQUERYVALUEKEY] = 6 * 8;
+    nt_svc_table0[NT_SVC_NTSETVALUEKEY] = (void *)NtSetValueKey;
+    nt_svc_argtable0[NT_SVC_NTSETVALUEKEY] = 6 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYDEFAULTLOCALE] = (void *)NtQueryDefaultLocale;
+    nt_svc_argtable0[NT_SVC_NTQUERYDEFAULTLOCALE] = 2 * 8;
 
     nt_service_tables[0].ServiceTable  = nt_svc_table0;
     nt_service_tables[0].CounterTable  = 0;
