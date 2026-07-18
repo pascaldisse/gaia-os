@@ -754,6 +754,121 @@ genuinely blocked past all 4 hypotheses this leg's own instructions gave,
 stopping per HANDOFF's "blocked >2 cycles" rule with the analysis
 documented above rather than guessing a kernel-side patch.
 
+## CHALICE C4 state refresh (2026-07-18, leg 13 -- HEAD `92c90d4`)
+
+**ATOM A (CPU truth) landed+verified, does NOT move wowbox64's null-region
+fault (matches leg-12's own prediction -- "the fault isn't feature-gated").
+ATOM B (NtAllocateVirtualMemoryEx) landed+verified and DOES move the FEX
+backend's fault dramatically further -- FEX's own init banner now prints,
+real Ex-path allocations succeed, new furthest-point fault is genuinely
+deeper (inside libwow64fex.dll's own code, past the prior immediate
+ntdll-heap crash).**
+
+1. **ATOM A -- KUSER_SHARED_DATA.ProcessorFeatures + CentralProcessor\0
+   registry, both mrs-derived** (`92c90d4`): `nt_read_id_aa64isar0/_mmfr1/
+   _mmfr2` (ntsvc.c, real `mrs` at EL1 -- legal direct read, this floor
+   installs no EL2/hypervisor to trap it). `nt_kuser_init` now derives
+   PF_ARM_V8_CRYPTO(30)/CRC32(31)/V81_ATOMIC(34) from real
+   ID_AA64ISAR0_EL1 fields (AES/CRC32/Atomic, bits [7:4]/[19:16]/[23:20])
+   instead of the prior leg's flat-TRUE hardcoding of unrelated indices --
+   the 4 always-TRUE-on-any-AArch64-host flags (18/19/25/29) stay
+   hardcoded, matching donor `dlls/ntdll/unix/system.c
+   init_shared_data_cpuinfo`'s own unconditional-TRUE branch exactly (not
+   a violation of the no-hardcoding law -- donor itself hardcodes these).
+   New `CentralProcessor\0` registry key (`ntfile.c` `NtOpenKey`/
+   `NtQueryValueKey`) answers `"CP 4030"`/`"CP 4039"`/`"CP 403A"` as
+   REG_QWORD raw mrs dumps -- donor-grounded via box64's OWN
+   `hostext_wine.c:8` (v0.4.2 donor quarry, still in-tree from leg-12) AND
+   cross-checked against wine's `dlls/ntdll/unix/system.c
+   get_core_id_regs_arm64`'s identical `0x4030`/`0x4039`/`0x403a` reg-id
+   numbering (fetched fresh this leg, no local wine/ clone present this
+   session -- curl'd the specific files, same grounding standard leg-11
+   established).
+2. **Live proof, banner diff (wowbox64):** `[BOX64] Dynarec for ARM64,
+   with extension: ASIMD` -- UNCHANGED, byte-identical to every prior leg.
+   Root cause (leg-12, re-confirmed): box64-for-WOW64's
+   `DetectHostCpuFeatures` only gates aes/sha/pmull/crc32/atomics via
+   `IsProcessorFeaturePresent` + flagm/frintts/rndr/afp/uscat via the
+   registry -- `PrintHostCpuFeatures`'s own banner print is unconditional
+   regardless of what those gates return (leg-12 already established this;
+   this leg just confirms the KUSER/registry answers themselves are now
+   real without expecting a banner change).
+3. **Fault-by-fault, wowbox64 backend (`pe10`, no token):** IDENTICAL
+   fault to leg-11/12's furthest point -- `elr=0x0 far=0x0 lr(x30)=0x0`,
+   `esr=0x02000000`/`ec=0x0` (Undefined Instruction), same register
+   snapshot shape, same backtrace shape (`hello8_x86.exe+0x2000`,
+   `wowbox64.dll+...`). **Confirms leg-12's own prediction exactly**
+   ("nothing in this path reads CNTFRQ/ID-registers/getauxval directly...
+   the fault isn't feature-gated") -- ATOM A was worth doing for its own
+   correctness (IRON law compliance, real CentralProcessor\0 answers a
+   future backend/game might need) but was never expected to move THIS
+   fault, and didn't. No further wowbox64 work this leg (leg-12's own
+   "exact next step" -- self-built symbol-mapped box64 target, or deeper
+   blind RE of the `.text` caller into the code-cache gap -- still stands,
+   untouched).
+4. **Fault-by-fault, FEX backend (`pe10 fex`) -- REAL FORWARD MOTION:**
+   leg-12's fault (two `svc id=107 UNIMPLEMENTED` lines immediately
+   followed by a genuine Data Abort inside `ntdll.dll+0x2818C`, `far=0x7`)
+   is GONE -- confirmed via full-transcript grep, zero `svc id=107` lines
+   anywhere (`scratch/pe10_probe.py fex` full log, `/tmp/gaia-pe10-probe.
+   log`). Two real `NtAllocateVirtualMemoryEx` calls now succeed
+   (`CHALICE: NtAllocateVirtualMemoryEx count=1 have_addr_req=1
+   limit_high=0` -> `CHALICE AVM EXOUT ... status=0x0`, sizes `0x1000`
+   and `0x20000000`/512MB, both landing in the HIGH/arena pool -- the
+   unconstrained path, `have_addr_req=1` but `limit_high=0` meaning the
+   guest's own `MEM_ADDRESS_REQUIREMENTS` didn't set a sub-4GB
+   `HighestEndingAddress`). Process continues MUCH further: **FEX's own
+   init banner prints for the first time ever on this floor** --
+   `starting FEX (Hangover 11.9) based libwow64fex.dll` (the direct FEX
+   analog of Box64's `[BOX64] WowBox64...` banner) -- more file opens,
+   more real allocations, one `svc id=176 UNIMPLEMENTED` (`NtOpenKeyEx`,
+   wine-arm64-syscalls.txt:177 -- a registry probe, real callers expect
+   this to fail gracefully on a hive-less box, not chased this leg), THEN
+   a NEW furthest-point fault: `elr=libwow64fex.dll+0x1545DC` (Undefined
+   Instruction, `ec=0x0`, `far=0x0` this time -- x-registers don't show an
+   obvious small-int-deref signature like leg-12's box64 fault did), `lr`
+   ALSO resolves inside `libwow64fex.dll+0x165D14` -- i.e. this is a real
+   FEX-internal call chain, not an immediately-adjacent-to-our-syscall
+   crash. Genuinely analogous in shape to wowbox64's own JIT-code-cache-
+   gap fault (leg-12) -- likely FEX's OWN JIT/dynarec hitting a similar
+   not-yet-compiled-region or missing-init gap, unconfirmed without the
+   same binary-RE depth leg-12 spent on box64 (no FEX donor source quarry
+   cloned this leg -- would need `github.com/FEX-Emu/FEX` at the matching
+   Hangover-11.9-vendored version, unknown tag, not attempted this leg per
+   HANDOFF's own "blocked >2 cycles -> stop, document" doctrine applied
+   to a SECOND backend now showing the same fault-shape pattern).
+5. **hello8_x86 WriteFile print: NOT reached, either backend, this leg.**
+   Neither backend crossed into `BTCpuSimulate`/actual x86 CONTEXT
+   execution of the exe's own code this leg (wowbox64: unchanged from
+   leg-11/12, still stuck before its first real dynarec branch out of
+   `native_pass0`; FEX: now past `BTCpuProcessInit`'s own banner+several
+   real syscalls, but still short of `BTCpuSimulate` itself per the
+   symbol table -- `Simulate=0x...71634D4` resolved but not yet the
+   observed call site).
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines) +
+`pe8_gate.py` standalone + `scratch/ramfb_gate.py` all verified PASS live
+at HEAD `92c90d4` (re-run AFTER both atoms landed, before the pe10 probes
+above). qemu leak-checked (pgrep+kill) before/after every boot this leg,
+never run naked, `GAIA_NO_RUN=1` for the build-only check before the first
+boot loop. `scratch/` harnesses were present this session
+(`kernel-arm/zoneA/scratch/`, NOT gitignored-then-missing as HANDOFF's own
+general note warns -- found via `find`, reused as-is, none recreated).
+
+**Exact next step:** FEX backend is now the more promising lead (moved
+farther this leg, genuinely deeper into real FEX code than wowbox64 has
+ever gotten) -- (a) clone a FEX-Emu donor source quarry (version/tag TBD,
+needs matching the Hangover-11.9-vendored `libwow64fex.dll` the same way
+leg-12 pinned box64 to the exact `v0.4.2` tag) to symbol-map the
+`+0x1545DC`/`+0x165D14` call chain, same RE discipline leg-12 used; (b)
+alternatively keep burning wowbox64's own already-identified next step
+(leg-12's self-built-box64-target or blind `.text` RE for the code-cache
+gap's CALLER, never located either leg). Both are real, bounded,
+binary-RE-heavy next steps -- neither started this leg (source-grounded
+syscall/KUSER work only, per this leg's own task scope), stopping per
+HANDOFF's "blocked >2 cycles" doctrine with both backends' furthest points
+analyzed and documented above.
+
 ## Immediate next step for a fresh session
 
 Same fork point as leg-8 (superseded by leg-9-11's WOW64/dynarec work,
