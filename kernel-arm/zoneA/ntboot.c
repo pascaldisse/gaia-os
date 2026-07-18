@@ -232,6 +232,16 @@ static long nt_wire_apiset(u8 *peb) {
 
 long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, const char *label) {
     nt_blob_ensure_init();
+    nt_territory_debug_stats(label);
+    // CHALICE C-hello7: mark the bump pointer BEFORE this boot's own DLL
+    // maps/heap negotiation/FS-blob fetches touch it -- released at the
+    // bottom of this function (ntfile.c receipt: nt_territory_mark/
+    // nt_territory_release_since), reclaiming this ENTIRE process's
+    // private territory once it's run to completion (matches real Windows
+    // process-exit teardown; this kernel has none otherwise, and 3 stock
+    // boots back-to-back in one QEMU session was observed exhausting the
+    // whole ~940MB territory on the 3rd boot without this).
+    u64b nt_territory_boot_mark = nt_territory_mark();
 
     const unsigned char *ntdll_bytes, *exe_bytes;
     u64b ntdll_len, exe_len;
@@ -452,7 +462,8 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     }
     nt_exit_jmpbuf = 0;
 
-    if (stock) { puts("CHALICE DEBUG: post-run ldr dump:\n"); nt_ldr_dump(teb); }
+    nt_territory_release_since(nt_territory_boot_mark);
+    nt_territory_debug_stats(label);
     puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
 }

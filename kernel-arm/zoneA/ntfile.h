@@ -71,6 +71,9 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image);
 // returned/committed by nt_territory_alloc (size need not be page-rounded,
 // nt_territory_free rounds it itself).
 void nt_territory_free(unsigned char *addr, unsigned long size);
+void nt_territory_debug_stats(const char *tag);
+unsigned long nt_territory_mark(void);
+void nt_territory_release_since(unsigned long mark);
 
 // CHALICE C3c Atom 3C-1: blob-manifest lookup with FS fallback (stock DLLs
 // too big to embed, live on the RedSea-spirit disk instead -- fs.c/

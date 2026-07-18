@@ -115,10 +115,25 @@ static int nt_blob_lookup_fs(const char *basename, const unsigned char **out_byt
     unsigned char *buf = nt_territory_alloc(NT_FS_FALLBACK_MAX);
     if (!buf) return 0;
     long got = FsRead(lower, buf, NT_FS_FALLBACK_MAX);
-    // territory is bump-only -- no Free() on a short read; the wasted
-    // pages just sit unreclaimed (same simplification as everywhere else
-    // in this file), still trivial against the 0.75GB budget.
-    if (got <= 0) return 0;
+    // CHALICE C-hello7 (continuation #3): nt_territory_free is now a no-op
+    // (receipt at its definition, ntfile.c below -- the C3c-2r free-list
+    // reuse pool was reverted per monad ruling). These two calls (miss +
+    // unused-tail trim) are kept as harmless dead-weight API usage, not
+    // functioning reclaim -- the per-fetch waste they used to shrink (up to
+    // NT_FS_FALLBACK_MAX=16MB per FS fetch regardless of real file size,
+    // ~7-9 fetches/boot) no longer needs trimming: it's well under the
+    // ~890MB territory for a SINGLE boot's own use, and cross-boot
+    // accumulation (the actual exhaustion this atom chased) is now handled
+    // by nt_territory_mark/_release_since bracketing nt_boot_process
+    // (ntboot.c), which wipes this boot's ENTIRE territory footprint --
+    // fetch waste included -- once the boot's PE has run to completion.
+    if (got <= 0) { nt_territory_free(buf, NT_FS_FALLBACK_MAX); return 0; }
+    {
+        u64b used_pages = ((u64b)got + (4096ULL - 1)) & ~(4096ULL - 1);
+        u64b total_pages = (NT_FS_FALLBACK_MAX + (4096ULL - 1)) & ~(4096ULL - 1);
+        if (used_pages < total_pages)
+            nt_territory_free(buf + used_pages, total_pages - used_pages);
+    }
 
     char *namebuf = (char *)nt_territory_alloc((u64b)n + 1);
     if (!namebuf) return 0;
@@ -296,45 +311,61 @@ int nt_image_base_by_name(const char *name, u64b *base_out, u64b *size_out) {
 
 static u64b nt_dll_territory_next = NT_DLL_TERRITORY_BASE;
 
-// CHALICE C3c-2r: free-list reuse pool. Discovered live driving pe1/pe4/
-// pe5/pe6/pe7(+pe8) back-to-back in one boot: NtFreeVirtualMemory
-// (ntsvc.c nt_vm_free) was a pure bookkeeping no-op against this
-// allocator ("frees the *handle*, not the bump space", original comment
-// below) -- fine in isolation, but stock kernelbase's own heap-growth
-// negotiation (RtlCreateHeap's reserve-probe-then-release-then-reserve-
-// smaller retry loop, observed live via the CHALICE AVM/FVM trace: e.g.
-// reserve 0xFD0000, free it, reserve 0x7E8000, free it, reserve 0x3F4000
-// ...) burns a FRESH multi-MB bump slice on every retry of EVERY stock
-// boot (pe6/pe7/pe8 each map+init a full ntdll+kernel32+kernelbase chain);
-// three such boots back-to-back in one QEMU session exhausts the ~890MB
-// territory before the LAST boot's own DLL maps land (observed fault:
-// pe7 ret=0xC0000135/STATUS_DLL_NOT_FOUND, root cause traced via the AVM
-// log to NtAllocateVirtualMemory answering STATUS_NO_MEMORY/0xC0000017
-// mid-heap-negotiation). Fix: a small first-fit free list -- nt_vm_free
-// now feeds released regions back in here (nt_territory_free) instead of
-// only marking its own tracking slot unused, so a same-boot retry (or a
-// LATER boot's own heap negotiation) reuses already-freed space instead of
-// always bumping fresh territory. No split-on-reuse (simple over clever,
-// matches this allocator's existing style) -- a reused slot's leftover
-// tail (if any) is dropped, never worse than the pre-fix always-bump
-// behavior.
-#define NT_TERRITORY_FREELIST_MAX 64
-typedef struct { u64b addr; u64b size; int used; } NtTerritoryFreeSlot;
-static NtTerritoryFreeSlot nt_territory_freelist[NT_TERRITORY_FREELIST_MAX];
+void nt_territory_debug_stats(const char *tag) {
+    puts("CHALICE DEBUG: territory["); puts(tag); puts("] next=");
+    puthex(nt_dll_territory_next);
+    puts(" used_bytes="); puthex(nt_dll_territory_next - NT_DLL_TERRITORY_BASE);
+    puts("\n");
+}
 
+// CHALICE C-hello7 (continuation #3, monad ruling): the C3c-2r general
+// free-list reuse pool is REVERTED here -- proven fragile live: reusing a
+// smaller-than-freed slot without splitting left a stale tail from the
+// PRIOR occupant sitting beside a live NEW allocation (a size-matched
+// zero-only-`pages` attempt still didn't remove the bug CLASS, just one
+// instance of it -- root cause of a live pe7 regression, kernelbase.dll+
+// 0x3aaa0 NULL-ish deref reading a stale ntdll .data byte through a reused
+// slot's dropped tail). Ruling: the floor runs ONE guest process at a
+// time -- general reuse is over-engineering for that model. The real fix
+// is the wholesale per-process reset below (nt_territory_mark/
+// _release_since). nt_territory_free is kept as an API surface for its
+// existing callers (ntsvc.c's NtFreeVirtualMemory, this file's
+// nt_blob_lookup_fs shrink-to-fit trim) but is now pure accounting/no-op --
+// no pool, no reuse, so no possible stale-tail exposure.
 void nt_territory_free(unsigned char *addr, unsigned long size) {
-    if (!addr || !size) return;
-    u64b pages = ((u64b)size + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
-    for (int i = 0; i < NT_TERRITORY_FREELIST_MAX; i++) {
-        if (!nt_territory_freelist[i].used) {
-            nt_territory_freelist[i].addr = (u64b)addr;
-            nt_territory_freelist[i].size = pages;
-            nt_territory_freelist[i].used = 1;
-            return;
-        }
-    }
-    // free-list full -- drop it (territory leaked for this one region,
-    // same as the pre-fix always-leak behavior; never worse).
+    (void)addr; (void)size;   // no-op by design -- see receipt above.
+}
+
+// CHALICE C-hello7: process-epoch reclaim (the actual fix, monad ruling).
+// Root cause of the live 3-boot-chain exhaustion (pe6 then pe7 then pe8 in
+// one QEMU session, each a fresh "process" per HANDOFF's own framing):
+// stock kernelbase's heap-init legitimately creates/keeps several 0xFD0000
+// (13MB, Wine's default heap reserve) growable heap reservations per
+// process -- real, not-a-bug per-process memory use -- but this kernel has
+// no process teardown, so every nt_boot_process invocation's OWN heaps/
+// DLL-image maps/FS-blob buffers pile up FOREVER on top of the previous
+// verb's (observed live: ~450MB kept per stock boot, exhausting the
+// ~890MB territory on the 3rd consecutive stock boot). Each shell verb
+// (pe6/pe7/pe8) is an independent, non-overlapping process lifetime by
+// SLICE3-SPEC design (one PE runs to completion, shell regains control,
+// only THEN does the next verb run) -- nothing after a verb returns needs
+// ITS OWN private allocations to remain live, so a wholesale bump-pointer
+// reset back to the pre-boot mark at nt_boot_process's exit (ntboot.c) is
+// exactly the semantic real Windows process teardown gives for free, and
+// (unlike the reverted free-list) carries no reuse hazard: every byte
+// between mark and this boot's own high-water mark is freshly zeroed by
+// the very alloc that claims it (plain bump path below), so no in-boot gap
+// can expose a prior boot's stale bytes beside a live allocation.
+// KUSER_SHARED_DATA (0x7ffe0000) is fixed-address and OUTSIDE this
+// territory range (NT_DLL_TERRITORY_LIMIT 0x7ff00000, checked against the
+// ruling's "verify what must persist" instruction) so the reset never
+// touches it; nothing else in territory is designed to survive past its
+// owning boot (pe1-pe6/shell verbs each map their own DLLs fresh, none
+// reads back into a prior verb's territory once that verb has returned).
+u64b nt_territory_mark(void) { return nt_dll_territory_next; }
+
+void nt_territory_release_since(u64b mark) {
+    if (nt_dll_territory_next > mark) nt_dll_territory_next = mark;
 }
 
 // CHALICE C3b Atom 3B: no longer static -- ntboot.c's nt_boot_process
@@ -343,20 +374,10 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
     u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
     if (pages == 0) pages = NT_PAGE_SIZE;
 
-    // CHALICE C3c-2r: first-fit (smallest-fitting) free-list reuse before
-    // ever touching the bump pointer -- see receipt above.
-    int best = -1;
-    for (int i = 0; i < NT_TERRITORY_FREELIST_MAX; i++) {
-        if (nt_territory_freelist[i].used && nt_territory_freelist[i].size >= pages) {
-            if (best < 0 || nt_territory_freelist[i].size < nt_territory_freelist[best].size) best = i;
-        }
-    }
-    if (best >= 0) {
-        u8 *base = (u8 *)nt_territory_freelist[best].addr;
-        nt_territory_freelist[best].used = 0;
-        for (u64b i = 0; i < pages; i++) base[i] = 0;
-        return base;
-    }
+    // CHALICE C-hello7 (continuation #3): no free-list consultation here --
+    // reverted per monad ruling (receipt above nt_territory_free). Pure bump
+    // allocation only; the wholesale per-boot reset (nt_territory_mark/
+    // _release_since) is what keeps this from exhausting across pe-runs.
 
     // CHALICE C3c-2l Phase B: round the START up to 64KB granularity before
     // handing out this allocation -- every DLL image map (and, for
@@ -365,7 +386,12 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
     // as a real Windows VirtualAlloc/MapViewOfFile guarantee. Territory is
     // ~890MB (0x45000000..0x7ff00000) so the extra rounding waste is cheap.
     nt_dll_territory_next = (nt_dll_territory_next + (NT_DLL_TERRITORY_ALIGN - 1)) & ~(NT_DLL_TERRITORY_ALIGN - 1);
-    if (nt_dll_territory_next + pages > NT_DLL_TERRITORY_LIMIT) return 0;
+    if (nt_dll_territory_next + pages > NT_DLL_TERRITORY_LIMIT) {
+        puts("CHALICE DEBUG: territory EXHAUSTED next="); puthex(nt_dll_territory_next);
+        puts(" want_pages="); puthex(pages); puts(" limit="); puthex(NT_DLL_TERRITORY_LIMIT);
+        puts("\n");
+        return 0;
+    }
     u8 *base = (u8 *)nt_dll_territory_next;
     nt_dll_territory_next += pages;
     for (u64b i = 0; i < pages; i++) base[i] = 0;
