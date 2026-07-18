@@ -295,9 +295,6 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
 // `adrp x16, ntdll+0x152000; ldr x16,[x16,#0xf98]` in the stock dispatcher.
 // LLVM disassembly § FEX-MAP C4-19; ImageBase rule -> writable hook RVA.
 #define NTDLL_WOW64_EXCEPTION_HOOK_RVA 0x152f98U
-#define WOW64_PREPARE_EXCEPTION_RVA    0x1da18U
-// `Wow64PrepareForException`: adrp x8,wow64+0x40000; ldr x8,[x8,#0x330].
-#define WOW64_BTCPURESET_SLOT_RVA      0x40330U
 
 extern char _load_base[], _kernel_end[];
 extern unsigned long *nt_exit_jmpbuf;
@@ -351,33 +348,11 @@ static u64 ki_user_exception_dispatcher(void) {
     return base + NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA;
 }
 
-// Assembly trace bridge: preserves the Windows x18 TEB across kernel C,
-// then calls this resolved wow64.dll data-slot target verbatim.
-u64 nt_btcpu_reset_target;
-void nt_btcpu_reset_trace(void);
-
-void nt_btcpu_reset_trace_enter(void *ptrs) {
-    static u64 calls;
-    if (calls++ >= 8) return;
-    u64 record = ptrs ? *(u64 *)ptrs : 0;
-    u64 context = ptrs ? *(u64 *)((unsigned char *)ptrs + 8) : 0;
-    u64 pc = context ? *(u64 *)((unsigned char *)context + ARM64_CONTEXT_PC_OFF) : 0;
-    puts("CHALICE FEX RESET enter ptrs="); puthex((u64)ptrs);
-    puts(" rec="); puthex(record); puts(" ctx_pc="); puthex(pc); puts("\n");
-}
-
-void nt_btcpu_reset_trace_return(long status) {
-    static u64 returns;
-    if (returns++ >= 8) return;
-    puts("CHALICE FEX RESET return status="); puthex((u64)status); puts("\n");
-}
-
 // C4-19 measurement: one fresh service trace begins at every hardware
 // delivery.  The stock dispatcher first reads this ntdll .data hook; resolve
-// the ntdll->wow64->FEX chain and temporarily trace its terminal call.
+// both slot and pointee so an empty hook is distinguished from an FEX return.
 static void audit_exception_delivery(void) {
     static u64 delivery;
-    static int reset_trace_installed;
     u64 base = 0, size = 0;
     u64 hook = 0;
     nt_dispatch_log_reset();
@@ -393,18 +368,6 @@ static void audit_exception_delivery(void) {
             char name[64]; u64 off = 0;
             if (nt_image_resolve(hook, name, sizeof(name), &off)) {
                 puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
-            }
-            // Hook target is the measured wow64.dll export; its local
-            // pBTCpuResetToConsistentState slot is the next donor link.
-            if (!reset_trace_installed && hook >= WOW64_PREPARE_EXCEPTION_RVA) {
-                u64 reset_slot = hook - WOW64_PREPARE_EXCEPTION_RVA + WOW64_BTCPURESET_SLOT_RVA;
-                u64 reset = *(u64 *)(u64)reset_slot;
-                puts(" reset_slot="); puthex(reset_slot); puts(" reset="); puthex(reset);
-                if (reset) {
-                    nt_btcpu_reset_target = reset;
-                    *(u64 *)(u64)reset_slot = (u64)nt_btcpu_reset_trace;
-                    reset_trace_installed = 1;
-                }
             }
         }
     } else puts(" ntdll/hook-slot unavailable");
