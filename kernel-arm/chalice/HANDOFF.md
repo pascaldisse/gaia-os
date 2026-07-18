@@ -204,6 +204,58 @@ reference · **Proton** = games-grade compatibility reference.
 
 ---
 
+## CHALICE C4 state refresh (2026-07-18, leg 4 -- HEAD `198e8a0`)
+
+**C4-4 COMPLETE, verified live, both CPU backends:**
+- **Two-root FS** (`ntfile.c` NtOpenFile, `b01d9ca`): dirname-segment
+  redirect -- `sysnative\X` always -> flat basename (native/ARM64 escape);
+  `system32\X` -> flat basename UNCHANGED unless a new
+  `nt_wow64_process_active` flag is set, then -> `syswow64/X`; literal
+  `syswow64\X` -> `syswow64/X` always. fs.c has no real subdirectories --
+  the two roots are two on-disk NAME PREFIXES on the same flat namespace
+  (existing bare names byte-identical/unchanged; new `syswow64/` prefix
+  names the i386-windows tree, `build.sh` populate). Donor-grounded (wine
+  mirror gitlab.winehq.org/wine/wine, fetched read-only this session):
+  `dlls/wow64/file.c` `get_file_redirect`, `dlls/ntdll/unix/file.c:3130-3270`,
+  `dlls/ntdll/loader.c:4369`.
+- **Live proof** (`dbd732a`, `nt_wow64_fs_selftest`, real NtOpenFile calls +
+  raw COFF Machine-field read via NtReadFile -- NtQuerySection can't parse
+  32-bit PE yet, C4-5 territory): `system32\kernel32.dll` non-wow64 ->
+  `0xAA64` (unchanged) / wow64-active -> `0x14C` (redirected!);
+  `sysnative\ntdll.dll` wow64-active -> `0xAA64` (escape works);
+  `syswow64\kernelbase.dll` -> `0x14C` (explicit ask). All 4 now
+  required-green in `pe9_gate.py`, both backends.
+- **BTCpuProcessInit/ThreadInit call** (`b01d9ca` code + `198e8a0` live
+  result): donor init order grounded (`dlls/wow64/syscall.c` `process_init`
+  :1039 calls `pBTCpuProcessInit()` once; `thread_init:1073` calls
+  `pBTCpuThreadInit()` per thread). New opt-in shell arg `pe9 <backend>
+  call` (NEVER the default `pe9`/`pe9 fex` the canonical gate drives --
+  this is real ARM64 native code from an unresolved-import image,
+  `do_imports=0`, and `sync_handler` has no recovery from a raw CPU
+  exception). Live result (`scratch/pe9call_probe.py`, isolated harness,
+  wowbox64 backend): `BTCpuProcessInit` executes several real calls deep
+  (lr resolves inside `wowbox64.dll`, not a first-instruction failure)
+  before a controlled, legible fault -- `wowbox64.dll+0x1638`, `far=0xA1`
+  (small-integer dereference, the predicted signature of an unresolved
+  import thunk). Satisfies the atom's own gate ("observably called --
+  log line or a controlled fault") via both the log line AND the resolved
+  fault. Kernel halts cleanly after (`sync_handler` dump + `wfe`); probe
+  script SIGTERMs QEMU itself regardless, confirmed no leaked process.
+
+**NOT attempted this leg (flagged, not started): C4-5** (map i386 ntdll +
+`hello8_x86.exe`, enter `BTCpuSimulate` against a real 32-bit CONTEXT).
+Budget spent on C4-4's two sub-atoms (two-root FS design+proof, BTCpu call
+attempt+analysis) -- C4-5 needs actual 32-bit PE HEADER PARSING (`pemod.c`
+currently hard-rejects any non-ARM64/non-PE32+ image, the exact gate that
+made `NtQuerySection` fail on the i386 tree above) before a 32-bit CONTEXT
+can even be built, unsized and likely the hardest atom of the whole C4
+slice per C4-SPEC's own sizing note -- left for the next leg with a fresh
+budget rather than start it uncommitted/rushed.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines incl.
+the 4 new two-root proof lines) + `pe8_gate.py` standalone both verified
+PASS live at HEAD.
+
 ## Immediate next step for a fresh session
 
 `hello7`/`pe8`'s widened KERNEL32.dll surface walk is green (this slice) —
