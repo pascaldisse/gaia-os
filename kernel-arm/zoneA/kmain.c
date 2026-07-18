@@ -543,6 +543,15 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     }
     puts("CHALICE EXCEPTION: code="); puthex(status);
     puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
+    // CHALICE C4-29 MEASURE step 1: who called the faulting code -- x30/LR
+    // as captured by SAVEALL_SYNC (regs_safe[30], the pre-fault caller
+    // return address, not a stack scan) resolved the same way sync_handler's
+    // fatal path already resolves elr/far/x0 etc. Always-on for the
+    // guest-forwarded path (not just the fatal dump) -- this is exactly the
+    // receipt C4-29 needs: which code passed the null image base into
+    // RtlImageNtHeader (or whichever function this fault happens to be).
+    resolve_line("lr ", regs_safe[30]);
+    resolve_line("x0 ", regs_safe[0]);
     sync_guest_exception_elr = dispatcher;
     // Register truth probe: system registers, never a frame copy.  boot.S
     // repeats the ELR write as its final instruction sequence before ERET.

@@ -145,6 +145,8 @@ static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
 #define TEB_NTTIB_STACKLIMIT_OFF   0x10
 #define TEB_PEB_OFF                0x60   // ntsvc.c receipt, duplicated (file-local const convention)
 #define PEB_PROCESSPARAMETERS_OFF  0x20   // ntsvc.c receipt, duplicated
+#define PEB_IMAGEBASEADDRESS_OFF   0x10   // ntsvc.c receipt, duplicated -- 64-bit PEB.ImageBaseAddress
+#define PEB32_IMAGEBASEADDRESS_OFF 0x08   // wine include/winternl.h:847 _PEB32.ImageBaseAddress -- CHALICE C4-29
 // CHALICE C3c-2h: PEB.ApiSetMap. Donor receipt (wine/include/winternl.h,
 // reactos/sdk/include/wine/winternl.h -- both agree): field comment
 // "ApiSetMap; /* 038/068 */" -- the TWO numbers are the 32-bit/64-bit
@@ -428,6 +430,17 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     wr64(teb + TEB_NTTIB_STACKBASE_OFF, stack_top);     // StackBase = highest addr
     wr64(teb + TEB_NTTIB_STACKLIMIT_OFF, stack_base);   // StackLimit = lowest addr
 
+    // CHALICE C4-29 MEASURE step 2: receipt the native (64-bit) PEB's own
+    // ImageBaseAddress as actually wired (nt_build_teb already writes
+    // image_base=exe_base here, scar-proven, no fresh bug expected on this
+    // one field) -- printed so the boot log answers the brief's question
+    // directly instead of by inference from source reading alone.
+    {
+        u8 *peb_recv = (u8 *)(u64b)rd64(teb + TEB_PEB_OFF);
+        puts("CHALICE C4-29: PEB.ImageBaseAddress="); puthex(peb_recv ? rd64(peb_recv + PEB_IMAGEBASEADDRESS_OFF) : 0);
+        puts(" (exe_base="); puthex(exe_base); puts(")\n");
+    }
+
     // ---- CHALICE C4-6: graft C4-3's WOW64 TEB32/PEB32/WOW64INFO/
     // CROSSPROCESSWORKLIST/CPURESERVED machinery onto THIS SAME real-boot
     // TEB (previously only reachable from nt_boot_wow64_probe's own
@@ -441,6 +454,28 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         if (nt_build_wow64_teb32(teb, 0xAA64, 0x14C, &wow64_wire) != 0)
             return boot_err("wow64 teb32 wiring failed");
         nt_wow64_set_peb32(wow64_wire.peb32);
+
+        // CHALICE C4-29 fix: nt_build_wow64_teb32's own C4-3 comment
+        // self-flagged this exact gap ("PEB32's own trapdoor fields
+        // (ImageBaseAddress/LdrData/ProcessParameters/ApiSetMap) are left
+        // 0 this atom -- no 32-bit ntdll/exe image mapped yet") -- that
+        // image IS mapped now (exe_base, above, this same function, C4-5/
+        // C4-6 territory landed since). Donor-grounded: wine include/
+        // winternl.h:847 _PEB32.ImageBaseAddress (ULONG, offset 0x08) is
+        // the 32-bit-guest-visible mirror of the field FEX/wow64-side code
+        // reads via TEB32->Peb (TEB32_PEB_OFF) when it wants the MAIN
+        // (i386) image's own base -- as opposed to the 64-bit PEB.
+        // ImageBaseAddress (wired above, already exe_base) which is what
+        // NATIVE ntdll code (build_wow64_main_module, wine dlls/ntdll/
+        // loader.c:2900 "NtCurrentTeb()->Peb->ImageBaseAddress") reads.
+        // Both trapdoors point at the SAME i386 exe base -- there is only
+        // one main image in a wow64 process, native and 32-bit PEBs both
+        // describe it, per real Windows (public PEB32/PEB layout parity).
+        wr32((u8 *)wow64_wire.peb32 + PEB32_IMAGEBASEADDRESS_OFF, (u32b)exe_base);
+        puts("CHALICE C4-29: PEB32.ImageBaseAddress=");
+        puthex((u64b)(*(volatile u32b *)((u8 *)wow64_wire.peb32 + PEB32_IMAGEBASEADDRESS_OFF)));
+        puts("\n");
+
         puts("CHALICE: WOW64 signal wired teb64="); puthex((u64b)teb);
         puts(" WowTebOffset="); puthex((u64b)rd64(teb + 0x180c /* TEB64_WOWTEBOFFSET_OFF, ntsvc.c */));
         puts(" teb32="); puthex((u64b)wow64_wire.teb32);
