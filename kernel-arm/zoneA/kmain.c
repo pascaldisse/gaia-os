@@ -139,6 +139,7 @@ int nt_arena_contains(unsigned long addr);
 int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);
 int nt_arena_commit(unsigned long base, unsigned long size);
 void nt_fault_region(const char *label, unsigned long addr);
+int nt_fault_read32(unsigned long addr, unsigned int *word_out);
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -280,6 +281,9 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
     puts(" ec="); puthex(ec); puts(" iss="); puthex(iss);
     puts(" elr="); puthex(elr); puts(" far="); puthex(far);
     puts(" spsr="); puthex(spsr); puts(" sp="); puthex(sp_orig);
+    unsigned int insn;
+    if (nt_fault_read32(elr, &insn)) { puts(" insn="); puthex(insn); }
+    else puts(" insn=unreadable");
     puts("\n");
 
     // ---- CHALICE C3c-2f p1: full x0-x30 dump (Phase A step 1: "print

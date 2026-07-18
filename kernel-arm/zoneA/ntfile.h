@@ -113,6 +113,7 @@ int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned lon
 // nt_arena_query/nt_arena_release to answer honestly for arena addresses.
 int nt_arena_contains(unsigned long addr);
 void nt_fault_region(const char *label, unsigned long addr);
+int nt_fault_read32(unsigned long addr, unsigned int *word_out);
 unsigned char *nt_arena_reserve(unsigned long size);
 int nt_arena_commit(unsigned long base, unsigned long size);
 int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);

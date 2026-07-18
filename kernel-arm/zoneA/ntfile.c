@@ -591,6 +591,19 @@ void nt_fault_region(const char *label, unsigned long addr) {
     puts("\n");
 }
 
+// Fault instruction fetch → only known mapped/live allocator classes.
+int nt_fault_read32(unsigned long addr, unsigned int *word_out) {
+    char name[64]; u64b off, base = 0, size = 0; int committed = -2;
+    int mapped = nt_image_resolve(addr, name, sizeof(name), &off);
+    if (!mapped && nt_arena_query(addr, &base, &size, &committed)) mapped = committed > 0;
+    if (!mapped && nt_vm_region_query(addr, &base, &size)) mapped = 1;
+    if (!mapped && addr >= NT_DLL_TERRITORY_BASE && addr < nt_dll_territory_next) mapped = 1;
+    if (!mapped && addr >= NT_HIGH_TERRITORY_BASE && addr < nt_dll_high_territory_next) mapped = 1;
+    if (!mapped) return 0;
+    *word_out = *(volatile unsigned int *)addr;
+    return 1;
+}
+
 // RESERVE: carve `size` bytes of VA from the arena -- bump-only, zero
 // physical cost (no window touched, no L2 entry written). NULL on arena
 // VA exhaustion (bump-only per-boot; wholesale reset below is the reclaim,
