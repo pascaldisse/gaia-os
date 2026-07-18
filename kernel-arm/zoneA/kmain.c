@@ -321,17 +321,9 @@ void nt_continue_trace(void *context) {
     puts(" x18="); puthex(*(u64 *)(ctx + 0x98)); puts("\n");
 }
 
-// Called by sync_entry after it writes the dispatcher ELR and immediately
-// before its ERET.  This deliberately reads hardware state, never a frame or
-// CONTEXT field; cap prevents a delivery loop from flooding the serial log.
-void sync_exception_eret_truth(void) {
-    static u64 count;
-    u64 elr, spsr;
-    if (count++ >= 12) return;
-    asm volatile("mrs %0, elr_el1\n mrs %1, spsr_el1" : "=r"(elr), "=r"(spsr));
-    puts("CHALICE ERET TRUTH: elr_el1="); puthex(elr);
-    puts(" spsr_el1="); puthex(spsr); puts("\n");
-}
+// C4-20 assembly handoff: sync_entry reloads this target and writes ELR_EL1
+// immediately before ERET, after all C work has completed.
+volatile u64 sync_guest_exception_elr;
 
 static void move_bytes(void *dst_void, const void *src_void, u64 n) {
     unsigned char *dst = (unsigned char *)dst_void;
@@ -420,7 +412,17 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     }
     puts("CHALICE EXCEPTION: code="); puthex(status);
     puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
-    asm volatile("msr elr_el1, %0" :: "r"(dispatcher));
+    sync_guest_exception_elr = dispatcher;
+    // Register truth probe: system registers, never a frame copy.  boot.S
+    // repeats the ELR write as its final instruction sequence before ERET.
+    u64 live_elr, live_spsr;
+    static u64 truth_count;
+    asm volatile("msr elr_el1, %2\n isb\n mrs %0, elr_el1\n mrs %1, spsr_el1"
+                 : "=r"(live_elr), "=r"(live_spsr) : "r"(dispatcher));
+    if (truth_count++ < 12) {
+        puts("CHALICE ERET TRUTH: elr_el1="); puthex(live_elr);
+        puts(" spsr_el1="); puthex(live_spsr); puts("\n");
+    }
     return stack;
 }
 

@@ -198,13 +198,15 @@ sync_entry:
     mov     x4, sp
     bl      sync_try_guest_exception
     cbz     x0, 1f
-    // C4-20: this reads ELR_EL1/SPSR_EL1 immediately before this ERET;
-    // it is system-register truth, not the C-built CONTEXT copy.  x0 is
-    // the returned guest stack, so retain it across the diagnostic call.
-    mov     x19, x0
-    bl      sync_exception_eret_truth
+    // C4-20: write the redirect at the last possible point.  A C-written
+    // ELR_EL1 is vulnerable to any nested same-EL exception before ERET.
+    // The C side records its measured target in this one explicit handoff.
+    ldr     x19, =sync_guest_exception_elr
+    ldr     x19, [x19]
+    msr     elr_el1, x19
+    isb
     ldr     x18, [sp, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
-    mov     sp, x19
+    mov     sp, x0
     eret
 2:
     RESTOREALL_SYNC
