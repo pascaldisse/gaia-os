@@ -20,6 +20,7 @@ static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (
 static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr16(u8 *p, u16 v)  { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
 static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
+static u32b rd32(const u8 *p) { u32b v = 0; for (int i = 0; i < 4; i++) v |= (u32b)p[i] << (8 * i); return v; }
 
 static void *nt_zalloc(u64b size) {
     u8 *p = (u8 *)MAlloc(size);
@@ -678,28 +679,44 @@ long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformatio
 }
 
 // =====================================================================
-// CHALICE C4-11: NtSetInformationThread -- instrument-first stub. pe10
-// fires this (svc id=13, NtSetInformationThread, wine-arm64-syscalls.txt:
-// 210) right before wowbox64.dll's own BTCpuProcessInit-chain faults
-// (Data Abort, wowbox64.dll+0xF88BC, far=0x2 -- a small-integer deref,
-// the signature of a caller that assumed our (previously silent NtStub->
-// STATUS_NOT_IMPLEMENTED) call succeeded and dereferenced through an
-// uninitialized/garbage-seeded pointer built from the unanswered result).
-// This atom ONLY logs (ThreadInformationClass, data ptr, length) and
-// keeps returning STATUS_NOT_IMPLEMENTED (behavior-preserving) so the
-// next probe run reveals which THREADINFOCLASS (winternl.h enum) is
-// actually requested before committing to a real per-class fix --
-// measure, don't guess (HANDOFF doctrine).
+// CHALICE C4-11: NtSetInformationThread, ThreadWow64Context (class 29)
+// ONLY -- measured live (pe10 probe): svc id=13, wine-arm64-syscalls.txt:
+// 210, fires with class=0x1D(29)/len=0x2CC(=CTX32_SIZE) right after our
+// existing NtQueryInformationThread(ThreadWow64Context) answers eip/esp --
+// the documented real-Windows SET counterpart of that same class (Nt{Query,
+// Set}InformationThread ThreadWow64Context get/set a thread's WOW64
+// CONTEXT; this is a standard NT contract, not Wine/Hangover-specific --
+// no donor grounding needed beyond the same I386_CONTEXT field offsets
+// this file already uses for the GET side, CTX32_EIP_OFF/CTX32_ESP_OFF
+// above). BTCpuThreadInit/BTCpuProcessInit calls this to install the
+// (possibly backend-adjusted) x86 context as the thread's authoritative
+// WOW64 context before continuing -- our previously-silent NtStub->
+// STATUS_NOT_IMPLEMENTED left the caller believing the write failed/no-
+// oped and it dereferenced forward assuming success (wowbox64.dll+0xF88BC
+// Data Abort, far=0x2, immediately downstream of this exact call site).
+// Fix: parse Eip/Esp back OUT of the incoming buffer into the same
+// nt_wow64_ctx_eip/esp stash nt_wow64_set_initial_context populates, so a
+// later GET reflects whatever the backend just SET (single-thread kernel,
+// one stash, same simplification the rest of this WOW64 floor uses) --
+// then STATUS_SUCCESS.
 // =====================================================================
 long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationClass,
                              const void *ThreadInformation, unsigned long ThreadInformationLength) {
     (void)ThreadHandle;
+    if (ThreadInformationClass != 29 /* ThreadWow64Context */) return STATUS_NOT_IMPLEMENTED;
+    if (!ThreadInformation) return STATUS_INVALID_PARAMETER;
+    if (ThreadInformationLength < CTX32_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+
+    const u8 *in = (const u8 *)ThreadInformation;
+    nt_wow64_ctx_eip = rd32(in + CTX32_EIP_OFF);
+    nt_wow64_ctx_esp = rd32(in + CTX32_ESP_OFF);
+    nt_wow64_ctx_valid = 1;
+
     if (nt_dispatch_log_enabled) {
-        puts("CHALICE: NtSetInformationThread class="); puthex((u64b)ThreadInformationClass);
-        puts(" data="); puthex((u64b)ThreadInformation);
-        puts(" len="); puthex((u64b)ThreadInformationLength); puts("\n");
+        puts("CHALICE: NtSetInformationThread ThreadWow64Context <- eip=");
+        puthex(nt_wow64_ctx_eip); puts(" esp="); puthex(nt_wow64_ctx_esp); puts("\n");
     }
-    return STATUS_NOT_IMPLEMENTED;
+    return STATUS_SUCCESS;
 }
 
 // SYSTEM_BASIC_INFORMATION (ntsvc.c receipt: reactos/sdk/include/ndk/
