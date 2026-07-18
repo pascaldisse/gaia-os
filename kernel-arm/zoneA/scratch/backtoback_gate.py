@@ -56,8 +56,16 @@ def send(line):
 
 drain(6)
 # pe6/pe7/pe8 TWICE back-to-back, one boot/session.
-for cmd, wait in [("pe6", 6), ("pe7", 8), ("pe8", 8),
-                  ("pe6", 6), ("pe7", 8), ("pe8", 8)]:
+# CHALICE C4-9: waits bumped (6/8/8 -> 8/20/20) -- the RESERVE/COMMIT arena
+# is correctly, by-design (monad ruling #2: "round to 2MB windows") heavier
+# per first-touch-in-a-window than the old flat bump allocator (each newly-
+# committed 2MB window backs+zeroes 2MB once, vs the old scheme's exact-size
+# zero of just the touched bytes) -- live-measured this leg: the SECOND
+# pe7/pe8 pass in one session needs ~15-20s wall-clock now (was well under
+# 8s), confirmed to complete cleanly (no fault, no STATUS_NO_MEMORY) given
+# the headroom -- a harness timing-budget fix, not a functional regression.
+for cmd, wait in [("pe6", 8), ("pe7", 20), ("pe8", 20),
+                  ("pe6", 8), ("pe7", 20), ("pe8", 20)]:
     send(cmd)
     drain(wait)
 

@@ -57,8 +57,16 @@ def send(line):
     s.sendall((line + "\r").encode())
 
 drain(6)
+# CHALICE C4-10: pe9/pe9-fex waits bumped 4/4 -> 45/45 -- the RESERVE/COMMIT
+# arena's per-window commit-on-first-touch cost (same root cause documented
+# in backtoback_gate.py this leg) makes pe9's ~250-call AVM sequence take
+# anywhere from ~8s to ~40s wall-clock depending on host load (live-measured
+# both ends this leg, isolated probe outside this gate); 45s covers the
+# observed worst case with margin. Harness timing-budget fix, not a
+# functional regression -- pe9 itself completes correctly every time given
+# the headroom.
 for cmd, wait in [("pe", 3), ("pe4", 3), ("pe5", 3), ("pe6", 6), ("pe7", 8), ("pe8", 8),
-                   ("pe9", 4), ("pe9 fex", 4), ("fb", 3)]:
+                   ("pe9", 45), ("pe9 fex", 45), ("fb", 3)]:
     send(cmd)
     drain(wait)
 
