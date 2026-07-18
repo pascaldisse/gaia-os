@@ -272,6 +272,7 @@ def main():
         rsp = RSP(args.gdb_socket)
         print(f"RSP qSupported={rsp.command('qSupported:multiprocess+')}" )
         print(f"RSP initial-stop={rsp.command('?')}")
+        print(f"RSP thread={rsp.command('Hc-1')}")
         serial = connect_serial(args.serial_socket)
         capture = SerialCapture(serial, transcript)
         capture.start()
@@ -295,6 +296,7 @@ def main():
         rsp = RSP(args.gdb_socket)
         print(f"RSP reattach-supported={rsp.command('qSupported:multiprocess+')}")
         print(f"RSP reattach-stop={rsp.command('?')}")
+        print(f"RSP reattach-thread={rsp.command('Hc-1')}")
         text = capture.text()
         bases = module_bases(text)
         hlt = args.hlt
