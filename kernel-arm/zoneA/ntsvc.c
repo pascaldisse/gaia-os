@@ -445,6 +445,59 @@ long NtQuerySystemInformation(unsigned long SystemInformationClass, void *System
 }
 
 // =====================================================================
+// CHALICE C4-6: NtQuerySystemInformationEx, ONE class only --
+// SystemSupportedProcessorArchitectures(181)/...Architectures2(230) --
+// the call RtlWow64GetProcessMachines (donor wine/dlls/ntdll/process.c:
+// 107-124) makes to learn current/native machine, which loader_init's
+// init_wow64 path (via wow64.dll's own process_init, dlls/wow64/
+// syscall.c:984) calls FIRST, before touching anything else -- observed
+// live (pe10 probe) as the exact next required syscall (id 203, wine-
+// arm64-syscalls.txt:205) once wow64.dll itself is mapped+relocated.
+// Struct (winnt.h _SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES_INFORMATION):
+// ONE bitfield DWORD per entry -- Machine:16, KernelMode:1, UserMode:1,
+// Native:1, Process:1, WoW64Container:1, ReservedZero0:11 -- array is
+// Machine==0-terminated (donor system.c:4176 `for (i=0;machines[i].
+// Machine;i++)`). This floor is single-arch-pair only (this C4 leg):
+// entry0 = native (ARM64, 0xAA64), entry1 = the guest/current machine
+// (0x14C i386, Process=1), entry2 = terminator. `query` is a HANDLE (the
+// process to report Process=1 for) -- unused here (single-process kernel,
+// same simplification NtQueryInformationProcess above already takes: the
+// live x18/TEB IS "the current process", there is no other to compare
+// against), so the guest/current entry is unconditionally Process=1.
+// =====================================================================
+#define SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES 181
+#define SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES2 230
+
+long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Query, unsigned long QueryLength,
+                                 void *SystemInformation, unsigned long SystemInformationLength,
+                                 unsigned long *ReturnLength) {
+    (void)Query; (void)QueryLength;
+    if (SystemInformationClass != SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES &&
+        SystemInformationClass != SYSTEM_SUPPORTED_PROCESSOR_ARCHITECTURES2)
+        return STATUS_NOT_IMPLEMENTED;
+
+    u32b need = 3 * 4;   // 2 real entries + 1 Machine==0 terminator, 4B each
+    if (ReturnLength) *ReturnLength = need;
+    if (!SystemInformation) return STATUS_INVALID_PARAMETER;
+    if (SystemInformationLength < need) return STATUS_INFO_LENGTH_MISMATCH;   // no STATUS_BUFFER_TOO_SMALL constant this floor, same-shape "too small" signal
+
+    u8 *out = (u8 *)SystemInformation;
+    // entry0: native == ARM64, this floor's own host arch.
+    wr32(out + 0, 0xAA64UL | (1UL << 16) /* KernelMode */ | (1UL << 17) /* UserMode */ |
+                  (1UL << 18) /* Native */);
+    // entry1: current/guest == i386, always Process=1 (single-process kernel).
+    wr32(out + 4, 0x14CUL | (1UL << 17) /* UserMode */ | (1UL << 19) /* Process */ |
+                  (1UL << 20) /* WoW64Container */);
+    wr32(out + 8, 0);   // terminator
+
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtQuerySystemInformationEx class="); puthex((u64b)SystemInformationClass);
+        puts(" -> native=0xAA64 current=0x14C\n");
+    }
+    return STATUS_SUCCESS;
+}
+
+// =====================================================================
 // Atom B — KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed physical
 // address, we populate directly — HANDOFF: "we ARE the unix side").
 // =====================================================================
@@ -503,6 +556,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTCREATEEVENT:              return "NtCreateEvent";
     case NT_SVC_NTQUERYINFORMATIONPROCESS:  return "NtQueryInformationProcess";
     case NT_SVC_NTQUERYSYSTEMINFORMATION:   return "NtQuerySystemInformation";
+    case NT_SVC_NTQUERYSYSTEMINFORMATIONEX: return "NtQuerySystemInformationEx";
     case NT_SVC_NTCONTINUE:                 return "NtContinue";
     case NT_SVC_NTCREATEKEY:                return "NtCreateKey";
     case NT_SVC_NTOPENKEY:                  return "NtOpenKey";
@@ -572,6 +626,10 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONPROCESS] = 5 * 8;
     nt_svc_table0[NT_SVC_NTQUERYSYSTEMINFORMATION] = (void *)NtQuerySystemInformation;
     nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATION] = 4 * 8;
+    // CHALICE C4-6: NtQuerySystemInformationEx(class, query, query_len,
+    // info, size, ret_size) -- 6 args.
+    nt_svc_table0[NT_SVC_NTQUERYSYSTEMINFORMATIONEX] = (void *)NtQuerySystemInformationEx;
+    nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATIONEX] = 6 * 8;
     nt_svc_table0[NT_SVC_NTCONTINUE] = (void *)NtContinue;
     nt_svc_argtable0[NT_SVC_NTCONTINUE] = 2 * 8;
 

@@ -102,6 +102,11 @@ long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInforma
                                 unsigned long *ReturnLength);
 long NtQuerySystemInformation(unsigned long SystemInformationClass, void *SystemInformation,
                                unsigned long SystemInformationLength, unsigned long *ReturnLength);
+// CHALICE C4-6: NtQuerySystemInformationEx -- see ntsvc.c for the one
+// class this floor answers (SystemSupportedProcessorArchitectures[2]).
+long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Query, unsigned long QueryLength,
+                                 void *SystemInformation, unsigned long SystemInformationLength,
+                                 unsigned long *ReturnLength);
 
 // Atom B: populate KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed
 // physical address, identity-mapped normal memory per kmain.c's mmu_on).

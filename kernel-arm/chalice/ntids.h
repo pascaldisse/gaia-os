@@ -39,6 +39,7 @@
 #define NT_SVC_NTCREATEEVENT              72
 #define NT_SVC_NTQUERYINFORMATIONPROCESS  25  // REAL
 #define NT_SVC_NTQUERYSYSTEMINFORMATION   54  // REAL
+#define NT_SVC_NTQUERYSYSTEMINFORMATIONEX 203  // REAL, CHALICE C4-6 (wine-arm64-syscalls.txt:205, 0xcb)
 #define NT_SVC_NTCONTINUE                 67   // REAL, slice-2 boss, Atom B
 #define NT_SVC_NTCREATEKEY                29
 #define NT_SVC_NTOPENKEY                  18
