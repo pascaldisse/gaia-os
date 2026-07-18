@@ -406,34 +406,19 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     // bytes FEX itself keeps in those two slots -- measured, not guessed.
     {
         u64 teb = regs[18];
-        u32 lo = 0, hi = 0;
         puts("CHALICE TLS PROBE: x18="); puthex(teb);
-        if (teb && nt_fault_read32(teb + 0x1480 + 16 * 8, &lo) &&
-            nt_fault_read32(teb + 0x1480 + 16 * 8 + 4, &hi)) {
-            u64 thread_state = ((u64)hi << 32) | lo;
+        if (teb && teb >= NT_RAM_BASE && teb + 0x1490 < NT_RAM_TOP) {
+            u64 thread_state = *(volatile u64 *)(teb + 0x1480 + 16 * 8);
+            u64 entry_ctx    = *(volatile u64 *)(teb + 0x1480 + 18 * 8);
             puts(" slot16(ThreadState)="); puthex(thread_state);
-        } else {
-            puts(" slot16(ThreadState)=UNREADABLE");
-        }
-        if (teb && nt_fault_read32(teb + 0x1480 + 18 * 8, &lo) &&
-            nt_fault_read32(teb + 0x1480 + 18 * 8 + 4, &hi)) {
-            u64 entry_ctx = ((u64)hi << 32) | lo;
             puts(" slot18(EntryContext)="); puthex(entry_ctx);
-            u32 clo = 0, chi = 0;
-            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_PC_OFF, &clo) &&
-                nt_fault_read32(entry_ctx + ARM64_CONTEXT_PC_OFF + 4, &chi)) {
-                puts(" ec.pc="); puthex(((u64)chi << 32) | clo);
-            }
-            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_SP_OFF, &clo) &&
-                nt_fault_read32(entry_ctx + ARM64_CONTEXT_SP_OFF + 4, &chi)) {
-                puts(" ec.sp="); puthex(((u64)chi << 32) | clo);
-            }
-            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8, &clo) &&
-                nt_fault_read32(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8 + 4, &chi)) {
-                puts(" ec.x18="); puthex(((u64)chi << 32) | clo);
+            if (entry_ctx && entry_ctx >= NT_RAM_BASE && entry_ctx + ARM64_CONTEXT_SIZE < NT_RAM_TOP) {
+                puts(" ec.pc="); puthex(*(volatile u64 *)(entry_ctx + ARM64_CONTEXT_PC_OFF));
+                puts(" ec.sp="); puthex(*(volatile u64 *)(entry_ctx + ARM64_CONTEXT_SP_OFF));
+                puts(" ec.x18="); puthex(*(volatile u64 *)(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8));
             }
         } else {
-            puts(" slot18(EntryContext)=UNREADABLE");
+            puts(" teb-out-of-range");
         }
         puts("\n");
     }
