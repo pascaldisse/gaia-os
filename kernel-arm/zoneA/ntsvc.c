@@ -652,6 +652,29 @@ void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp) {
     nt_wow64_ctx_valid = 1;
 }
 
+// CHALICE C4-11: see ntsvc.h receipt -- WOW64_CPURESERVED layout (this
+// file's own WOW64_CPURESERVED_HDR_SIZE/CTX32_* offsets above): Flags(2)+
+// Machine(2) header, then an inline I386_CONTEXT starting at +4. Same
+// field values NtQueryInformationThread(ThreadWow64Context) already
+// answers with (Ebp==Esp empty-frame convention, WOW64_SEGCS/SEGSS/
+// EFLAGS constants above) -- one real write, not a guess: this is the
+// exact struct native_pass0 dereferences directly (measured live, no
+// intervening syscall between TEB build and the fault).
+void nt_wow64_cpureserved_set_context(void *cpureserved_v, unsigned long eip, unsigned long esp) {
+    u8 *cr = (u8 *)cpureserved_v;
+    if (!cr) return;
+    // literal 4 == WOW64_CPURESERVED_HDR_SIZE (Flags+Machine, defined later
+    // in this file where nt_build_wow64_teb32 lives -- can't forward-
+    // reference a #define, so the value is duplicated here, not the meaning).
+    u8 *ctx = cr + 4;
+    wr32(ctx + CTX32_EBP_OFF, (u32b)esp);
+    wr32(ctx + CTX32_EIP_OFF, (u32b)eip);
+    wr32(ctx + CTX32_SEGCS_OFF, (u32b)WOW64_SEGCS);
+    wr32(ctx + CTX32_EFLAGS_OFF, (u32b)WOW64_EFLAGS);
+    wr32(ctx + CTX32_ESP_OFF, (u32b)esp);
+    wr32(ctx + CTX32_SEGSS_OFF, (u32b)WOW64_SEGSS);
+}
+
 long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformationClass,
                                void *ThreadInformation, unsigned long ThreadInformationLength,
                                unsigned long *ReturnLength) {

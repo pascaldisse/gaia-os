@@ -423,6 +423,12 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         if (!x86_stack_base) return boot_err("x86 guest stack alloc failed");
         u64b x86_stack_esp = x86_stack_base + NT_BOOT_STACK_SIZE - (NT_BOOT_STACK_SIZE / 4);
         nt_wow64_set_initial_context(exe_entry, x86_stack_esp);
+        // CHALICE C4-11: also seed the WOW64_CPURESERVED block's OWN
+        // embedded I386_CONTEXT -- native_pass0's first decode reads Eip
+        // straight from this TLS-slot memory (no syscall round-trip),
+        // measured live to be zero-filled otherwise (Data Abort far=0x2 ==
+        // 0+2, wowbox64.dll+0xF88BC). See ntsvc.h/ntsvc.c receipt.
+        nt_wow64_cpureserved_set_context(wow64_wire.cpureserved, exe_entry, x86_stack_esp);
         puts("CHALICE: x86 guest initial context eip="); puthex(exe_entry);
         puts(" esp="); puthex(x86_stack_esp); puts("\n");
     }

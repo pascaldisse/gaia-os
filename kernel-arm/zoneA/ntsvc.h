@@ -85,6 +85,16 @@ void nt_wow64_set_peb32(void *peb32);
 // Thread(ThreadWow64Context) to answer -- see ntsvc.c receipt. Set once by
 // ntboot.c right after nt_build_wow64_teb32 succeeds, same convention.
 void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp);
+// CHALICE C4-11: populate the embedded I386_CONTEXT inside a
+// WOW64_CPURESERVED block (TlsSlots[WOW64_TLS_CPURESERVED], nt_build_
+// wow64_teb32's own cpureserved out-param) with the SAME real initial
+// Eip/Esp -- native_pass0's first decode reads EIP directly from THIS
+// memory (TLS-slot pointer, no syscall round-trip), not from the
+// NtQueryInformationThread(ThreadWow64Context) answer alone; leaving it
+// zeroed faults the dynarec's first opcode fetch at address 0+2=2 (far=
+// 0x2, wowbox64.dll+0xF88BC, live-confirmed). Call once, right after
+// nt_wow64_set_initial_context, same call site/convention.
+void nt_wow64_cpureserved_set_context(void *cpureserved, unsigned long eip, unsigned long esp);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).
