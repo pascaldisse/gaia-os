@@ -231,3 +231,176 @@ multi-slice efforts in their own right — this spec stops here by design.
 - G4 ≈ 250-350 loc (flat message queue + dispatch + partial MessageCall) + 1
   test binary.
 - GPU fork: unsized until Pascal's ruling; expect multi-slice either way.
+
+---
+
+## GPU leg 0 — staged binaries (2026-07-18, Pascal's ruling: software Mesa
+as PE DLLs, NOT virtio-gpu/venus)
+
+**Monad ruling settles §3's fork**: no new QEMU device, no venus guest
+driver port. GPU path = real Mesa Gallium software rasterizers
+(lavapipe/llvmpipe), prebuilt as genuine `aarch64` Windows PE DLLs, loaded
+above the NT floor exactly like `chalice/stock/`'s ntdll/kernel32/
+kernelbase — same `PeMapImage`/territory-mapping mechanism, zero new guest
+substrate.
+
+### Provenance
+
+| file | source | version | sha256 | size |
+|---|---|---|---|---|
+| `vulkan_lvp.dll` (lavapipe Vulkan ICD) | github.com/mmozeiko/build-mesa release `26.1.5`, asset `mesa-lavapipe-arm64-26.1.5.7z` | mesa 26.1.5 (build date embedded 2026-07-16) | `062eb076838a38af7a55e9d9b8271c0bb843e5765ed3af09750b1adfb029e15a` (asset .7z; matches GitHub release API `digest` field exactly) | 51,477,504 B (extracted dll) / 9,911,337 B (.7z) |
+| `lvp_icd.aarch64.json` (Vulkan ICD manifest, `library_path: .\vulkan_lvp.dll`, `api_version: 1.4.354`) | same asset | same | n/a (142 B text) | 142 B |
+| `opengl32.dll` (llvmpipe GL, full opengl32.dll-replacement ICD model) | same repo, asset `mesa-llvmpipe-arm64-26.1.5.7z` | mesa 26.1.5 | `d4b4675c5877007efa1162e09baf9fe75826d77039ea8ea290920813a5b393e2` (asset .7z; matches GitHub release API `digest` exactly) | 54,611,456 B (extracted dll) / 12,800,266 B (.7z) |
+
+`build-mesa` = static/automatic CI builds of upstream Mesa for Windows
+x86/x64/arm64 (BSD/MIT per Mesa's own license, no GPL entanglement,
+distinct project from Hangover but same "real Windows Mesa binary" class of
+artifact `fetch-stock-dlls.sh` already established for ntdll/kernel32).
+Staged (gitignored, mirrors `chalice/stock/`) at `chalice/stock-gpu/`:
+`vulkan_lvp.dll`, `lvp_icd.aarch64.json`, `opengl32.dll`. Sibling assets in
+the same release NOT staged (out of scope this leg): `libEGL.dll`/
+`libGLESv2.dll`/`libGLESv1_CM.dll` (GLES, not needed — Teardown per HANDOFF
+is desktop GL), `mesa-d3d12-*`/`mesa-dzn-*`/`mesa-zink-*`/`mesa-mft-*`
+(D3D12-backed/media-foundation variants — wrong backend for a
+zero-real-GPU guest).
+
+### Arch proof — genuine ARM64 (0xAA64), not ARM64EC (0xA641)
+
+`llvm-objdump -f` (coff-arm64 format) + raw PE-header Machine-field read
+(same method as `fetch-stock-dlls.sh`'s `verify_one`, `e_lfanew@0x3c` →
+`Machine@e_lfanew+4`):
+
+```
+vulkan_lvp.dll: file format coff-arm64, architecture: aarch64, Machine=0xaa64
+opengl32.dll:   file format coff-arm64, architecture: aarch64, Machine=0xaa64
+```
+
+Both PE32+ (Magic `020b`), `ImageBase 0x180000000` — same ImageBase
+convention as `chalice/stock/`'s ntdll/kernel32/kernelbase (HANDOFF's
+ImageBase pattern holds for these too, no special-casing needed in
+`PeMapImage`).
+
+### Import-gap list — the real floor burn-down, grouped by DLL
+
+Both DLLs import the **identical 8-DLL set** (`llvm-objdump -p`, full dump):
+`api-ms-win-core-synch-l1-2-0.dll`, `KERNEL32.dll`, `USER32.dll`,
+`GDI32.dll`, `SHELL32.dll`, `ole32.dll`, `ADVAPI32.dll`, `ntdll.dll`. Every
+name below is resolved by the real stock DLL export (loaded as a normal PE,
+like kernel32/kernelbase already are) — the gap is NOT "import not found",
+it's "the Nt*/win32u syscall that export eventually calls down to isn't
+wired in `nt_service_tables[]` yet". Marked against HANDOFF's proven `pe8`
+surface + this kernel's real-service list.
+
+**`ntdll.dll` (6 fns, both DLLs identical): `VerSetConditionMask`,
+`RtlUnwind`, `RtlUnwindEx`, `RtlGetLastNtStatus`, `RtlLookupFunctionEntry`,
+`RtlPcToFileHeader`.** Gap: **none expected** — these are ordinary ntdll.dll
+*exports* (not Nt* syscalls), and `chalice/stock/ntdll.dll` is already the
+real Hangover binary, already mapped (`pe6`: "stock ntdll mapped"/"stock
+thunk enters"). Untested specifically for these 6 symbols, but same class
+as every other already-working ntdll export — low risk, not a new floor gap.
+
+**`KERNEL32.dll` (~150 fns, union of both DLLs).** Proven-served today (pe8
+surface walk, HANDOFF): `GetCommandLineA`/`GetCommandLineW`,
+`GetModuleHandleA`/`GetModuleHandleW`/`GetModuleHandleExW`, `GetProcAddress`,
+`GetProcessHeap`+`HeapAlloc`+`HeapFree`, `GetCurrentProcessId`,
+`GetLastError`/`SetLastError`, plus `WriteFile` (pe7, "kernel32 speaks").
+**Not yet served (the real gap, by category):**
+- *Threading*: `CreateThread`/`ExitThread`/`ResumeThread`/`GetExitCodeThread`,
+  `InitializeCriticalSection[Ex]`/`Enter/LeaveCriticalSection`/
+  `DeleteCriticalSection`, `AcquireSRWLock*`/`ReleaseSRWLock*`,
+  `InitOnceExecuteOnce`/`InitOnceBeginInitialize`/`InitOnceComplete`,
+  `Sleep`/`SleepConditionVariable*`/`WakeConditionVariable*`,
+  `WaitForSingleObject`, `TlsAlloc`/`TlsGetValue`/`TlsSetValue`/`TlsFree`,
+  `Thread32First`/`Thread32Next`/`CreateToolhelp32Snapshot`.
+- *Virtual memory beyond what's live*: `VirtualAlloc`/`VirtualFree`/
+  `VirtualProtect`/`VirtualQuery` — underlying `NtAllocate/Free/
+  ProtectVirtualMemory`/`NtQueryVirtualMemory` **are** real services
+  per HANDOFF; only the kernel32-level wrapper path is unexercised, likely
+  cheap once hit (same shape as `HeapAlloc`, already proven).
+- *File I/O beyond `NtOpenFile`/`ReadFile`/`WriteFile`*: `CreateFileW`,
+  `CreateFileMappingW`/`MapViewOfFile`/`UnmapViewOfFile`, `FindFirstFileExW`/
+  `FindNextFileW`/`FindClose`, `GetFileAttributes[Ex]W`, `SetFilePointerEx`,
+  `LockFileEx`/`UnlockFileEx`, `DeleteFileW`, `GetTempPathA`/
+  `GetTempFileNameA`, `SearchPathW`, `GetVolumePathNameW`, `GetDriveTypeW`.
+- *Process/env/system query*: `GetSystemInfo`/`GetNativeSystemInfo`,
+  `GlobalMemoryStatusEx`, `GetSystemDirectoryW`, `GetEnvironmentVariable[A/W]`,
+  `CreateProcessW`, `CreateJobObjectW`/`AssignProcessToJobObject`,
+  `QueryPerformanceCounter`/`QueryPerformanceFrequency`, `GetSystemTime*`.
+- *Console*: `GetStdHandle`, `WriteConsoleW`/`ReadConsoleW`,
+  `GetConsoleMode`/`GetConsoleScreenBufferInfo`/`SetConsoleTextAttribute`.
+- *Locale/string*: `MultiByteToWideChar`/`WideCharToMultiByte`,
+  `LCMapString[Ex/W]`, `GetLocaleInfo[Ex/W]`, `CompareStringW`,
+  `EnumSystemLocalesW`, `GetUserDefaultLCID`, `IsValidLocale` — partial
+  overlap with the already-proven NLS floor (`NtInitializeNlsFiles`/
+  `NtGetNlsSectionPtr`/`NtQueryDefaultLocale`), likely the cheapest bucket.
+
+**`USER32.dll` (union: `GetDC`, `GetClientRect`, `ReleaseDC`,
+`SetWindowsHookExA`/`UnhookWindowsHookEx`/`CallNextHookEx`, `GetWindowRect`,
+`ClientToScreen`, `LoadCursorA`/`LoadIconA`, `RegisterClassA`,
+`DefWindowProcA`, `WindowFromDC`, `CreateWindowExA`,
+`EnumDisplaySettingsA`, `DestroyWindow`, `AdjustWindowRectEx`).** Gap:
+**all unserved** — table 1 (`nt_service_tables[1]`) is still zeroed
+(C3-SPEC §1/§4 G1-G3). `GetDC`/`CreateWindowExA`/`RegisterClassA`/
+`DestroyWindow` map directly onto this spec's own G2/G3 atoms
+(`NtUserGetDC`, `NtUserCreateWindowEx`, `NtUserRegisterClassExWOW`,
+`NtUserDestroyWindow` — already in §1's table). `SetWindowsHookExA`/
+`EnumDisplaySettingsA`/`WindowFromDC` are new asks not yet in §1's traced
+minimum — extend the id table when first hit (same burn-down discipline as
+pe6→pe8), not blocking G1-G3.
+
+**`GDI32.dll` (union: `CreateDIBSection`, `StretchBlt`/`StretchDIBits`,
+`SelectObject`, `DeleteObject`, `DeleteDC`, `CreateCompatibleDC`,
+`GetObjectA`, `SetPixelFormat`/`GetPixelFormat`/`DescribePixelFormat`,
+`GetGlyphOutlineA`).** Gap: **all unserved**, same table-1-zeroed reason.
+`CreateCompatibleDC`/`CreateDIBSection`/`SelectObject`/`DeleteObject`/
+`DeleteDC` map directly onto G2's traced minimum (`NtGdiCreateCompatibleDC`,
+`NtGdiCreateDIBSection`, `NtGdiSelectBitmap`, `NtGdiDeleteObjectApp`).
+`SetPixelFormat`/`GetPixelFormat`/`DescribePixelFormat` are **WGL-specific,
+not in §1's traced list yet** — these are the pixel-format negotiation calls
+`wglCreateContext`/`wglMakeCurrent` need before any GL draw call; new ids to
+add to table 1 when GL work starts (own small atom, not sized here).
+`GetGlyphOutlineA`/`StretchDIBits` are GL's software text/blit fallback
+paths — lower priority, same burn-down-per-fault approach.
+
+**`ADVAPI32.dll` (union: `RegQueryValueExA`, `RegEnumKeyExA`,
+`RegGetValueW`, `RegOpenKeyExA`, `RegCloseKey`, `LookupPrivilegeValueW`,
+`AdjustTokenPrivileges`, `OpenProcessToken`, `CryptGenRandom`,
+`CryptAcquireContextW`/`CryptReleaseContext`).** Gap: registry floor exists
+(`NtCreateKey`/`NtOpenKey`/`NtQueryValueKey`/`NtSetValueKey`, HANDOFF) but is
+minimal-stub (`STATUS_OBJECT_NAME_NOT_FOUND`-only reads) — Mesa's registry
+probes (driver-override env-var-style config keys) will each return "not
+found" and fall through to defaults, same pattern NLS already relies on;
+likely fine as-is. `CryptGenRandom`/`CryptAcquireContextW` (used for GUID/
+cache-key generation) and token/privilege calls are **wholly unserved, no
+equivalent Nt* exists yet** — new small surface if Mesa's init path hard-
+requires them (untested which do).
+
+**`SHELL32.dll` (`SHGetKnownFolderPath`, both DLLs) / `ole32.dll`
+(`CoTaskMemFree`, both DLLs).** Gap: **both wholly unserved.**
+`SHGetKnownFolderPath` (shader-cache directory lookup, e.g.
+`FOLDERID_LocalAppData`) has no NT-service equivalent in this floor at all
+— smallest-effort fix is likely a **pure kernel32/shell32-level stub**
+(return a fixed in-territory path string, no real filesystem persistence
+needed since there's no real disk) rather than a new Nt* service.
+`CoTaskMemFree` is a trivial COM heap free (can shim onto the existing
+`HeapFree` plumbing) — no OLE/COM object model needed for just this one
+call.
+
+### Net for C3/C4 planning
+
+The GPU-specific new asks beyond §1's already-planned G1-G4 ladder are
+small: WGL pixel-format calls (`SetPixelFormat`/`GetPixelFormat`/
+`DescribePixelFormat`) + a `SHGetKnownFolderPath` stub +
+`CryptGenRandom`/`CryptAcquireContextW` (untested necessity). Everything
+else Mesa needs from `USER32`/`GDI32.dll` is **already** on the G1-G4
+burn-down list this spec wrote before this binary ever existed — the DLLs
+validate the ladder's shape rather than expanding it. `KERNEL32.dll`'s
+threading/file/console/locale gap is the larger real remaining burn-down,
+shared with any non-GPU userland (hello9+ would hit the same wall) — not
+GPU-specific.
+
+**Not yet run**: no `hello`-class test binary loads these DLLs this leg
+(staging only, per task scope — no zoneA edits, no boot). First real test
+is whichever atom (G1-G3 or a WGL-specific one) first calls `LoadLibraryW`
+on `stock-gpu/opengl32.dll`/`vulkan_lvp.dll` and hits its first
+`CHALICE FAULT`.

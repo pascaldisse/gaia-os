@@ -10,3 +10,4 @@ wine/
 *.img
 .DS_Store
 kernel-arm/chalice/stock/
+kernel-arm/chalice/stock-gpu/
