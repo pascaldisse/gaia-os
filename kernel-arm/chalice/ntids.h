@@ -197,8 +197,10 @@
 // numbering, 0x4030/0x4039/0x403a) under this one key. Same free-pseudo-
 // handle idiom as NT_REGISTRY_WOW64CPU_KEY_HANDLE/NT_REGISTRY_KEY_HANDLE.
 #define NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE 0x8CUL
-// REG_QWORD (winnt.h RegistryValueType) -- Type field for the CP-4030/4039/
-// 403A KEY_VALUE_PARTIAL_INFORMATION answers (ntfile.c NtQueryValueKey).
+// Registry constants (winnt.h). FEX's RegGetValueA bridge calls
+// NtQueryValueKey with KeyValuePartialInformation, whose 12-byte header is
+// TitleIndex/Type/DataLength followed by Data[]; CP values are REG_QWORD.
+#define KEY_VALUE_PARTIAL_INFORMATION 2UL
 #define REG_QWORD 11UL
 
 // ---- CHALICE C4-14: distinct pseudo-handle for the bare "\Registry\Machine"

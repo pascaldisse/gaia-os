@@ -1049,8 +1049,8 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 }
 
 // =====================================================================
-// CHALICE C4-13: real ARM64 ID-register reads. This kernel runs at EL1
-// (kmain.c mmu_on) -- ID_AA64* register reads are unconditionally legal
+// CHALICE C4-16: real ARM64 CPU-register reads. This kernel runs at EL1
+// (kmain.c mmu_on) -- ID_AA64*/MIDR/CTR reads are unconditionally legal
 // there (ARM ARM D17.2: EL1 access is trapped to EL2 only if a hypervisor
 // sets HCR_EL2.TID3, and this floor never installs an EL2 -- we ARE the
 // only privilege level below EL1's own guest, same "we ARE the unix side"
@@ -1060,22 +1060,31 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 // + an emulated mrs trap because IT runs at EL0 under a real Linux kernel;
 // we have no such intermediary to trap through, so we skip that whole
 // mechanism and read the real hardware register directly).
+//
+// Windows' CentralProcessor value name "CP xxxx" packs an AArch64 sysreg
+// S<op0>_<op1>_C<CRn>_C<CRm>_<op2> as:
+//   ((op0 - 2) << 14) | (op1 << 11) | (CRn << 7) | (CRm << 3) | op2.
+// Derivation: CP 4030 = S3_0_C0_C6_0 (ID_AA64ISAR0_EL1): 0x4000 + 6<<3;
+// CP 5801 = S3_3_C0_C0_1 (CTR_EL0): 0x4000 + 3<<11 + 1.  The complete
+// table below is therefore encoded from architectural register names, not
+// an unverified CP-number list. NtQueryValueKey exposes each raw mrs value.
 // =====================================================================
-unsigned long nt_read_id_aa64isar0(void) {
-    unsigned long v;
-    __asm__ volatile("mrs %0, id_aa64isar0_el1" : "=r"(v));
-    return v;
-}
-unsigned long nt_read_id_aa64mmfr1(void) {
-    unsigned long v;
-    __asm__ volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(v));
-    return v;
-}
-unsigned long nt_read_id_aa64mmfr2(void) {
-    unsigned long v;
-    __asm__ volatile("mrs %0, id_aa64mmfr2_el1" : "=r"(v));
-    return v;
-}
+#define NT_READ_SYSREG(name, reg) \
+    unsigned long name(void) { unsigned long v; __asm__ volatile("mrs %0, " #reg : "=r"(v)); return v; }
+
+NT_READ_SYSREG(nt_read_midr_el1, midr_el1)
+NT_READ_SYSREG(nt_read_id_aa64pfr0, id_aa64pfr0_el1)
+NT_READ_SYSREG(nt_read_id_aa64pfr1, id_aa64pfr1_el1)
+NT_READ_SYSREG(nt_read_id_aa64zfr0, id_aa64zfr0_el1)
+NT_READ_SYSREG(nt_read_id_aa64isar0, id_aa64isar0_el1)
+NT_READ_SYSREG(nt_read_id_aa64isar1, id_aa64isar1_el1)
+NT_READ_SYSREG(nt_read_id_aa64isar2, id_aa64isar2_el1)
+NT_READ_SYSREG(nt_read_id_aa64mmfr0, id_aa64mmfr0_el1)
+NT_READ_SYSREG(nt_read_id_aa64mmfr1, id_aa64mmfr1_el1)
+NT_READ_SYSREG(nt_read_id_aa64mmfr2, id_aa64mmfr2_el1)
+NT_READ_SYSREG(nt_read_ctr_el0, ctr_el0)
+
+#undef NT_READ_SYSREG
 
 // =====================================================================
 // Atom B — KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed physical

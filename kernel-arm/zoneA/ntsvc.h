@@ -141,15 +141,20 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 // physical address, identity-mapped normal memory per kmain.c's mmu_on).
 // Idempotent-by-caller: invoked once from nt_service_tables_init().
 void nt_kuser_init(void);
-// CHALICE C4-13: real ARM64 ID-register reads (mrs, direct -- this kernel
-// runs at EL1 with no hypervisor trapping ID-register access, ARM ARM
-// D17.2). Feed both nt_kuser_init's KUSER_SHARED_DATA.ProcessorFeatures
-// population (this file) AND ntfile.c's CentralProcessor\0 registry-value
-// floor (NtQueryValueKey "CP 4030"/"CP 4039"/"CP 403A") -- ONE real mrs
-// read per register, no hand-picked feature-bit list (IRON law).
+// CHALICE C4-16: real ARM64 CPU-register reads; direct EL1 mrs. Feed both
+// nt_kuser_init's feature derivation and CentralProcessor\0 REG_QWORD values;
+// every CP xxxx value comes from the named hardware register, never constants.
+unsigned long nt_read_midr_el1(void);
+unsigned long nt_read_id_aa64pfr0(void);
+unsigned long nt_read_id_aa64pfr1(void);
+unsigned long nt_read_id_aa64zfr0(void);
 unsigned long nt_read_id_aa64isar0(void);
+unsigned long nt_read_id_aa64isar1(void);
+unsigned long nt_read_id_aa64isar2(void);
+unsigned long nt_read_id_aa64mmfr0(void);
 unsigned long nt_read_id_aa64mmfr1(void);
 unsigned long nt_read_id_aa64mmfr2(void);
+unsigned long nt_read_ctr_el0(void);
 
 // CHALICE C3c Atom 3C-1: dispatcher call-log. Cheap, removable-later debug
 // aid -- serial line per incoming service id for the first

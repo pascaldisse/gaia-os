@@ -1618,7 +1618,13 @@ long NtOpenKeyEx(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttr
 
 long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,
                       void *KeyValueInformation, unsigned long Length, unsigned long *ResultLength) {
-    (void)KeyValueInformationClass;
+    // FEX's RegGetValueA bridge calls exactly KeyValuePartialInformation
+    // (FEX/Source/Windows/Common/WinAPI/Misc.cpp); never pretend a partial
+    // information buffer satisfies an unrelated KEY_VALUE_INFORMATION_CLASS.
+    if (KeyValueInformationClass != KEY_VALUE_PARTIAL_INFORMATION) {
+        if (ResultLength) *ResultLength = 0;
+        return STATUS_INVALID_INFO_CLASS;
+    }
     // CHALICE C4-6: the wow64-cpu-backend key's DEFAULT value (get_cpu_dll_
     // name queries with an empty ValueName, i.e. the key's default value) --
     // answer with our chosen backend name as a REG_SZ, KEY_VALUE_PARTIAL_
@@ -1644,19 +1650,26 @@ long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInf
         }
         return STATUS_SUCCESS;
     }
-    // CHALICE C4-13: the CentralProcessor\0 key's 3 real ID-register values
-    // -- "CP 4030"/"CP 4039"/"CP 403A" (box64 hostext_wine.c ground truth,
-    // ntids.h receipt), each a REG_QWORD raw mrs dump (nt_read_id_aa64isar0/
-    // _mmfr1/_mmfr2, ntsvc.c, real EL1 register reads -- not hand-picked).
-    // Any OTHER value name under this key (real Windows-on-ARM64 answers
-    // several more CP-xxxx entries box64 never reads) -> NOT_FOUND, same
-    // "no hive beyond what's needed" contract as every other key here.
+    // CHALICE C4-16: CentralProcessor\0's complete FEX CPU-feature contract.
+    // "CP xxxx" is Windows' packed sysreg encoding, derived in ntsvc.c:
+    // ((op0-2)<<14)|(op1<<11)|(CRn<<7)|(CRm<<3)|op2. Each REG_QWORD is a
+    // fresh raw EL1 mrs value: no CPU-model constants or hand-picked bits.
+    // Any other value remains absent, which FEX's ReadRegU64 deliberately
+    // treats as zero.
     if (KeyHandle == (void *)NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE) {
         u64b value = 0;
         int found = 1;
-        if (nt_us_name_matches_ascii(ValueName, "CP 4030"))      value = nt_read_id_aa64isar0();
+        if      (nt_us_name_matches_ascii(ValueName, "CP 4000")) value = nt_read_midr_el1();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4020")) value = nt_read_id_aa64pfr0();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4021")) value = nt_read_id_aa64pfr1();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4024")) value = nt_read_id_aa64zfr0();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4030")) value = nt_read_id_aa64isar0();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4031")) value = nt_read_id_aa64isar1();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4032")) value = nt_read_id_aa64isar2();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4038")) value = nt_read_id_aa64mmfr0();
         else if (nt_us_name_matches_ascii(ValueName, "CP 4039")) value = nt_read_id_aa64mmfr1();
         else if (nt_us_name_matches_ascii(ValueName, "CP 403A")) value = nt_read_id_aa64mmfr2();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 5801")) value = nt_read_ctr_el0();
         else found = 0;
         if (!found) {
             if (ResultLength) *ResultLength = 0;
