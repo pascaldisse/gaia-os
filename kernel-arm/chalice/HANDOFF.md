@@ -256,6 +256,72 @@ budget rather than start it uncommitted/rushed.
 the 4 new two-root proof lines) + `pe8_gate.py` standalone both verified
 PASS live at HEAD.
 
+## CHALICE C4 state refresh (2026-07-18, leg 5 -- HEAD `52e4542`)
+
+**C4-5 prerequisite COMPLETE, verified live, both CPU backends:**
+- **PE32 (i386) image machinery** (`pemod.c`, `05f1eac`): `PeMapImage`/
+  `pe_query_image_info` accept OptionalHeader magic `0x10B` (PE32) +
+  Machine `0x14C` (i386) alongside PE32+/ARM64 -- 32-bit field widths
+  (ImageBase@0x1C, StackReserve/Commit@0x48/0x4C, NumberOfRvaAndSizes/
+  DataDirectory@0x5C/0x60, all DWORD not QWORD; SizeOfImage/SizeOfHeaders/
+  Subsystem etc. land at IDENTICAL offsets on both magics, unchanged
+  macros reused) -- donor-grounded (`wine/include/winnt.h`
+  `IMAGE_OPTIONAL_HEADER32`). Base relocations: `IMAGE_REL_BASED_HIGHLOW`
+  (type 3, 32-bit add) alongside existing DIR64 -- same `apply_relocs`
+  semantics (scar #6 unchanged). New assert: PE32 image (alloc+
+  SizeOfImage) must land below `0x100000000` -- legible `pe_err` if not
+  (territory allocator is `0x45000000+`, well under 4GB, never expected to
+  fire). `NtCreateSection`/`NtMapViewOfSection`/`NtQuerySection` (ntfile.c)
+  needed ZERO changes -- they already delegate generically to
+  `PeMapImage`/`pe_query_image_info`.
+- **Section-path live proof** (`ntboot.c` `nt_pe32_section_selftest`,
+  `dd99987`): real `NtOpenFile` -> `NtCreateSection(SEC_IMAGE)` ->
+  `NtQuerySection(SectionImageInformation)` -> `NtMapViewOfSection` chain
+  over TWO genuine i386 blobs -- `syswow64/ntdll.dll` (stock) and
+  `hello8_x86.exe` (C4-1 recon artifact, now added to the disk populate
+  set) -- both resolve `Machine=0x14C` via the FORMAT-CORRECT parser (not
+  the earlier slice's raw-byte-read fstest workaround) and map
+  successfully below 4GB (bases `0x4D7D0000`/`0x4EA40000`). New required-
+  green lines in `pe9_gate.py` (`pe32sec syswow64-ntdll`/`pe32sec
+  hello8-x86-exe`, `Machine=0x14C` substring).
+- **Boot-path measure** (`shell.c`/`scratch/pe10_probe.py`, `52e4542`,
+  opt-in `pe10` verb, isolated -- never the canonical gate): `nt_boot_process`
+  UNCHANGED, main-image blob swapped to `hello8_x86.exe` (now mappable at
+  all). Stock ntdll runs FAR into real process init (NLS maps, locale,
+  registry pseudo-keys, heap/VM negotiation -- identical to pe6/7/8's
+  proven native path) then FAULTS exactly where expected:
+  `kernel32.dll+0x37008` (its own process-startup thunk) calls the
+  resolved entry point DIRECTLY as native code -- `elr=hello8_x86.exe+0x1000`
+  (the exe's real entry RVA), `ec=0` (undefined instruction -- raw x86
+  opcode bytes decoded as garbage ARM64). Root cause, not a bug: our boot
+  path gives ntdll/kernel32 NO WOW64 signal (no WOW64-shaped PEB/TEB
+  fields wired into `nt_boot_process` itself -- that machinery
+  (`nt_build_wow64_teb32`, TEB32/PEB32/CROSSPROCESSWORKLIST) exists but
+  only in the SEPARATE `nt_boot_wow64_probe` function, C4-3/4 territory,
+  never plugged into the real boot path), so kernel32 assumes a normal
+  native launch and jumps straight into the (x86) entry point instead of
+  routing through wow64cpu/`BTCpuSimulate`.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines incl.
+the 2 new pe32sec lines) + `pe8_gate.py` standalone both verified PASS
+live at HEAD. qemu leak-checked (pgrep+kill) before/after every boot.
+
+**Exact next step (C4-5 continuation):** wire `nt_boot_process`'s own
+WOW64 detection/signal into the boot path itself -- either (a) grow
+`nt_boot_process` with a wow64-mode branch that plugs `nt_build_wow64_teb32`'s
+TEB32/PEB32/WOW64INFO/CROSSPROCESSWORKLIST structures into the SAME TEB
+the real boot uses (today two disconnected code paths: the real boot
+builds a plain 64-bit TEB via `nt_build_teb`, the probe builds a
+throwaway one via a SEPARATE `nt_build_teb(0,0,0)` call) so stock
+kernel32's own `BaseThreadInitThunk`-equivalent sees the WOW64 markers and
+takes the `wow64cpu`/`BTCpuSimulate` branch instead of a direct call; or
+(b) trace kernel32.dll+0x37008 in the donor (`llvm-objdump` against stock
+`kernel32.dll`, ImageBase `0x180000000` file-RVA convention) to find
+EXACTLY which WOW64-check it skips, ground the minimal signal needed
+rather than wiring the whole TEB32/PEB32 apparatus blind. `pe10` (opt-in,
+isolated) is the harness for iterating on this -- never wire it into
+`pe9_gate.py`'s canonical path until it stops crash-faulting.
+
 ## Immediate next step for a fresh session
 
 `hello7`/`pe8`'s widened KERNEL32.dll surface walk is green (this slice) —
