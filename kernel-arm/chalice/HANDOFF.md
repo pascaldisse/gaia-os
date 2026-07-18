@@ -1,3 +1,45 @@
+## State refresh (2026-07-18, C3c-2p) -- PURE DIAGNOSTIC: wcslen-fault register/backtrace dump pins cause to bucket (b), pemod/kernelbase-mapping data bug (NOT index math, NOT token/SID)
+HEAD `8ee2e0d`. Extended sync_handler (kmain.c, source-only, +ntfile.c/.h
+helper) with a real x29 fp-chain backtrace + targeted resolve_line calls
+for x1/x8/x21 + a root_key_names[0..1] live-memory spot-check read
+straight out of the mapped kernelbase.dll (via new nt_image_base_by_name).
+LIVE RESULT (pe7, HEAD `8ee2e0d`, byte-identical fault to every prior
+atom -- esr=0x96000004 elr=ntdll.dll+0x7857C far=0xFFFFFFFF32E3DA98):
+lr(x30)=ntdll.dll+0x5DF40 resolves to **RtlInitUnicodeString+0x1c**
+(objdump export-table nearest-match, ntdll.dll donor); stack word[1] and
+backtrace confirm caller kernelbase.dll+0x65C34 = **RegCreateKeyExW+0x170**
+(function span 0x65AC4-0x65FC4 confirms it's inside the body, not past
+it) -- so the call chain IS exactly what HANDOFF guessed:
+RegCreateKeyExW -> get_special_root_hkey-equivalent -> RtlInitUnicodeString
+(dest, root_key_names[w21]) -> wcslen(garbage). w21=x21=**2**
+(=HKEY_LOCAL_MACHINE, HandleToUlong(0x80000002)-0x80000000), a VALID
+index 0..6 -> **(a) bad-index FALSIFIED**. Index 2 is not index 1
+(HKEY_CURRENT_USER), so per the donor contract only idx1 routes through
+RtlOpenCurrentUser/process-token -> **(c) token/SID FALSIFIED** (this
+fault path never touches that code at all). root_key_names[0]=
+`0xFFFFFFFF32E3DA50`, root_key_names[1]=`0x0000000000000000` (read live
+from kb_base+0x11cc18, kb_base=0x59690000 this boot) -- NEITHER matches
+the expected-correctly-relocated shape (~0x597xxxxx, load_base+string-RVA)
+NOR the expected-un-relocated-raw-file-pointer shape (~0x18011xxxx);
+[0]'s value sits in the same suspicious `0xFFFFFFFF32E3Dxxx` neighborhood
+as the actual fault pointers (x0=x1=far=`0xFFFFFFFF32E3DA98`, only 0x48
+apart), i.e. the table itself holds non-conforming/garbage-looking data,
+not a clean unrelocated-but-otherwise-valid pointer. With (a) and (c)
+both cleanly falsified by measurement, **CONCLUSION: (b) -- a
+pemod/kernelbase-mapping data bug -- is what the data proves by
+elimination**, though this atom did NOT pin the exact mechanism (missed
+DIR64 reloc vs section-bytes-not-copied vs zero-fill gap); next atom:
+compare kb_base+0x11cc18's live bytes against the ON-DISK kernelbase.dll
+file bytes at the matching file-offset for that RVA, to see whether the
+raw copy is even correct pre-relocation.
+No-regression gate green: scratch/pe7_gate.py (all 14 required-green
+lines OK, unchanged) + scratch/ramfb_gate.py (all 7 checks OK). No qemu
+leaks. Source-only commits (`79ef27c`, `8ee2e0d`) -- kmain.c/ntfile.c/
+ntfile.h only; build artifacts left uncommitted per convention. No fix
+attempted this atom (diagnostic-only per instruction).
+
+---
+
 ## State refresh (2026-07-18, C3c-2o) -- minimal registry floor (NtCreateKey/NtOpenKey/NtQueryValueKey/NtSetValueKey/NtQueryDefaultLocale) IMPLEMENTED + VERIFIED WORKING; registry-value-garbage-read HYPOTHESIS FALSIFIED live -- wcslen fault unchanged, real cause is elsewhere (likely NLS blob data/version, not the registry)
 HEAD `a7876bb`. Registry-floor handlers (ntfile.c) + 2 new real ids
 (NtSetValueKey=96/0x60, NtQueryDefaultLocale=21/0x15; NtCreateKey=29/
