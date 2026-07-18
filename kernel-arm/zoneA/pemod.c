@@ -22,6 +22,7 @@ static u32b rd32(const u8 *p) {
 }
 static u64b rd64(const u8 *p) { return (u64b)rd32(p) | ((u64b)rd32(p + 4) << 32); }
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
+static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 
 // ---- PE/COFF header field offsets (fixed by the file format itself, not
 // data-derived — same status as struct-member offsets in a C ABI) ----
@@ -61,10 +62,26 @@ static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (
 #define IMPDESC_FT          16            // FirstThunk
 
 #define PE32PLUS_MAGIC          0x20B
+// CHALICE C4-5: PE32 (i386 guest) support alongside PE32+ (ARM64 host).
+// Donor: wine/include/winnt.h IMAGE_OPTIONAL_HEADER32 (cited at each use
+// below) -- 32-bit optional header drops BaseOfData's PE32+ absence and
+// narrows ImageBase/StackReserve/StackCommit to 4-byte fields, which
+// shifts ONLY those three field offsets (SizeOfImage/SizeOfHeaders/
+// Subsystem/etc. land at IDENTICAL offsets on both magics -- verified
+// field-by-field against the donor struct, existing OPT_* macros above
+// are reused unchanged for those).
+#define PE32_MAGIC              0x10B
+#define OPT_IMAGEBASE32         0x1C   // winnt.h:3062 (DWORD, after BaseOfData@0x18)
+#define OPT_STACKRESERVE32      0x48   // winnt.h:3077 (DWORD, not QWORD)
+#define OPT_STACKCOMMIT32       0x4C   // winnt.h:3078 (DWORD, not QWORD)
+#define OPT_NUMBER_OF_DIRS32    0x5C   // winnt.h:3082 (NumberOfRvaAndSizes)
+#define OPT_DATA_DIRS32         0x60   // winnt.h:3083 (DataDirectory[])
 #define IMAGE_FILE_MACHINE_ARM64 0xAA64
+#define IMAGE_FILE_MACHINE_I386  0x14C
 #define IMAGE_DIR_IMPORT         1
 #define IMAGE_DIR_BASERELOC      5
 #define IMAGE_REL_BASED_ABSOLUTE 0
+#define IMAGE_REL_BASED_HIGHLOW  3
 #define IMAGE_REL_BASED_DIR64    10
 
 static long pe_err(const char *tag, const char *msg) {
@@ -116,24 +133,35 @@ long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, P
 
     const u8 *coff = pe + 4;
     u16b machine = rd16(coff + COFF_MACHINE);
-    if (machine != IMAGE_FILE_MACHINE_ARM64) return pe_err(tag, "COFF machine is not ARM64 (0xAA64)");
+    if (machine != IMAGE_FILE_MACHINE_ARM64 && machine != IMAGE_FILE_MACHINE_I386)
+        return pe_err(tag, "COFF machine not ARM64 (0xAA64) or i386 (0x14C)");
 
     u16b nsections   = rd16(coff + COFF_NSECTIONS);
     u16b opthdr_size = rd16(coff + COFF_OPTHDR_SIZE);
     const u8 *opt = coff + COFF_HDR_SIZE;
     if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE + opthdr_size > len)
         return pe_err(tag, "optional header out of file bounds");
-    if (opthdr_size < OPT_DATA_DIRS) return pe_err(tag, "optional header too small (no data dirs)");
+    if (opthdr_size < OPT_DATA_DIRS32) return pe_err(tag, "optional header too small (no data dirs)");
 
+    // CHALICE C4-5: accept PE32 (0x10B, i386 guest) alongside PE32+ (0x20B,
+    // ARM64 host) -- magic/machine must agree (donor: is_valid_binary-class
+    // gate, both fields describe the SAME image, never mixed).
     u16b magic = rd16(opt + OPT_MAGIC);
-    if (magic != PE32PLUS_MAGIC) return pe_err(tag, "not PE32+ (expected 64-bit optional header)");
+    int is_pe32 = (magic == PE32_MAGIC);
+    if (magic != PE32PLUS_MAGIC && !is_pe32)
+        return pe_err(tag, "optional header magic not PE32+ (0x20B) or PE32 (0x10B)");
+    if (is_pe32 && machine != IMAGE_FILE_MACHINE_I386)
+        return pe_err(tag, "PE32 optional header on non-i386 machine");
+    if (!is_pe32 && machine != IMAGE_FILE_MACHINE_ARM64)
+        return pe_err(tag, "PE32+ optional header on non-ARM64 machine");
+    if (!is_pe32 && opthdr_size < OPT_DATA_DIRS) return pe_err(tag, "optional header too small (no data dirs)");
 
     u32b entry_rva     = rd32(opt + OPT_ENTRYPOINT_RVA);
-    u64b image_base    = rd64(opt + OPT_IMAGEBASE);
+    u64b image_base    = is_pe32 ? (u64b)rd32(opt + OPT_IMAGEBASE32) : rd64(opt + OPT_IMAGEBASE);
     u32b size_of_image = rd32(opt + OPT_SIZEOFIMAGE);
     u32b size_of_hdrs  = rd32(opt + OPT_SIZEOFHEADERS);
-    u32b num_dirs      = rd32(opt + OPT_NUMBER_OF_DIRS);
-    const u8 *dirs      = opt + OPT_DATA_DIRS;
+    u32b num_dirs      = rd32(opt + (is_pe32 ? OPT_NUMBER_OF_DIRS32 : OPT_NUMBER_OF_DIRS));
+    const u8 *dirs      = opt + (is_pe32 ? OPT_DATA_DIRS32 : OPT_DATA_DIRS);
 
     if (entry_rva >= size_of_image) return pe_err(tag, "entry point RVA outside image");
 
@@ -141,6 +169,14 @@ long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, P
     // contract), copy headers + sections ----
     u8 *alloc = allocfn(size_of_image);
     if (!alloc) return pe_err(tag, "image allocator failed");
+
+    // CHALICE C4-5 atom: 32-bit (PE32) images MUST land below 4GB -- the
+    // guest's own 32-bit pointers/CONTEXT can't address higher. Territory
+    // allocator (nt_territory_alloc, ntfile.c: 0x45000000..0x7ff00000) is
+    // already well under 4GB, but assert it explicitly rather than trust
+    // that invariant silently -- legible CHALICE FAULT if it ever isn't.
+    if (is_pe32 && ((u64b)(u64)alloc + (u64b)size_of_image) > 0x100000000ULL)
+        return pe_err(tag, "CHALICE FAULT: PE32 image mapped at/above 4GB boundary (WOW64 requires <4GB)");
 
     u32b hcopy = size_of_hdrs < len ? size_of_hdrs : (u32b)len;
     if (hcopy > size_of_image) hcopy = size_of_image;
@@ -206,11 +242,22 @@ long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, P
                     u16b type  = entry >> 12;
                     u16b pgoff = entry & 0xFFF;
                     if (type == IMAGE_REL_BASED_ABSOLUTE) continue;   // padding, skip
-                    if (type != IMAGE_REL_BASED_DIR64)
-                        return pe_err(tag, "unsupported base relocation type (only DIR64 handled)");
                     u8 *target = alloc + page_rva + pgoff;
-                    u64b val = rd64(target);
-                    wr64(target, val + (u64b)delta);
+                    if (type == IMAGE_REL_BASED_DIR64) {
+                        u64b val = rd64(target);
+                        wr64(target, val + (u64b)delta);
+                    } else if (type == IMAGE_REL_BASED_HIGHLOW) {
+                        // CHALICE C4-5: PE32 (i386) 32-bit base relocation
+                        // (donor winnt.h IMAGE_REL_BASED_HIGHLOW=3) -- same
+                        // apply_relocs semantics as DIR64 (HANDOFF scar #6:
+                        // guest self-relocates SEC_IMAGE maps, kernel-side
+                        // apply_relocs=1 is only for ntboot.c's own
+                        // Phase-0 bootstrap/PeRun standalone-exe paths).
+                        u32b val = rd32(target);
+                        wr32(target, val + (u32b)delta);
+                    } else {
+                        return pe_err(tag, "unsupported base relocation type (only DIR64/HIGHLOW handled)");
+                    }
                 }
                 off += block_sz;
             }
@@ -381,24 +428,30 @@ long pe_query_image_info(const unsigned char *img, unsigned long lenL, PeImageIn
     u16b characteristics = rd16(coff + COFF_CHARACTERISTICS);
     const u8 *opt = coff + COFF_HDR_SIZE;
     if ((u64b)e_lfanew + 4 + COFF_HDR_SIZE + opthdr_size > len) return -1;
-    if (opthdr_size < OPT_DATA_DIRS) return -1;
+    if (opthdr_size < OPT_DATA_DIRS32) return -1;
 
+    // CHALICE C4-5: PE32 (i386) alongside PE32+ (ARM64) -- same is_pe32
+    // gate/field-width split as PeMapImage above.
     u16b magic = rd16(opt + OPT_MAGIC);
-    if (magic != PE32PLUS_MAGIC) return -1;
+    int is_pe32 = (magic == PE32_MAGIC);
+    if (magic != PE32PLUS_MAGIC && !is_pe32) return -1;
+    if (is_pe32 && machine != IMAGE_FILE_MACHINE_I386) return -1;
+    if (!is_pe32 && machine != IMAGE_FILE_MACHINE_ARM64) return -1;
+    if (!is_pe32 && opthdr_size < OPT_DATA_DIRS) return -1;
 
     u32b size_of_code  = rd32(opt + OPT_SIZEOFCODE);
     u32b entry_rva     = rd32(opt + OPT_ENTRYPOINT_RVA);
-    u64b image_base    = rd64(opt + OPT_IMAGEBASE);
+    u64b image_base    = is_pe32 ? (u64b)rd32(opt + OPT_IMAGEBASE32) : rd64(opt + OPT_IMAGEBASE);
     u16b os_major       = rd16(opt + OPT_MAJOROSVER);
     u16b os_minor       = rd16(opt + OPT_MINOROSVER);
     u16b subsys_major   = rd16(opt + OPT_MAJORSUBSYSVER);
     u16b subsys_minor   = rd16(opt + OPT_MINORSUBSYSVER);
     u16b subsystem      = rd16(opt + OPT_SUBSYSTEM);
     u16b dll_char       = rd16(opt + OPT_DLLCHARACTERISTICS);
-    u64b stack_reserve  = rd64(opt + OPT_STACKRESERVE);
-    u64b stack_commit   = rd64(opt + OPT_STACKCOMMIT);
-    u32b num_dirs       = rd32(opt + OPT_NUMBER_OF_DIRS);
-    const u8 *dirs       = opt + OPT_DATA_DIRS;
+    u64b stack_reserve  = is_pe32 ? (u64b)rd32(opt + OPT_STACKRESERVE32) : rd64(opt + OPT_STACKRESERVE);
+    u64b stack_commit   = is_pe32 ? (u64b)rd32(opt + OPT_STACKCOMMIT32) : rd64(opt + OPT_STACKCOMMIT);
+    u32b num_dirs       = rd32(opt + (is_pe32 ? OPT_NUMBER_OF_DIRS32 : OPT_NUMBER_OF_DIRS));
+    const u8 *dirs       = opt + (is_pe32 ? OPT_DATA_DIRS32 : OPT_DATA_DIRS);
 
     // ---- loader_flags: 1 iff a non-empty COM_DESCRIPTOR (CLR) data dir is
     // present (server/mapping.c: `mapping->image.loader_flags = !!clr_dir`) ----
