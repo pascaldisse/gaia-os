@@ -77,6 +77,10 @@ struct NtWow64Info {
 long nt_build_wow64_teb32(void *teb64, unsigned short native_machine,
                            unsigned short emulated_machine,
                            struct NtWow64Info *out);
+// CHALICE C4-6: stash this boot's own PEB32 address for
+// NtQueryInformationProcess(ProcessWow64Information) to answer -- see
+// ntsvc.c receipt above NtQueryInformationProcess.
+void nt_wow64_set_peb32(void *peb32);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).

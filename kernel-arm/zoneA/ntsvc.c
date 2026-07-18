@@ -390,10 +390,34 @@ long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long 
 #define PBI_BASEPRIORITY_OFF   0x18
 #define PBI_UNIQUEPROCESSID_OFF 0x20
 
+// CHALICE C4-6: single-process-kernel stash for ProcessWow64Information's
+// answer -- the PEB32 address wow64.dll's own process_init reads back via
+// NtQueryInformationProcess RIGHT AFTER RtlWow64GetProcessMachines
+// succeeds (donor dlls/wow64/syscall.c:995 "NtQueryInformationProcess(
+// GetCurrentProcess(), ProcessWow64Information, &peb32, sizeof(peb32),
+// NULL); wow64info = (WOW64INFO *)(peb32 + 1);" -- confirmed live, pe10
+// probe: an unanswered class 26 left peb32 as stack garbage, faulting on
+// `wow64info->NativeSystemPageSize = ...` a few instructions later,
+// wow64.dll+0x1d170). Set once by ntboot.c right after
+// nt_build_wow64_teb32 succeeds (the SAME peb32 buffer that helper built).
+static void *nt_current_wow64_peb32;
+void nt_wow64_set_peb32(void *peb32) { nt_current_wow64_peb32 = peb32; }
+
 long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
                                 void *ProcessInformation, unsigned long ProcessInformationLength,
                                 unsigned long *ReturnLength) {
     (void)ProcessHandle;
+    if (ProcessInformationClass == 26 /* ProcessWow64Information */) {
+        if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
+        if (ProcessInformationLength < 8) return STATUS_INFO_LENGTH_MISMATCH;
+        wr64((u8 *)ProcessInformation, (u64b)nt_current_wow64_peb32);
+        if (ReturnLength) *ReturnLength = 8;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtQueryInformationProcess ProcessWow64Information -> peb32=");
+            puthex((u64b)nt_current_wow64_peb32); puts("\n");
+        }
+        return STATUS_SUCCESS;
+    }
     if (ProcessInformationClass != 0 /* ProcessBasicInformation */) return STATUS_NOT_IMPLEMENTED;
     if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
     if (ProcessInformationLength < PBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;

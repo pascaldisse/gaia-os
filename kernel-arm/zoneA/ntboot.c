@@ -389,6 +389,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         struct NtWow64Info wow64_wire;
         if (nt_build_wow64_teb32(teb, 0xAA64, 0x14C, &wow64_wire) != 0)
             return boot_err("wow64 teb32 wiring failed");
+        nt_wow64_set_peb32(wow64_wire.peb32);
         puts("CHALICE: WOW64 signal wired teb64="); puthex((u64b)teb);
         puts(" WowTebOffset="); puthex((u64b)rd64(teb + 0x180c /* TEB64_WOWTEBOFFSET_OFF, ntsvc.c */));
         puts(" teb32="); puthex((u64b)wow64_wire.teb32);
