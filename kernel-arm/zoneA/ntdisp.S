@@ -319,6 +319,11 @@ NtContinue:
     ldr  x16, [x9, #0x108]
     msr  elr_el1, x16
     ldr  w16, [x9, #0x04]
+    // CONTEXT.Cpsr carries flags/masks; this flat floor always resumes guest
+    // code at EL1h. Legacy callers (hello3) leave its mode field zero.
+    bic  x16, x16, #0xf
+    mov  x17, #0x5
+    orr  x16, x16, x17
     msr  spsr_el1, x16
     ldr  w16, [x9, #0x310]
     msr  fpcr, x16
