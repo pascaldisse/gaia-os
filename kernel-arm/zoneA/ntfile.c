@@ -25,6 +25,7 @@ static void wr16(u8 *p, u16b v) { p[0] = (u8)v; p[1] = (u8)(v >> 8); }
 static void wr32(u8 *p, u32b v) { for (int i = 0; i < 4; i++) p[i] = (u8)(v >> (8 * i)); }
 static void wr64(u8 *p, u64b v) { for (int i = 0; i < 8; i++) p[i] = (u8)(v >> (8 * i)); }
 static u64b rd64(const u8 *p) { u64b v = 0; for (int i = 0; i < 8; i++) v |= (u64b)p[i] << (8 * i); return v; }
+static u32b rd32(const u8 *p) { u32b v = 0; for (int i = 0; i < 4; i++) v |= (u32b)p[i] << (8 * i); return v; }
 
 // IO_STATUS_BLOCK: {NTSTATUS/PVOID Status; ULONG_PTR Information;} 16B, same
 // shape ntsvc.c's NtWriteFile uses (receipted there).
@@ -993,6 +994,100 @@ long NtCreateSection(void **SectionHandle, unsigned long DesiredAccess, void *Ob
 }
 
 // =====================================================================
+// CHALICE C4-26 -- guest-content frontier fix (root cause of C4-24/C4-25's
+// STATUS_ILLEGAL_INSTRUCTION: FEXCore Thread->CurrentFrame->State.rip==0
+// execute-fault at the very first BTCpuSimulate, PROVEN by C4-25's live
+// receipt -- WOW64_CPURESERVED's I386_CONTEXT.Eip correctly held our
+// seeded entry 0x47661000 the entire time, so the seed was never wrong;
+// wow64.dll's own thread_init just never installed it into the CPU
+// backend's real register state).
+//
+// Donor-grounded: on real Wine, SYSTEM_DLL_INIT_BLOCK (the struct the
+// NATIVE 64-bit ntdll.dll exports as "LdrSystemDllInitBlock", wine
+// include/winternl.h:4422-4438) is populated ENTIRELY by the Unix-HOST-
+// SIDE process loader (dlls/ntdll/unix/loader.c:1598-1633
+// load_ntdll_wow64_functions -- a pure static PE-export-table walk
+// against the just-loaded 32-bit ntdll.dll, find_named_export, ZERO guest
+// execution needed) -- long BEFORE any guest CPU code runs. This floor
+// has no "unix side" (ntboot.c/ntsvc.c together fill that role, C-side,
+// for everything else already), and nothing here ever did this
+// population -- the struct stayed at its raw DLL static-data zero-init
+// (loader.c:77 "SYSTEM_DLL_INIT_BLOCK LdrSystemDllInitBlock = {0xf0};",
+// only `version` nonzero). wine dlls/wow64/syscall.c:1069-1097
+// thread_init() then ran `ctx.Eip = pLdrSystemDllInitBlock->
+// pLdrInitializeThunk; pBTCpuSetContext(...)` and installed Eip=0 as the
+// WOW64 guest thread's REAL starting register state -- FEXCore's
+// ExecuteThread immediately took an execute-fault at guest RIP 0,
+// reported as the RAISE#1 STATUS_ILLEGAL_INSTRUCTION C4-24 diagnosed and
+// C4-25 traced to source.
+//
+// Fix: replicate load_ntdll_wow64_functions here, C-side, triggered at
+// the exact moment THIS syscall finishes mapping a 32-bit (i386, Machine
+// 0x14C) module literally named "ntdll.dll" -- this floor's equivalent of
+// "the 32-bit ntdll.dll just got loaded". Patches the NATIVE ntdll's own
+// LdrSystemDllInitBlock export (registered during nt_boot_process's
+// Phase-0, long before any wow64 rig exists -- nt_image_find_by_name
+// always returns that FIRST "ntdll.dll" registry entry here, never the
+// one this very call is about to register) with the 32-bit ntdll's own
+// LdrInitializeThunk/RtlUserThreadStart/KiUser*Dispatcher exports +
+// ntdll_handle + the self-pointer to its OWN (32-bit-side)
+// LdrSystemDllInitBlock export, then mirrors the whole struct into that
+// 32-bit copy too (loader.c:1631-1633's own "also set the 32-bit
+// LdrSystemDllInitBlock" step). SYSTEM_DLL_INIT_BLOCK field offsets
+// (LP64 natural layout, matches the donor struct field order/sizes):
+// version@0(4) unknown1[3]@4(12) unknown2@0x10(8) pLdrInitializeThunk@
+// 0x18(8) pKiUserExceptionDispatcher@0x20(8) pKiUserApcDispatcher@0x28(8)
+// pKiUserCallbackDispatcher@0x30(8) pRtlUserThreadStart@0x38(8)
+// pRtlpQueryProcessDebugInformationRemote@0x40(8) ntdll_handle@0x48(8)
+// pLdrSystemDllInitBlock@0x50(8) pRtlpFreezeTimeBias@0x58(8) -- total
+// 0x60 (96B).
+// =====================================================================
+static void nt_wow64_populate_init_block_if_ntdll32(const char *name, u64b base32, u64b size32) {
+    if (!name || !nt_streq_ci(name, "ntdll.dll")) return;
+
+    // Machine check straight off the just-mapped image header (base32 is a
+    // live, readable kernel pointer -- PeMapImage already validated/copied
+    // it; same DOS_E_LFANEW=0x3C / COFF Machine@pe+4 layout pemod.c uses).
+    u32b e_lfanew = rd32((const u8 *)(u64b)base32 + 0x3C);
+    u16b machine = (u16b)rd32((const u8 *)(u64b)base32 + e_lfanew + 4);
+    if (machine != 0x014C) return;   // native (ARM64) ntdll's own open -- not the 32-bit one
+
+    NtImageEntry *native = nt_image_find_by_name("ntdll.dll");
+    if (!native || native->base == base32) return;   // no native entry yet, or somehow self
+
+    u64b initblock = 0;
+    if (pe_find_named_export(native->base, native->size, "LdrSystemDllInitBlock", &initblock) != 0) {
+        puts("CHALICE C4-26: native ntdll missing LdrSystemDllInitBlock export -- skip\n");
+        return;
+    }
+
+    u64b thunk = 0, rtlstart = 0, kuxd = 0, kuad = 0, kucd = 0, owninit = 0;
+    pe_find_named_export(base32, size32, "LdrInitializeThunk", &thunk);
+    pe_find_named_export(base32, size32, "RtlUserThreadStart", &rtlstart);
+    pe_find_named_export(base32, size32, "KiUserExceptionDispatcher", &kuxd);
+    pe_find_named_export(base32, size32, "KiUserApcDispatcher", &kuad);
+    pe_find_named_export(base32, size32, "KiUserCallbackDispatcher", &kucd);
+    pe_find_named_export(base32, size32, "LdrSystemDllInitBlock", &owninit);
+
+    u8 *ib = (u8 *)(u64b)initblock;
+    wr64(ib + 0x18, thunk);
+    wr64(ib + 0x20, kuxd);
+    wr64(ib + 0x28, kuad);
+    wr64(ib + 0x30, kucd);
+    wr64(ib + 0x38, rtlstart);
+    wr64(ib + 0x48, base32);
+    wr64(ib + 0x50, owninit);
+    if (owninit) {
+        u8 *ib32 = (u8 *)(u64b)owninit;
+        for (u64b i = 0; i < 0x60; i++) ib32[i] = ib[i];
+    }
+    puts("CHALICE C4-26: LdrSystemDllInitBlock populated thunk="); puthex(thunk);
+    puts(" rtlstart="); puthex(rtlstart); puts(" kuxd="); puthex(kuxd);
+    puts(" kuad="); puthex(kuad); puts(" kucd="); puthex(kucd);
+    puts(" ntdll32_base="); puthex(base32); puts(" owninit="); puthex(owninit); puts("\n");
+}
+
+// =====================================================================
 // NtMapViewOfSection -- runs PeMapImage (pemod.c) over the section's blob
 // at a fresh DLL-territory base, NO kernel-side DIR64 relocs (CHALICE
 // C3c-2q -- proven live: the stock Wine-built guest ntdll.dll's own
@@ -1027,6 +1122,7 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
     *BaseAddress = (void *)base;
     *ViewSize = (unsigned long)size;
     nt_image_register(sh->name, base, size, entry, 1);
+    nt_wow64_populate_init_block_if_ntdll32(sh->name, base, size);   // CHALICE C4-26
     return STATUS_SUCCESS;
 }
 
