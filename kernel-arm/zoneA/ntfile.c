@@ -413,6 +413,48 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
 #define US_LENGTH_OFF     0x00
 #define US_BUFFER_OFF     0x08
 
+// =====================================================================
+// CHALICE C4-4: two-root FS. Windows keeps ONE on-disk system32\ tree
+// (native arch -- ARM64 here, our pre-existing flat blob/FS names
+// unchanged) plus a SEPARATE syswow64\ tree (the OTHER, 32-bit/i386,
+// arch) and a per-process WOW64 flag + 2 fixed path rewrites pick which
+// tree a `...\system32\X` open actually reads. Donor-grounded (wine
+// mirror, fetched read-only this session, gitignored per HANDOFF):
+//   - dlls/wow64/file.c:181 replace_path(attr,prefix_len,"sysnative",
+//     "system32",NULL) -- "sysnative" ALWAYS rewrites to "system32"
+//     (native-arch escape hatch), even with redirection disabled.
+//   - dlls/wow64/file.c:188-189 (get_machine_wow64_dir(current_machine)
+//     computes "syswow64" for the i386-on-arm64 case, donor
+//     dlls/ntdll/unix/loader.c:1375-1383) replace_path(attr,prefix_len,
+//     "system32",syswow64dir,NULL) -- ONLY when running as a WOW64
+//     process (this rewrite lives in wow64.dll's OWN file.c, which is
+//     only ever loaded/active inside a WOW64 process to begin with).
+//   - dlls/ntdll/loader.c:4369 quotes the literal opened path form:
+//     "\??\C:\windows\sysnative\wow64cpu.dll" -- confirms the exact
+//     3-backslash-segment shape ("windows", the redirect root, the leaf)
+//     our dirname parse below matches against.
+// Our floor has no real subdirectories (fs.c: flat 64-entry directory,
+// SLICE3-SPEC) -- "two roots" is realized as two DISTINCT on-disk name
+// prefixes on the SAME flat namespace: existing bare names ("kernel32.dll")
+// stay the system32/ARM64 root UNCHANGED (zero regression risk, pe1-pe9
+// keep working untouched); a NEW "syswow64/" prefix names the i386-windows
+// guest tree (build.sh populate, mkdisk.py). No "system32/" alias entries
+// are created on disk -- system32 IS the pre-existing bare-name set, so
+// aliasing would only double disk usage for zero behavioral gain.
+// =====================================================================
+static int nt_wow64_process_active;
+
+void nt_wow64_set_active(int active) { nt_wow64_process_active = active; }
+int  nt_wow64_is_active(void) { return nt_wow64_process_active; }
+
+// Case-insensitive length-bounded segment compare (nt_streq_ci needs
+// NUL-terminated strings on both sides; this file's path[] IS NUL-terminated
+// mid-buffer per-segment via the caller slicing below, so nt_streq_ci
+// reapplies cleanly).
+static int nt_dirname_is(const char *dirname, const char *want) {
+    return nt_streq_ci(dirname, want);
+}
+
 long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttributes,
                  void *IoStatusBlock, unsigned long ShareAccess, unsigned long OpenOptions) {
     (void)DesiredAccess; (void)ShareAccess; (void)OpenOptions;
@@ -437,14 +479,58 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
     // strip to basename: text after the last backslash (spec example:
     // "\??\C:\windows\system32\kernel32.dll" -> "kernel32.dll").
     const char *base = path;
-    for (u32b i = 0; i < nchars; i++) if (path[i] == '\\') base = &path[i + 1];
+    int last_bs = -1, prev_bs = -1;
+    for (u32b i = 0; i < nchars; i++) {
+        if (path[i] == '\\') { prev_bs = last_bs; last_bs = (int)i; base = &path[i + 1]; }
+    }
+
+    // CHALICE C4-4: dirname = the path segment immediately before the
+    // basename (e.g. "system32", "sysnative", "syswow64") -- only ever
+    // present when the path has at least 2 backslashes (bare names like
+    // manifest-only test blobs have none, prev_bs stays -1, no redirect).
+    char dirname[NT_PATH_MAX];
+    dirname[0] = 0;
+    if (prev_bs >= 0 && last_bs > prev_bs) {
+        int dn = 0;
+        for (int i = prev_bs + 1; i < last_bs && dn < NT_PATH_MAX - 1; i++) dirname[dn++] = path[i];
+        dirname[dn] = 0;
+    }
+
+    // Resolve which on-disk name this open actually reads. Default (no
+    // recognized dirname, OR dirname=="system32" while NOT a WOW64
+    // process, OR dirname=="sysnative" -- native-arch escape, ALWAYS
+    // system32 regardless of WOW64 state per donor file.c:179-181): bare
+    // basename, UNCHANGED behavior (this is the only path pe1-pe9 ever
+    // exercised, zero regression). Only dirname=="system32" while WOW64-
+    // active, or an explicit dirname=="syswow64", redirect to the
+    // "syswow64/" root -- and that redirect does NOT fall back to the
+    // bare name on a miss (a missing 32-bit DLL must fail as such, not
+    // silently serve the wrong-arch 64-bit one).
+    char rooted[NT_PATH_MAX];
+    const char *lookup_name = base;
+    int is_wow64_redirect = 0;
+    if (dirname[0] && !nt_dirname_is(dirname, "sysnative")) {
+        if (nt_dirname_is(dirname, "syswow64") ||
+            (nt_dirname_is(dirname, "system32") && nt_wow64_process_active)) {
+            int rn = 0;
+            const char *pfx = "syswow64/";
+            for (; pfx[rn] && rn < NT_PATH_MAX - 1; rn++) rooted[rn] = pfx[rn];
+            for (int i = 0; base[i] && rn < NT_PATH_MAX - 1; i++, rn++) rooted[rn] = base[i];
+            rooted[rn] = 0;
+            lookup_name = rooted;
+            is_wow64_redirect = 1;
+        }
+    }
 
     // CHALICE C3c-2k p2 diagnostic: unconditional (not gated behind the
     // 64-count dispatch-log cap) so a SECOND open of an already-mapped
     // module (e.g. "ntdll.dll" self-open during its own module-list
     // self-registration lookup) is visible even late in a long boot trace.
     if (nt_dispatch_log_enabled) {
-        puts("CHALICE: NtOpenFile "); puts(base); puts("\n");
+        puts("CHALICE: NtOpenFile "); puts(base);
+        if (dirname[0]) { puts(" dir="); puts(dirname); }
+        if (is_wow64_redirect) { puts(" -> "); puts(lookup_name); }
+        puts("\n");
         // re-verify ntdll's export directory is STILL intact at THIS point
         // in the boot sequence (not just at ntdll-map time) -- rules out
         // any later corruption (relocation passes, other DLL maps) vs a
@@ -459,7 +545,7 @@ long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttr
     }
 
     const unsigned char *bytes; u64b bloblen; const char *manifest_name;
-    if (!nt_blob_lookup_or_fs(base, &bytes, &bloblen, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
+    if (!nt_blob_lookup_or_fs(lookup_name, &bytes, &bloblen, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
 
     void *h = nt_handle_alloc(NTH_FILE, bytes, bloblen, manifest_name);
     if (!h) return STATUS_NO_MEMORY;

@@ -35,4 +35,8 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
 // "CHALICE: wow64.dll mapped" and "CHALICE: CPU backend mapped" (with the
 // chosen name) on success. Returns 0, or -1 on any blob/map failure
 // (error already printed to serial).
-long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label);
+// CHALICE C4-4 (second slice): call_process_init -- opt-in, NEVER set by
+// the default `pe9`/`pe9 fex` shell path (see ntboot.c receipt at the call
+// site: a real ARM64 native call into an unresolved-import backend image,
+// no crash recovery on this floor).
+long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, const char *label);

@@ -8,6 +8,13 @@
 
 long NtOpenFile(void **FileHandle, unsigned long DesiredAccess, void *ObjectAttributes,
                  void *IoStatusBlock, unsigned long ShareAccess, unsigned long OpenOptions);
+// CHALICE C4-4: two-root FS -- per-process WOW64 flag NtOpenFile's own
+// dirname redirect reads (system32\X -> syswow64/X only while active).
+// ntboot.c's wow64 boot path sets this before any WOW64 process's own
+// loader-driven NtOpenFile calls run, clears it on that process's exit
+// (same per-boot-scoped-state discipline as nt_territory_mark/release).
+void nt_wow64_set_active(int active);
+int  nt_wow64_is_active(void);
 long NtReadFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcContext,
                 void *IoStatusBlock, void *Buffer, unsigned long Length,
                 void *ByteOffset, unsigned long *Key);

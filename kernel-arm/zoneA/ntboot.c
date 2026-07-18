@@ -490,7 +490,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
 // resolved by Wine's own loader machinery once code actually runs, not by
 // this kernel-side probe (no guest code runs in this atom at all).
 // =====================================================================
-long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
+long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, const char *label) {
     nt_blob_ensure_init();
     u64b mark = nt_territory_mark();
 
@@ -544,13 +544,14 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
     };
     #define BTCPU_EXPORT_COUNT (sizeof(btcpu_exports) / sizeof(btcpu_exports[0]))
     int btcpu_resolved = 0;
-    u64b btcpu_process_init_addr = 0, btcpu_simulate_addr = 0;
+    u64b btcpu_process_init_addr = 0, btcpu_thread_init_addr = 0, btcpu_simulate_addr = 0;
     for (unsigned int i = 0; i < BTCPU_EXPORT_COUNT; i++) {
         u64b addr = 0;
         long rc = pe_find_named_export(backend_base, backend_size, btcpu_exports[i], &addr);
         if (rc == 0) {
             btcpu_resolved++;
             if (i == 3) btcpu_process_init_addr = addr;   // BTCpuProcessInit
+            if (i == 4) btcpu_thread_init_addr = addr;    // BTCpuThreadInit
             if (i == 7) btcpu_simulate_addr = addr;       // BTCpuSimulate
         }
     }
@@ -594,6 +595,47 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
     puts(" entries="); putdec_signed((long)wi.crossproclist_entries);
     puts(" cpureserved="); puthex((u64b)wi.cpureserved);
     puts("\n");
+
+    // =================================================================
+    // CHALICE C4-4 (second slice, this ruling): actually CALL
+    // BTCpuProcessInit (+ThreadInit, donor init order -- dlls/wow64/
+    // syscall.c process_init:1039 calls pBTCpuProcessInit() once per
+    // process right after resolving every BTCpu*/wow64win export;
+    // thread_init:1073 calls pBTCpuThreadInit() once per thread,
+    // AFTER process_init has already run). Opt-in only (call_process_init
+    // flag, new `pe9 <backend> call` shell arg) -- NEVER on the default
+    // `pe9`/`pe9 fex` path the canonical pe9_gate.py drives, because this
+    // is REAL ARM64 machine code from the mapped backend DLL, mapped with
+    // do_imports=0 (Architecture verdict 4 -- imports are the PE-side
+    // loader's job, and no such loader has run for this native-side image,
+    // unlike ntdll/kernel32/kernelbase which self-relocate+self-import
+    // once their OWN guest code starts executing): any import the backend
+    // calls through resolves to an untouched raw thunk/zero, a real fault
+    // is the expected likely outcome, not a bug in OUR mapping -- and this
+    // kernel's sync_handler (kmain.c) has no recovery path for a raw CPU
+    // exception (dumps then `for(;;) wfe` -- unlike guest-PE NT services,
+    // there is no NtTerminateProcess/nt_longjmp unwind for kernel-side
+    // native calls), so a fault here ends the QEMU session. Isolated to
+    // its own opt-in gate run for exactly that reason -- HANDOFF measure-
+    // don't-guess doctrine over hypothesizing the outcome.
+    // =================================================================
+    if (call_process_init) {
+        if (!btcpu_process_init_addr) {
+            puts("CHALICE: BTCpuProcessInit call SKIPPED -- address unresolved\n");
+        } else {
+            typedef void (*BTCpuVoidFn)(void);
+            puts("CHALICE: calling BTCpuProcessInit addr="); puthex(btcpu_process_init_addr); puts("\n");
+            ((BTCpuVoidFn)(u64b)btcpu_process_init_addr)();
+            puts("CHALICE: BTCpuProcessInit returned -- no fault\n");
+            if (btcpu_thread_init_addr) {
+                puts("CHALICE: calling BTCpuThreadInit addr="); puthex(btcpu_thread_init_addr); puts("\n");
+                ((BTCpuVoidFn)(u64b)btcpu_thread_init_addr)();
+                puts("CHALICE: BTCpuThreadInit returned -- no fault\n");
+            } else {
+                puts("CHALICE: BTCpuThreadInit call SKIPPED -- address unresolved\n");
+            }
+        }
+    }
 
     nt_territory_release_since(mark);
     nt_vm_regions_release_since((unsigned long)mark);

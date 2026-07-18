@@ -192,8 +192,18 @@ static void run_cmd(const char *line) {
         // libwow64fex.dll. No guest code runs yet (atom C4-3..5 later).
         const char *arg = line + 3;
         while (*arg == ' ') arg++;
-        const char *backend = streq(arg, "fex") ? "libwow64fex.dll" : "wowbox64.dll";
-        nt_boot_wow64_probe(backend, "pe9");
+        char tok0[32]; int ti = 0;
+        while (arg[ti] && arg[ti] != ' ' && ti < 31) { tok0[ti] = arg[ti]; ti++; }
+        tok0[ti] = 0;
+        const char *rest = arg + ti;
+        while (*rest == ' ') rest++;
+        const char *backend = streq(tok0, "fex") ? "libwow64fex.dll" : "wowbox64.dll";
+        // CHALICE C4-4 (second slice): opt-in `call` 2nd token attempts the
+        // real BTCpuProcessInit(+ThreadInit) native call -- see ntboot.c
+        // receipt (no crash recovery on this floor; isolated to its own
+        // gate run, never the default pe9_gate.py path).
+        int do_call = streq(tok0, "call") || streq(rest, "call");
+        nt_boot_wow64_probe(backend, do_call, "pe9");
         return;
     }
     if (streq(line, "pe8")) {

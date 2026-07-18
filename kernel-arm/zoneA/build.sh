@@ -116,10 +116,19 @@ STOCK_DIR=../chalice/stock
 # i386-windows tree which shares basenames -- C4-SPEC scar, deferred to a
 # later atom that actually needs the 32-bit tree on this FS).
 WOW64_DIR="$STOCK_DIR/wow64-chain"
+# CHALICE C4-4: syswow64/ root -- the i386-windows (32-bit guest) tree,
+# named with a "syswow64/" prefix on the SAME flat FS namespace (fs.c has
+# no real subdirectories -- the prefix IS the whole two-root design,
+# ntfile.c nt_wow64_process_active receipt). Distinct basenames from the
+# bare (ARM64, system32-root) set already staged above -- no collision.
+I386_DIR="$STOCK_DIR/i386-windows"
 if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ] && [ -s "$STOCK_DIR/apisetschema.dll" ] && [ -s "$STOCK_DIR/locale.nls" ] && [ -s "$STOCK_DIR/sortdefault.nls" ] && [ -s "$STOCK_DIR/l_intl.nls" ]; then
     WOW64_ARGS=""
     if [ -s "$WOW64_DIR/wow64.dll" ] && [ -s "$WOW64_DIR/wowbox64.dll" ] && [ -s "$WOW64_DIR/libwow64fex.dll" ]; then
         WOW64_ARGS="wow64.dll=$WOW64_DIR/wow64.dll wowbox64.dll=$WOW64_DIR/wowbox64.dll libwow64fex.dll=$WOW64_DIR/libwow64fex.dll"
+    fi
+    if [ -s "$I386_DIR/ntdll.dll" ] && [ -s "$I386_DIR/kernel32.dll" ] && [ -s "$I386_DIR/kernelbase.dll" ]; then
+        WOW64_ARGS="$WOW64_ARGS syswow64/ntdll.dll=$I386_DIR/ntdll.dll syswow64/kernel32.dll=$I386_DIR/kernel32.dll syswow64/kernelbase.dll=$I386_DIR/kernelbase.dll"
     fi
     python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
         ntdll.dll="$STOCK_DIR/ntdll.dll" \
