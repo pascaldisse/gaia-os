@@ -126,14 +126,25 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
 // via the same nt_setjmp/nt_longjmp unwind channel NtTerminateProcess uses
 // (SLICE2-SPEC A3 mechanism, reused verbatim) -- turns an unrecoverable
 // kernel crash into a one-line diagnosis + clean return to the shell.
+// CHALICE C4-24: full-record instrumentation, capped -- step 3 of the
+// STATUS_INVALID_DISPOSITION-loop task. Dumps EXCEPTION_RECORD (code,
+// flags, ExceptionRecord-chain ptr, NumberParameters, params[0..3]),
+// FirstChance, and CONTEXT pc/sp/lr(x30) for the first N syscall entries so
+// the loop anatomy (new-vs-same record, growing-vs-static sp) is measured,
+// not guessed. winnt.h _EXCEPTION_RECORD: Code@0 Flags@4 Record@8 Addr@0x10
+// NumberParameters@0x18 Information[]@0x20 (8B each). CONTEXT (ARM64):
+// Sp@0x100 Pc@0x108, X30(Lr)@0x008+30*8=0x0f0 (kmain.c ARM64_CONTEXT_*).
+static u64b nt_raise_trace_count;
 long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance) {
-    (void)FirstChance;
     u8 *er = (u8 *)ExceptionRecord;
-    u32b code = 0;
-    u64b addr = 0;
+    u32b code = 0, flags = 0;
+    u64b addr = 0, nparams = 0, rec_link = 0;
     if (er) {
-        code = (u32b)er[0] | ((u32b)er[1] << 8) | ((u32b)er[2] << 16) | ((u32b)er[3] << 24);
+        code = rd32(er + 0x00);
+        flags = rd32(er + 0x04);
+        rec_link = rd64(er + 0x08);
         for (int i = 0; i < 8; i++) addr |= (u64b)er[0x10 + i] << (8 * i);
+        nparams = rd64(er + 0x18);
     }
     puts("CHALICE: NtRaiseException code="); puthex(code);
     puts(" addr="); puthex(addr);
@@ -142,6 +153,27 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
         puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
     }
     puts("\n");
+    if (nt_raise_trace_count < 24) {
+        nt_raise_trace_count++;
+        u8 *ctx = (u8 *)Context;
+        puts("CHALICE RAISE#"); puthex(nt_raise_trace_count);
+        puts(": flags="); puthex(flags);
+        puts(" recordlink="); puthex(rec_link);
+        puts(" nparams="); puthex(nparams);
+        if (nparams > 4) nparams = 4;
+        for (u64b i = 0; i < nparams; i++) {
+            puts(" info["); puthex(i); puts("]="); puthex(rd64(er + 0x20 + i * 8));
+        }
+        puts(" firstchance="); puthex((u64b)FirstChance);
+        if (ctx) {
+            puts(" ctx.pc="); puthex(rd64(ctx + 0x108));
+            puts(" ctx.sp="); puthex(rd64(ctx + 0x100));
+            puts(" ctx.lr(x30)="); puthex(rd64(ctx + 0x008 + 30 * 8));
+        } else {
+            puts(" ctx=NULL");
+        }
+        puts("\n");
+    }
     // C4-18: same KiUserExceptionDispatcher route as a hardware trap.
     // This does not return unless dispatcher policy itself eventually exits.
     nt_raise_guest_exception(ExceptionRecord, Context);
