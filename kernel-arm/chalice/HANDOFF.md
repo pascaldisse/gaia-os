@@ -10,18 +10,19 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — CURRENT: C4-18 synchronous exception delivered; dispatcher disposition frontier. Runtime `39a7d1f`; live 2026-07-18.
+## STATE — CURRENT: C4-20 execution truth; Theory B / returned-CONTEXT frontier. Runtime `cef4b61`; live 2026-07-18.
 
 - raw data abort → `ESR_EL1=0x96000006`; EC=`0x25`; ISS=`0x6`; ELR=`libwow64fex.dll+0x148A0` → `FEXCore::LookupCache::FindBlock`; FAR=`0x2909C0008` → reserve-commit arena, reservation `[0x2881C0000, +0x9800000)`, initially RESERVED.
 - demand commit → seen; fired; 2MB backing + retry; proof → FAR class COMMITTED on later fault. C4-15 gate correct; no EC decoder defect.
 - C4-17 frontier → ESR=`0x02000000`; EC=`0`; ISS=`0`; ELR=`0x2681B02F0`; instruction=`0xD4400000` (`hlt #0`); JIT dispatcher allocation `[0x2681B000,+0x4000)` COMMITTED; FAR stale prior abort.
 - C4-18 source → measured native `ntdll!KiUserExceptionDispatcher`: `sp`=`CONTEXT[0x390] + CONTEXT_EX[0x20] + EXCEPTION_RECORD64@+0x3b0 + align/redzone`; order → FEX raw-SVC → arena demand commit → guest SEH → kernel forensic fatal; full GPR/FPSIMD frame; exact `NtContinue` `eret`; `NtRaiseException` same SEH route. § `FEX-MAP.md` C4-18.
-- commits → `15a1e43` dispatch + full context; `1705f51` EL1h normalization for legacy zero-Cpsr CONTEXT; `39a7d1f` continuation trace.
-- build/gates → `GAIA_NO_RUN=1 bash build.sh` PASS; `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS.
-- pe10 fex → former HLT delivered: `CHALICE EXCEPTION code=C000001D elr=0x2681B02F0 dispatch=0x47086C40`; no process-killing kernel fault. C4-19 autopsy → 20,811 cycles / 30s; zero `nt_dispatch` services between cycle #1→#2, zero `NtRaiseException`, zero `NtContinue`; second-chance loop falsified. ntdll hook slot live → `0x47172f98=wow64.dll+0x1da18`; wow64 reset slot live → `0x4a700330=libwow64fex+0x13423c`; init chain intact. Dynamic post-floor target never executes; source probes reverted. § `FEX-MAP.md` C4-19.
+- commits → `8afc109` rig + one-source sync frame; `f144eb7` final-eret ELR handoff; `cef4b61` returned-CONTEXT probe.
+- build/gates → `GAIA_NO_RUN=1 bash build.sh` PASS; `pe8_gate` PASS (`ret=78`); `pe9_gate` both backends PASS; `ramfb_gate` PASS; gdb option OFF.
+- pe10 fex → `CHALICE ERET TRUTH: elr_el1=0x47086C40`; boot.S repeats ELR write immediately before `eret` → Theory A falsified. Same HLT re-enters after userspace chain; retained context receipt → `flags 0x220->0`, `pc 0x2681B02F0->0`, `sp 0x4116B6E0->0` → Theory B: chain consumes/zeros delivery CONTEXT, no floor service / `NtContinue`.
+- rig → `chalice/pe10_trace.py`; per-boot bases from `CHALICE IMAGE`; raw RSP. Host QEMU advertises no `swbreak+`/`hwbreak+` and does not answer `Z0`/`Z1`, so breakpoint hit-order is UNVERIFIED; § `FEX-MAP.md` C4-20.
 - wowbox64 → parked fallback; prior `elr=0/far=0` JIT-cache fault.
 
-Next → model QEMU ARM HLT synchronous-return semantics; prove one post-vector target instruction executes, then re-enter ntdll/WOW64 hook. Do not alter `NtRaiseException` chance behavior: no raise occurred. Then FEX reset disposition / `NtContinue` → `BTCpuSimulate` → hello8 WriteFile.
+Next → donor-diff Wine `RtlRestoreContext` ARM64 + FEX `Module.cpp` host CONTEXT ownership; identify zero/replacement field; fix `ContextFlags`/`CONTEXT_EX`; then `BTCpuSimulate` → hello8 WriteFile.
 
 ---
 

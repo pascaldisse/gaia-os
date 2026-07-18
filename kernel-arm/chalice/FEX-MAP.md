@@ -110,6 +110,16 @@ wow64.dll → BTCpuProcessInit
 - `NtContinue` first-12 handoff trace → zero lines during loop; stock dispatch did not invoke floor `NtContinue`; loop precedes the floor continuation restore → next frontier = WOW64/ntdll dispatcher-handler registration / return disposition, not a new FEX DLL-relative fault
 - mapping law → no new DLL-relative ELR; `map-fex-offsets.sh` not applicable; existing HLT identity remains `FEXCore Dispatcher.cpp:379-385`
 
+## C4-20 execution truth — Theory B; CONTEXT return frontier
+
+- source → `8afc109`→`cef4b61`; rig → `GAIA_GDB_SOCKET` opt-in, default off; `chalice/pe10_trace.py`; raw RSP serial-derived bases; `RtlRestoreContext` export RVA=`0x67564` from `llvm-objdump -p ntdll.dll`
+- live bases → `ntdll=0x47020000`; `wow64=0x4a6c0000`; `libwow64fex=0x4b7f0000`; targets → dispatcher=`0x47086c40`; wow64 hook=`0x4a6dda18`; FEX reset=`0x4b92423c`; HLT=`0x2681b02f0`; RtlRestoreContext=`0x47087564`
+- RSP receipt → `qSupported=PacketSize=20020;qXfer:features:read+;vContSupported+;multiprocess+`; no `swbreak+`/`hwbreak+`; this QEMU build accepts initial stop/continue/read-register traffic but does not reply to `Z0`/`Z1`; harness retains standard packets, serial capture avoids UART back-pressure; breakpoint hit-order is therefore UNVERIFIED on this host
+- register truth → repeated `CHALICE ERET TRUTH: elr_el1=0x47086c40`; boot.S rewrites the recorded ELR immediately before `eret`; Theory A falsified — hardware return target is the native dispatcher, not original HLT
+- returned context → next delivery reads retained prior context before overwriting: `flags 0x220->0; pc 0x2681b02f0->0; sp 0x4116b6e0->0`; userspace chain consumes/zeros the delivery context, then HLT recurs; Theory B holds: native dispatcher/WOW64/FEX path executes without a floor service, but no valid continuation context survives for restore
+- donor chain → Wine `dlls/wow64/syscall.c:1497-1553`; FEX `Source/Windows/WOW64/Module.cpp:871-958`; next fix → identify the context owner that zeros/replaces host ARM64 CONTEXT, then construct required `ContextFlags`/`CONTEXT_EX` against those paths; no hello8 WriteFile marker
+- green → build PASS; pe8 ret=78; pe9 both backends PASS; ramfb PASS; pe10 fex remains repeated HLT
+
 ## C4-19 exception-cycle autopsy — UNRESOLVED; source probes reverted
 
 - measurement commit → `c855240`; live `pe10 fex` → 20,811 cycles / 30s; cycle #1→#2 service trace = **zero** `nt_dispatch` entries; `NtRaiseException=0`; `NtContinue=0` → C4-18 second-chance suspect falsified; no service re-dispatch
