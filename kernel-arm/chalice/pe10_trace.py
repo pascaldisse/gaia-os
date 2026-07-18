@@ -71,19 +71,12 @@ class RSP:
 
     def command(self, payload):
         self.sock.sendall(self.packet(payload))
-        # QEMU's default ack mode acknowledges our outgoing packet first.
-        while True:
-            c = self.byte()
-            if c == b"+":
-                break
-            if c == b"-":
-                self.sock.sendall(self.packet(payload))
+        # reply() consumes either an ACK followed by a packet or a direct
+        # packet.  QEMU can select either form before qSupported completes.
         return self.reply()
 
     def continue_(self):
         self.sock.sendall(self.packet("c"))
-        while self.byte() != b"+":
-            pass
 
     def interrupt(self):
         self.sock.sendall(b"\x03")
@@ -242,9 +235,11 @@ def main():
     proc = serial = rsp = None
     lines = []
     try:
+        print("TRACE start build rig")
         proc = subprocess.Popen(["./build.sh"], cwd=ZONEA, env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         wait_path(args.gdb_socket)
+        print("TRACE gdb socket ready")
         rsp = RSP(args.gdb_socket)
         print(f"RSP qSupported={rsp.command('qSupported:multiprocess+')}" )
         print(f"RSP initial-stop={rsp.command('?')}")
