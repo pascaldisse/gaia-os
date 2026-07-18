@@ -298,6 +298,15 @@ extern long nt_exit_code;
 void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
 void nt_exception_enter(void *stack, void *dispatcher) __attribute__((noreturn));
 
+void nt_continue_trace(void *context) {
+    static u64 count;
+    if (count++ >= 12 || !context) return;
+    unsigned char *ctx = (unsigned char *)context;
+    puts("CHALICE CONTINUE: pc="); puthex(*(u64 *)(ctx + 0x108));
+    puts(" sp="); puthex(*(u64 *)(ctx + 0x100));
+    puts(" x18="); puthex(*(u64 *)(ctx + 0x98)); puts("\n");
+}
+
 static void move_bytes(void *dst_void, const void *src_void, u64 n) {
     unsigned char *dst = (unsigned char *)dst_void;
     const unsigned char *src = (const unsigned char *)src_void;

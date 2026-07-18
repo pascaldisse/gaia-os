@@ -314,6 +314,11 @@ nt_longjmp:
 // too; ELR/SPSR are written before the last scratch registers disappear.
 .global NtContinue
 NtContinue:
+    // C4-18 receipt: trace the first continuations; save x0/x18 because this
+    // is entered from a PE syscall stub and kernel C may treat x18 as scratch.
+    stp  x0, x18, [sp, #-16]!
+    bl   nt_continue_trace
+    ldp  x0, x18, [sp], #16
     str  xzr, [x18, #0x378]          // clear syscall-frame while old TEB lives
     mov  x9, x0                      // ContextRecord; retained until final load
     ldr  x16, [x9, #0x108]
