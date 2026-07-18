@@ -396,11 +396,106 @@ analyzed and documented rather than patched uncommitted/rushed.
 `pe8_gate.py` standalone both verified PASS live at HEAD. qemu leak-checked
 (pgrep+kill) before/after every boot this leg.
 
-**Exact next step:** decide territory/RAM sizing approach above (Pascal-
-level call: is 2GB QEMU RAM the right move, or does Box64 need a request-
-size cap/pool config first) -- once BTCpuProcessInit completes past its
-own init, `BTCpuSimulate` entry against the real x86 CONTEXT is the
-remaining leg-goal atom, unattempted (blocked upstream of it this leg).
+## CHALICE C4 state refresh (2026-07-18, leg 8 -- HEAD `2c2a25d`)
+
+**Memory wall landed per monad ruling; loop-breaker PROVEN (clean
+termination, no hang); pe10 re-run reveals the REAL root cause is
+RESERVE-vs-COMMIT accounting, not raw RAM size -- analyzed, not patched,
+same HANDOFF stopping doctrine leg-7 used.**
+
+**1. Mem/pool design landed** (params + donor citations, all in-source):
+- `build.sh`: `GAIA_QEMU_MEM` (default `4G`) replaces the baked `-m 1G`.
+  No gate script hardcodes `-m` itself (`ramfb_gate.py`/`pe*_gate.py` only
+  set `GAIA_SERIAL`/`GAIA_DISPLAY` env, inheriting build.sh's default) --
+  "fix the gate's invocation" needed zero gate-script edits.
+- `kmain.c` `mmu_on`: identity map widened from 1 to `NT_RAM_BLOCKS`(4) x
+  1GB L1 blocks (`NT_RAM_BASE`..`NT_RAM_TOP`, tracks `GAIA_QEMU_MEM`).
+  **Also required TTBR0 `T0SZ` 32->25** (T0SZ=32 gave only a 4GB VA range,
+  `0x0`-`0xFFFFFFFF` -- the entire HIGH pool at `>=0x100000000` was outside
+  the address space the MMU could translate AT ALL, not a missing block
+  descriptor; live-confirmed: first HIGH-pool touch faulted immediately,
+  `far=0x100000000`, before this fix). ARMv8 4KB-granule rule (ARM ARM
+  D8.2.1): T0SZ 25-33 (IA 31-39 bits) all start at level 1, same
+  single-level scheme this file already used -- T0SZ=25 (IA=39, 512GB VA)
+  makes the full existing 512-entry `l1_table` addressable, zero new
+  table levels.
+- `ntfile.c`: new HIGH pool (`NT_HIGH_TERRITORY_BASE 0x100000000`..
+  `NT_HIGH_TERRITORY_LIMIT 0x140000000`, `nt_high_territory_alloc`/
+  `_mark`/`_release_since`) alongside the unchanged LOW pool. Selection
+  (`ntsvc.c` `NtAllocateVirtualMemory`): `ZeroBits==0` -> HIGH first, LOW
+  fallback; `ZeroBits!=0` -> LOW only. Donor-grounded, not guessed:
+  wow64's own thunks ALWAYS pass a nonzero zero_bits (explicit or
+  wow64's own `default_zero_bits=0x7fffffff`, `wine/dlls/wow64/
+  syscall.c:41`) through `get_zero_bits()` (`wine/dlls/wow64/
+  wow64_private.h:94-97`) into the real 64-bit `NtAllocateVirtualMemory`;
+  ntdll's own `get_zero_bits_limit()` (`wine/dlls/ntdll/unix/
+  unix_private.h:569-586`) turns a nonzero zero_bits into a concrete
+  ceiling, while `zero_bits==0` hits that function's own `limit=0` (no
+  ceiling) path (`wine/dlls/ntdll/unix/virtual.c:5290-5297`) -- i.e.
+  genuinely unconstrained native-ARM64 callers (wowbox64.dll's own
+  dynarec heap/code-cache growth) are exactly the `ZeroBits==0` case, a
+  32-bit guest's own VirtualAlloc never is (always arrives via the wow64
+  thunk with a nonzero zero_bits). Per-boot wholesale reset covers BOTH
+  pools (`ntboot.c`, both `nt_boot_process` and `nt_boot_wow64_probe`).
+- Loop-breaker (`ntsvc.c` `NtAllocateVirtualMemory`): N=256
+  (`NT_AVM_LOOPBREAK_N`) consecutive failed requests for the SAME
+  page-rounded size -> one `CHALICE FAULT` line (size + caller resolved to
+  `<module>+offset` via the real x9 caller LR at the syscall frame's
+  `stub_lr` slot, `NT_FRAME_STUB_LR_OFF`) + clean termination via the
+  existing `nt_setjmp`/`nt_longjmp` unwind channel (same one
+  `NtTerminateProcess`/`NtRaiseException` already use).
+
+**2. Fault-by-fault log after the wall fell (`scratch/pe10_probe.py`,
+extended drain):** wow64.dll/wowbox64.dll/wow64win.dll/win32u.dll all map,
+`BTCpuProcessInit` runs, `[BOX64] WowBox64 arm64 v0.4.2 ... Dynarec ...
+ASIMD` banners print (same furthest point as leg-7) -- then 835 total
+`NtAllocateVirtualMemory` calls before the loop-breaker fires: 114 x
+`0xFD0000` (13MB, Wine's default heap RESERVE) + 40 x `0x3F4000` + 3 x
+`0x7E8000` + assorted one-off growth sizes, EACH followed by a tiny
+`0x10000` (64KB) `MEM_COMMIT`-flagged call actually touching a sliver of
+the just-reserved range -- then 552 identical failed `0x20000` (128KB,
+`MEM_RESERVE|MEM_COMMIT`) retries once both pools are full, broken
+cleanly by the new loop-breaker at N=256 (`CHALICE FAULT:
+NtAllocateVirtualMemory loop-broken N=0x100 size=0x20000
+caller=0x4B7FF1AC (wowbox64.dll+0x2F1AC) -- terminating process cleanly`,
+`pe10 ret=0xC0000017`/3221225495, shell regains the `T:/>` prompt --
+CONFIRMED no hang, no naked-QEMU leak).
+
+**3. Furthest point: exact fault + analysis (root cause quantified, not a
+single resolvable line).** The 114 `0xFD0000` RESERVE-only calls alone
+demand ~1.48GB of the 1.75GB combined LOW+HIGH budget -- but each backs
+only a 64KB `MEM_COMMIT` touch (120 such calls total, ~7.5MB real use).
+**Root cause: this territory allocator treats `MEM_RESERVE`-only requests
+(`AllocationType` lacking `MEM_COMMIT`) identically to a real commit --
+bumping the pointer and zero-filling the FULL requested size** -- a real
+Windows `VirtualAlloc(MEM_RESERVE)` consumes zero physical memory (just
+carves an address range; only a later `MEM_COMMIT`-at-base actually backs
+pages). Wine/kernelbase's heap-growth algorithm reserves generously by
+design (13MB per heap) and commits sparingly -- entirely normal Windows
+behavior our flat/bump model can't distinguish, so it burns ~20x more
+real territory than the guest ever touches. **This is a Pascal-level
+design call, not a bug to autonomously fix**: a true reserve/commit split
+needs per-reservation range tracking (so a later commit-at-base can back
+just that sub-range) -- more structure than the flat bump arena HANDOFF
+has twice ruled to keep simple (the free-list-reuse design was tried and
+reverted for exactly this kind of complexity risk). Left analyzed, not
+patched uncommitted/rushed -- same stopping point leg-7 hit, now
+quantified precisely instead of estimated.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines) +
+`pe8_gate.py` standalone + `scratch/ramfb_gate.py` (post-`GAIA_QEMU_MEM`-
+param) all verified PASS live at HEAD `2c2a25d`. qemu leak-checked
+(pgrep+kill) before/after every boot this leg.
+
+**Exact next step:** Pascal's call -- implement a real RESERVE-vs-COMMIT
+territory split (reservations carve address ranges without consuming
+backing pages; only COMMIT calls, whether upfront or at a tracked
+reserved base, actually bump/zero real territory) is the grounded fix for
+the ~20x waste measured this leg -- NOT more RAM (already tried, 2.3x more
+budget only delayed the same exhaustion by ~9x more calls before hitting
+the identical wall shape). Once that lands, re-run `pe10` -- `BTCpuSimulate`
+entry against a real x86 CONTEXT remains the unattempted leg-goal atom,
+still blocked upstream of it.
 
 ## Immediate next step for a fresh session
 
