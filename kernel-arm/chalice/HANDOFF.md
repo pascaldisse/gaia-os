@@ -1,3 +1,72 @@
+## State refresh (2026-07-18, C3c-2n) -- NtInitializeNlsFiles + NtGetNlsSectionPtr implemented; init_locale's header fault (kernelbase+0x3AAA0) AND RtlInitNlsTables fault (ntdll+0x496C4) both CLOSED; new frontier is an ntdll wcslen(garbage) crash, likely the registry floor (NtOpenKey/NtQueryValueKey still NtStub)
+HEAD `b404d4a`+this note. Implemented the real Wine syscalls
+NtInitializeNlsFiles (id=158/0x9e, ntfile.c) and NtGetNlsSectionPtr
+(id=155/0x9b, ntfile.c), registered in ntsvc.c/ntids.h. Both map NLS data
+blobs via the existing nt_blob_lookup_or_fs machinery (FS-fallback hit is
+already territory-backed -- pointer handed straight back, no extra copy,
+same idiom NtCreateSection/NtMapViewOfSection already use for their own
+blob pointers) instead of a real SEC_COMMIT section object -- sufficient
+since nothing in this floor ever calls NtUnmapViewOfSection on these NLS
+maps (donor's own RtlGetLocaleFileMappingAddress caches its pointer
+process-wide forever, matching the never-free bump-allocator contract this
+floor already has everywhere else).
+DATA: chalice/stock/{locale.nls,sortdefault.nls,l_intl.nls} (794914 +
+3394804 + 5564 bytes), sourced from this repo's gitignored wine/ donor
+tree (wine/nls/, Wine 11.13 generated output -- NOT re-verified
+byte-identical to whatever hangover-11.9's own wine build generated;
+fetch-stock-dlls.sh tries the Hangover deb FIRST per a tar-listing grep,
+falls back to the donor copy, which is what fired live this session
+since the deb wasn't re-fetched). Baked into disk.img via mkdisk.py
+(build.sh's stock-DLL populate gate extended to require all 3 NLS files
+too). locale.nls header sanity-checked pre-boot: field@+0x1c == exact file
+size (794914), a strong structural-validity signal independent of the boot
+test.
+CONTRACT (donor-grounded, wine/dlls/ntdll/unix/env.c, quoted since a fresh
+clone lacks wine/): NtInitializeNlsFiles opens "<dir>/nls/locale.nls", maps
+SEC_COMMIT/PAGE_READONLY (flat data, not SEC_IMAGE), writes *BaseAddress +
+*DefaultLocaleId (=system_lcid, defaults to 0x0409/en-US) -- donor's own
+`size` out-param is DEAD (never written, verified by reading the source,
+not a receipt error), so ours matches that exactly. NtGetNlsSectionPtr's
+filename-per-type table (get_nls_file_path/get_nls_section_name, env.c)
+replicated for all 4 nls_section_type values (SORTKEYS/CASEMAP/CODEPAGE/
+NORMALIZE) though only SORTKEYS+CASEMAP are staged on disk right now
+(CODEPAGE/NORMALIZE requests will resolve cleanly to STATUS_OBJECT_NAME_
+NOT_FOUND, same as any other unstaged nt_blob_lookup_or_fs miss, until a
+later atom needs and stages them).
+pe7 RESULT (live, this session): NtInitializeNlsFiles fires successfully
+(base=0x63D50000 len=0xC2122=794914 lcid=0x409) -- kernelbase's init_locale
+no longer faults at +0x3AAA0 (the atom's target gap, CLOSED). Boot then
+progressed to a SECOND fault (ntdll.dll+0x496C4, inside RtlInitNlsTables --
+kernelbase's load_locale_nls calling NtGetNlsSectionPtr(SORTKEYS) which was
+still NtStub, 3x UNIMPLEMENTED logged immediately before the fault);
+implementing NtGetNlsSectionPtr (this atom's "also consider" clause,
+authorized since the trace showed it was needed) closed THAT gap too --
+both sortdefault.nls (len=0x33CCF4, sector-rounded vs the exact 3394804B
+file size, harmless trailing-zero padding) and l_intl.nls
+(len=0x15BC=5564, exact) now map successfully and are logged. Boot then
+progressed to a THIRD, deeper fault: `CHALICE FAULT esr=0x96000004
+far=0xFFFFFFFF32E3DA98 elr=ntdll.dll+0x7857C` -- resolves to ntdll's own
+`wcslen` (delta+4, i.e. its very first dereference), called from a stack
+frame inside kernelbase.dll+0x65C34 (near the RegCreateKeyExW/
+RegOpenKeyExW cluster of exports -- an internal, unexported helper in that
+neighborhood, not necessarily those functions themselves). Read as:
+kernelbase computing/reading a registry-backed locale override string via
+an uninitialized/garbage WCHAR* -- NtOpenKey/NtCreateKey/NtQueryValueKey
+(ntids.h) are STILL NtStub in this floor, the likely next atom (a registry
+floor, out of scope here -- this atom's target was specifically the NLS-
+data syscalls, now closed twice over).
+No-regression gate green: scratch/pe7_gate.py (recreated this session --
+prior worker's copy wasn't present in this clone; all 14 required-green
+lines OK) + scratch/ramfb_gate.py (recreated, corner/bar pixel checks via
+monitor screendump, all 7 checks OK). No qemu leaks (pgrep clean
+before/after every drive). Build-artifact churn (chalice/*.exe/.pdb,
+pehello_bin.c, disk.img, gaia-os.img/.elf) left uncommitted per
+source-only-commit convention -- only ntfile.c/ntfile.h/ntsvc.c/ntids.h/
+build.sh/fetch-stock-dlls.sh source changes + the 2 recreated scratch/
+gate scripts + this HANDOFF note committed.
+
+---
+
 ## State refresh (2026-07-18, C3c-2m) -- __wine_dbg_header root cause FOUND + FIXED (MEMORY_BASIC_INFORMATION size/offset bug); pe7 now past it into a new, deeper frontier
 HEAD `1ef4946`+this note. CHALICE PROBE (ntboot.c, stock=1, replicates donor
 build_ntdll_module's own base-discovery call) + unconditional
