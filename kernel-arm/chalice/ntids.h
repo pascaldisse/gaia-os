@@ -43,6 +43,7 @@
 #define NT_SVC_NTCONTINUE                 67   // REAL, slice-2 boss, Atom B
 #define NT_SVC_NTCREATEKEY                29
 #define NT_SVC_NTOPENKEY                  18
+#define NT_SVC_NTOPENKEYEX                176  // REAL, CHALICE C4-14 (wine-arm64-syscalls.txt:177) -- 4-arg cousin of NtOpenKey (+OpenOptions); dlls/kernelbase/registry.c:300-316 open_key wrapper (which RegOpenKeyExA/W actually call, NOT plain NtOpenKey) uses this exact syscall -- any real Win32-shaped registry-open caller (not this floor's own earlier C4-4/C4-13 direct-NtOpenKey selftests) needs this to be more than STATUS_NOT_IMPLEMENTED.
 #define NT_SVC_NTQUERYVALUEKEY            23
 #define NT_SVC_NTQUERYVIRTUALMEMORY       35  // REAL, CHALICE C3a Atom 3A
 #define NT_SVC_NTQUERYSECTION              81  // REAL, CHALICE C3c-2i (wine-arm64-syscalls.txt:76)
@@ -94,6 +95,23 @@
 #define MEM_RESERVE  0x00002000L
 #define MEM_DECOMMIT 0x00004000L
 #define MEM_RELEASE  0x00008000L
+// CHALICE C4-14: MEM_TOP_DOWN/MEM_WRITE_WATCH/MEM_RESET -- real Wine's own
+// NtAllocateVirtualMemory type_mask (wine/dlls/ntdll/unix/virtual.c:5249,
+// "MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET")
+// accepts all five; this floor's own type-mask check (ntsvc.c
+// NtAllocateVirtualMemory) previously only allowed MEM_COMMIT|MEM_RESERVE,
+// over-strict vs the real donor -- rejected FEX's own heap-growth calls
+// (AllocationType=0x103000 = MEM_TOP_DOWN|MEM_RESERVE|MEM_COMMIT) with a
+// genuine STATUS_INVALID_PARAMETER the real syscall would never produce,
+// confirmed live (fault immediately downstream in ntdll.dll's own heap
+// code, an uninitialized-result deref off the unexpected failure --
+// libwow64fex.dll+0xA1634 caller). Placement/write-tracking bits our flat
+// bump allocator doesn't model (top-down ordering, dirty-page tracking) --
+// accepted+ignored, matching donor's own "hint, not enforced" semantics
+// for a caller that doesn't actually depend on physical placement order.
+#define MEM_TOP_DOWN     0x00100000L
+#define MEM_WRITE_WATCH  0x00200000L
+#define MEM_RESET        0x00080000L
 
 // ---- Atom 3A: NtCreateSection AllocationAttributes (winnt.h). Only the
 // SEC_IMAGE path is implemented -- anything else -> STATUS_INVALID_PARAMETER
@@ -179,6 +197,25 @@
 // REG_QWORD (winnt.h RegistryValueType) -- Type field for the CP-4030/4039/
 // 403A KEY_VALUE_PARTIAL_INFORMATION answers (ntfile.c NtQueryValueKey).
 #define REG_QWORD 11UL
+
+// ---- CHALICE C4-14: distinct pseudo-handle for the bare "\Registry\Machine"
+// ROOT key (HKEY_LOCAL_MACHINE's real NT object-namespace root). Root
+// cause this leg: every earlier registry match (WOW64CPU/CENTRALPROCESSOR
+// above) only ever matched a caller passing the FULL absolute path in one
+// NtOpenKey(Ex) call -- the real Win32 RegOpenKeyExA/W path (donor
+// wine/dlls/kernelbase/registry.c:161,174 get_special_root_hkey + :300-316
+// open_key) instead opens "\Registry\Machine" ONCE (caches the resulting
+// handle as a predefined-HKEY root), then issues a SECOND NtOpenKeyEx per
+// actual subkey with ObjectAttributes.RootDirectory=that cached handle and
+// ObjectAttributes.ObjectName=the RELATIVE remainder (e.g. "Hardware\
+// Description\System\CentralProcessor\0", no leading backslash) -- a
+// shape this floor never served before (confirmed live: FEX's own
+// FetchHostFeatures/CPUFeaturesFromRegistry, an unmodified stock caller of
+// this exact real Win32 path, opened "\Registry\Machine" and got
+// STATUS_OBJECT_NAME_NOT_FOUND, never reaching the CentralProcessor\0
+// match at all). Same free-pseudo-handle idiom as the other NT_REGISTRY_*
+// constants above.
+#define NT_REGISTRY_HKLM_ROOT_HANDLE 0x90UL
 
 // ---- Atom B: syscall_frame extension. Donor's __wine_syscall_dispatcher
 // (wine/dlls/ntdll/unix/signal_arm64.c:1630-1785) stashes the PE stub's own

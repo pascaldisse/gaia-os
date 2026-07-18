@@ -719,6 +719,7 @@ void nt_arena_release_since(unsigned long mark) {
 // layout under AAPCS64/LLP64 alignment rules -- same status as ntsvc.c's
 // TEB/PEB offsets.
 // =====================================================================
+#define OA_ROOTDIRECTORY_OFF 0x08
 #define OA_OBJECTNAME_OFF 0x10
 #define US_LENGTH_OFF     0x00
 #define US_BUFFER_OFF     0x08
@@ -1433,6 +1434,28 @@ static int nt_oa_name_matches_ascii(const void *oa, const char *ascii) {
     return i == nchars;
 }
 
+// CHALICE C4-14: RootDirectory-aware registry-key match -- see
+// NT_REGISTRY_HKLM_ROOT_HANDLE (ntids.h) for the full donor-grounded
+// rationale (real RegOpenKeyExA/W opens "\Registry\Machine" ONCE, caches
+// the handle, then opens every subkey RELATIVE to it in a second call).
+// `absolute_ascii` is always the FULL "\Registry\Machine\..." string (one
+// literal per call site, unchanged from before this atom); this wrapper
+// picks whether to compare ObjectName against the full string (bare/
+// RootDirectory-less callers, e.g. this floor's own C4-4/C4-13 direct-
+// NtOpenKey selftests) or just the tail after the "\Registry\Machine\"
+// prefix (RootDirectory==NT_REGISTRY_HKLM_ROOT_HANDLE callers, e.g. any
+// real stock RegOpenKeyExA-shaped caller like FEX's CPUFeaturesFromRegistry).
+#define NT_HKLM_ROOT_PREFIX_LEN 18   // strlen("\Registry\Machine\") -- literal, verified below
+
+static int nt_oa_key_matches_absolute(const void *oa, const char *absolute_ascii) {
+    if (!oa) return 0;
+    const u8 *p = (const u8 *)oa;
+    void *root = *(void **)(p + OA_ROOTDIRECTORY_OFF);
+    if (root == (void *)NT_REGISTRY_HKLM_ROOT_HANDLE)
+        return nt_oa_name_matches_ascii(oa, absolute_ascii + NT_HKLM_ROOT_PREFIX_LEN);
+    return nt_oa_name_matches_ascii(oa, absolute_ascii);
+}
+
 // CHALICE C4-13: match a UNICODE_STRING* (ValueName -- NOT an ObjectAttributes
 // wrapper, unlike nt_oa_name_matches_ascii above) case-SENSITIVE, exact
 // length -- box64's RegQueryValueExA always passes a literal ASCII value
@@ -1455,11 +1478,27 @@ static int nt_us_name_matches_ascii(const void *us, const char *ascii) {
 
 long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes) {
     (void)DesiredAccess;
+    // CHALICE C4-14: the bare "\Registry\Machine" ROOT key -- real
+    // RegOpenKeyExA/W's get_special_root_hkey opens this ONCE (RootDirectory
+    // NULL, ObjectName absolute) and caches the handle for every subsequent
+    // RootDirectory-relative subkey open below. See ntids.h
+    // NT_REGISTRY_HKLM_ROOT_HANDLE receipt.
+    if (nt_oa_name_matches_ascii(ObjectAttributes, "\\Registry\\Machine")) {
+        if (KeyHandle) *KeyHandle = (void *)NT_REGISTRY_HKLM_ROOT_HANDLE;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
+            puts(" -> hklm-root dummy handle\n");
+        }
+        return STATUS_SUCCESS;
+    }
     // CHALICE C4-6: the ONE registry key wow64.dll's get_cpu_dll_name()
     // (donor dlls/wow64/syscall.c:919-936) opens to pick a non-Microsoft
     // CPU-backend replacement -- see ntids.h receipt. Everything else
     // below is the pre-existing "no hive" NOT_FOUND floor, unchanged.
-    if (nt_oa_name_matches_ascii(ObjectAttributes, "\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86")) {
+    // CHALICE C4-14: nt_oa_key_matches_absolute (not the bare _ascii
+    // matcher) -- also matches a RootDirectory-relative open against the
+    // same literal's tail, see receipt above the helper.
+    if (nt_oa_key_matches_absolute(ObjectAttributes, "\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86")) {
         if (KeyHandle) *KeyHandle = (void *)NT_REGISTRY_WOW64CPU_KEY_HANDLE;
         if (nt_dispatch_log_enabled) {
             puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
@@ -1470,7 +1509,10 @@ long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttrib
     // CHALICE C4-13: the CentralProcessor\0 key -- box64-for-WOW64's
     // DetectHostCpuFeatures (hostext_wine.c) RegOpenKeyExA's this key then
     // reads CP 4030/4039/403A off it (NtQueryValueKey branch below).
-    if (nt_oa_name_matches_ascii(ObjectAttributes, "\\Registry\\Machine\\Hardware\\Description\\System\\CentralProcessor\\0")) {
+    // CHALICE C4-14: same RootDirectory-relative match upgrade -- this is
+    // the exact key FEX's own CPUFeaturesFromRegistry (a stock
+    // RootDirectory-relative caller, root cause this leg) opens too.
+    if (nt_oa_key_matches_absolute(ObjectAttributes, "\\Registry\\Machine\\Hardware\\Description\\System\\CentralProcessor\\0")) {
         if (KeyHandle) *KeyHandle = (void *)NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE;
         if (nt_dispatch_log_enabled) {
             puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
@@ -1488,6 +1530,35 @@ long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttrib
         puts(" -> NOT_FOUND\n");
     }
     return STATUS_OBJECT_NAME_NOT_FOUND;
+}
+
+// CHALICE C4-14: NtOpenKeyEx -- real Wine ARM64 4-arg cousin of NtOpenKey
+// (donor: dlls/ntdll/unix/registry.c NtOpenKeyEx(KeyHandle, DesiredAccess,
+// ObjectAttributes, OpenOptions); dlls/kernelbase/registry.c:300-316's own
+// open_key wrapper -- what RegOpenKeyExA/W actually call, NOT plain
+// NtOpenKey -- uses this exact syscall). Root cause this leg: FEX's own
+// FEX::Windows::CPUFeatures::FetchHostFeatures (libwow64fex.dll, RE'd via
+// llvm-objdump -- symbol table intact, unstripped) opens
+// "Hardware\Description\System\CentralProcessor\0" through a real
+// RegOpenKeyExA-shaped call (HKEY_LOCAL_MACHINE/KEY_READ/&result 4-register
+// signature, x8 fmt string "Hardware\Description\System\CentralProcessor\{}"
+// @ RVA 0x320614) -- NOT the direct NtOpenKey path this floor's own C4-4/
+// C4-13 selftests use -- so it fell straight through to STATUS_NOT_
+// IMPLEMENTED (svc id=176), core index 0 came back null, and
+// FEXCore::Assert::ForcedAssert() (libwow64fex.dll+0x1545DC, a deliberate
+// `hlt #1; brk #1` trap) fired with LogMan message "Couldn't detect CPU
+// features" (string RVA 0x3205e6, called via LogMan::Msg::MFmtImpl from the
+// helper at +0x165F14, lr resolves exactly to the observed fault's own
+// lr=+0x165D14 return site) -- same ATOM A KUSER/registry floor leg-13 built
+// for wowbox64's DIFFERENT (raw-NtOpenKey) access pattern, now also reached
+// via the REAL Windows call shape a stock/unmodified backend actually uses.
+// OpenOptions (4th arg) is a real NT param (REG_OPTION_* flags, e.g.
+// OPEN_LINK) this floor's flat, hive-less registry floor has no use for --
+// dropped, exact same behavior as NtOpenKey otherwise (same match table,
+// same fixed pseudo-handles, same NOT_FOUND fallback).
+long NtOpenKeyEx(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes, unsigned long OpenOptions) {
+    (void)OpenOptions;
+    return NtOpenKey(KeyHandle, DesiredAccess, ObjectAttributes);
 }
 
 long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,

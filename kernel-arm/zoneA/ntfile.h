@@ -62,6 +62,7 @@ long NtCreateKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttr
                   unsigned long TitleIndex, void *Class, unsigned long CreateOptions,
                   unsigned long *Disposition);
 long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes);
+long NtOpenKeyEx(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes, unsigned long OpenOptions);  // CHALICE C4-14
 long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,
                       void *KeyValueInformation, unsigned long Length, unsigned long *ResultLength);
 long NtSetValueKey(void *KeyHandle, void *ValueName, unsigned long TitleIndex,

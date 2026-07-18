@@ -162,6 +162,31 @@ static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
 #define PARAMS_STANDARDERROR_OFF   0x30
 #define PARAMS_IMAGEPATHNAME_OFF   0x60
 #define PARAMS_COMMANDLINE_OFF     0x70
+// CHALICE C4-14: Environment ptr, RTL_USER_PROCESS_PARAMETERS+0x80 (this
+// file's own comment above already receipted the offset; never written
+// until now). Donor-grounded load-bearing floor gap: wine/dlls/kernelbase/
+// process.c:1560 (GetEnvironmentStringsA) and :1573 (GetEnvironmentStringsW)
+// both read NtCurrentTeb()->Peb->ProcessParameters->Environment directly --
+// a raw pointer to a UTF-16LE block of NUL-separated "NAME=VALUE" strings,
+// double-NUL-terminated (get_env_length walks it). Left zeroed (this
+// floor's prior state, every leg through leg-13), every guest env lookup
+// silently sees an empty environment -- for FEX specifically this is THE
+// mechanism gating its internal narration: FEX::Config::EnvLoader::Load
+// (FEX/Source/Common/Config.cpp, EnvLoader class) scans envp (MinGW CRT's
+// `_environ`, itself populated at CRT-init time by walking this exact NT
+// block) for "FEX_"-prefixed vars; FEX_SILENTLOG defaults "true" (FEX/
+// FEXCore/Source/Interface/Config/Config.json.in:380-384) and gates
+// FEX::Windows::Logging::Init (FEX/Source/Windows/Common/Logging.cpp:36-46)
+// -- true skips installing the LogMan::Msg handler entirely, so every
+// FEXCore LogMan::Msg::IFmt/DFmt/EFmt call in the whole engine (compiled in
+// unconditionally up to INFO level, LogManager.h:62 MSG_LEVEL=INFO) becomes
+// a silent no-op. FEX_SILENTLOG=0 flips it on; WineDbgOut resolves via
+// GetProcAddress(ntdll.dll,"__wine_dbg_output") (Logging.cpp:42), the SAME
+// export + resolution path already proven live by the unconditional
+// "starting FEX..." banner (a direct import of the same symbol) --
+// narration then flows through the identical serial-out channel already
+// proven for that banner and for Box64's own [BOX64] banners.
+#define PARAMS_ENVIRONMENT_OFF     0x80
 #define US_LENGTH_OFF              0x00
 #define US_MAXLENGTH_OFF           0x02
 #define US_BUFFER_OFF              0x08
@@ -456,6 +481,24 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     u8 *params = (u8 *)(u64b)rd64(peb + PEB_PROCESSPARAMETERS_OFF);
     wr64(params + PARAMS_STANDARDINPUT_OFF, NT_STDOUT_HANDLE);
     wr64(params + PARAMS_STANDARDERROR_OFF, NT_STDOUT_HANDLE);
+
+    // CHALICE C4-14: real double-NUL-terminated UTF-16LE Environment block
+    // (see PARAMS_ENVIRONMENT_OFF comment above for the full donor-grounded
+    // rationale). One var is enough to unlock FEX's own narration;
+    // unconditional (all processes, not just wow64_mode) -- a real Windows
+    // process always has a nonempty environment, and nothing in the
+    // existing green surface (pe1-9) reads this field, so this is a pure
+    // floor-correctness addition, zero regression risk.
+    {
+        static const char fex_env_var[] = "FEX_SILENTLOG=0";
+        u64b fex_env_len = strlen_local(fex_env_var);
+        u16b *wenv = (u16b *)MAlloc((fex_env_len + 2) * 2);
+        if (!wenv) return boot_err("environment block alloc failed");
+        widen_ascii(fex_env_var, wenv, fex_env_len);
+        wenv[fex_env_len] = 0;       // terminates "FEX_SILENTLOG=0"
+        wenv[fex_env_len + 1] = 0;   // terminates the whole block (double-NUL)
+        wr64(params + PARAMS_ENVIRONMENT_OFF, (u64b)wenv);
+    }
 
     u64b namelen = strlen_local(exe_name);
     u16b *wname = (u16b *)MAlloc((namelen + 1) * 2);

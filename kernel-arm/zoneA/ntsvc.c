@@ -333,8 +333,13 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
 
     // exotic flags -> STATUS_INVALID_PARAMETER (SLICE2-SPEC Atom B); must
     // specify at least one of COMMIT/RESERVE, both together also accepted
-    // ("MEM_COMMIT|MEM_RESERVE both = alloc").
-    if (AllocationType == 0 || (AllocationType & ~(u64b)(MEM_COMMIT | MEM_RESERVE)) != 0) {
+    // ("MEM_COMMIT|MEM_RESERVE both = alloc"). CHALICE C4-14: mask widened
+    // to match real Wine's own type_mask exactly (wine/dlls/ntdll/unix/
+    // virtual.c:5249) -- MEM_TOP_DOWN/MEM_WRITE_WATCH/MEM_RESET are real,
+    // commonly-set placement/tracking hints this floor's flat bump
+    // allocator doesn't act on but must not reject either (see ntids.h
+    // receipt -- this was rejecting FEX's own heap-growth calls).
+    if (AllocationType == 0 || (AllocationType & ~(u64b)(MEM_COMMIT | MEM_RESERVE | MEM_TOP_DOWN | MEM_WRITE_WATCH | MEM_RESET)) != 0) {
         nt_avm_log("OUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
         return STATUS_INVALID_PARAMETER;
     }
@@ -1071,6 +1076,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTCONTINUE:                 return "NtContinue";
     case NT_SVC_NTCREATEKEY:                return "NtCreateKey";
     case NT_SVC_NTOPENKEY:                  return "NtOpenKey";
+    case NT_SVC_NTOPENKEYEX:                return "NtOpenKeyEx";
     case NT_SVC_NTQUERYVALUEKEY:            return "NtQueryValueKey";
     case NT_SVC_NTQUERYVIRTUALMEMORY:       return "NtQueryVirtualMemory";
     case NT_SVC_NTQUERYSECTION:              return "NtQuerySection";
@@ -1193,6 +1199,9 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTCREATEKEY] = 7 * 8;
     nt_svc_table0[NT_SVC_NTOPENKEY] = (void *)NtOpenKey;
     nt_svc_argtable0[NT_SVC_NTOPENKEY] = 3 * 8;
+    // CHALICE C4-14: NtOpenKeyEx -- see ntfile.c receipt.
+    nt_svc_table0[NT_SVC_NTOPENKEYEX] = (void *)NtOpenKeyEx;
+    nt_svc_argtable0[NT_SVC_NTOPENKEYEX] = 4 * 8;
     nt_svc_table0[NT_SVC_NTQUERYVALUEKEY] = (void *)NtQueryValueKey;
     nt_svc_argtable0[NT_SVC_NTQUERYVALUEKEY] = 6 * 8;
     nt_svc_table0[NT_SVC_NTSETVALUEKEY] = (void *)NtSetValueKey;
