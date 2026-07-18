@@ -120,6 +120,21 @@ wow64.dll → BTCpuProcessInit
 - donor chain → Wine `dlls/wow64/syscall.c:1497-1553`; FEX `Source/Windows/WOW64/Module.cpp:871-958`; next fix → identify the context owner that zeros/replaces host ARM64 CONTEXT, then construct required `ContextFlags`/`CONTEXT_EX` against those paths; no hello8 WriteFile marker
 - green → build PASS; pe8 ret=78; pe9 both backends PASS; ramfb PASS; pe10 fex remains repeated HLT
 
+## C4-21 CONTEXT construction + dispatcher marker — live
+
+- commits → `3044132` context/ex/bracket rig; `11a1244` dedicated sync C stack
+- donor flags → Wine `dlls/ntdll/unix/signal_arm64.c:309-322` `save_context()` → `CONTEXT_FULL`; Wine `include/winnt.h:1735-1745` → ARM64 base=`0x400000`, FULL=`0x400007`; floor → `ARM64_CONTEXT_FULL=0x00400007`, no debug/X18 request bits
+- donor fields → `signal_arm64.c:314-321` → Fp/Lr/Sp/Pc/Cpsr=PSTATE, X0..X28, FP/SIMD; floor → SPSR_EL1→Cpsr; frame→X0..X30; q0..q31; FPCR/FPSR. Live first delivery → `flags=0x400007 cpsr=0x20000345 pc=0x2681b02f0 sp=0x4116b6e0`
+- CONTEXT_EX → real header, not padding: `signal_arm64.c:140-150`; initialized by `:221-235`, used by `:771-778`/`:841-849`. Floor layout → CONTEXT `0x390`; EX `+0x390`; record `+0x3b0`; `All={Offset=-0x390,Length=0x450}`; `Legacy={-0x390,0x390}`; `XState={+0xc0,0}`
+- named construction bug → sync frame=`0x300` + `sync_try_guest_exception` C frame=`0x1d0`; both on interrupted guest stack; delivery at `orig_sp-0x460` overlapped C locals. Receipt before stack isolation → written flags corrupted to `0x170`, Cpsr=`0`; prior `0x220` likewise corruption, not ARM64 flags. Fix → `sync_exception_stack[0x4000]`; saved guest frame retained; C runs separately; delivery remains below original guest SP
+- live dispatcher dump → `pe10_trace.py`; `qSupported:multiprocess+;swbreak+;hwbreak+`; reply lacks sw/hw; `Z0` still no reply. Raw `[0x2681b0000,+0x4000)` → `/tmp/gaia-fex-dispatcher.bin`; receipt `+0x2f0=000040d4` → `hlt #0`; next `+0x2f4` prologue
+- `+0x2f0` identity → **SignalHandlerReturnAddress**; FEX emitter order `FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp:379-384`; RT marker next `:387-392`; guest SIGILL after `:395-402`. Intended marker action → signal-return fault dance, not x86 unimplemented instruction; Windows reset treats dispatcher PC as JIT (`Source/Windows/WOW64/Module.cpp:161-173`, `:921-949`): reconstruct WOW64 state, copy `TLS.EntryContext`, return false; `NtContinue` only true-return fast paths (`:952-958`)
+- zeroer bracket #1 → HLT delivery → next fault `libwow64fex+0x11b28`: `RETURN flags 0x400007->0x400007; pc 0x2681b02f0->0x2681b02f0; sp 0x4116b6e0->0x4116b6e0`; delivery survived; execution passed `+0x2f0`
+- new fault → `libwow64fex+0x11b28` = `FEXCore::Context::ContextImpl::ReconstructCompactedEFLAGS`, `FEXCore/Source/Interface/Core/Core.cpp:177`; FAR=`0x409`; `Thread->CurrentFrame` null at `Core.cpp:179` dereference; § named, no speculative floor change
+- zeroer bracket #2 → second AV delivery valid; first subsequent `nt_dispatch`=`id 67`/NtContinue sees `flags=0x400007 pc=0 sp=0 x18=0`; zero/replacement lies between second native delivery and NtContinue; donor candidate `Module.cpp:946-949` `memcpy(Context,TLS.EntryContext(),...)`; owner exact still UNVERIFIED
+- furthest → first SignalHandlerReturn round-trip survives; FEX reaches `+0x11b28`; no `hello8_x86`/WriteFile marker
+- green → build PASS; pe8=`ret=78`; pe9=both backends PASS; ramfb PASS
+
 ## C4-19 exception-cycle autopsy — UNRESOLVED; source probes reverted
 
 - measurement commit → `c855240`; live `pe10 fex` → 20,811 cycles / 30s; cycle #1→#2 service trace = **zero** `nt_dispatch` entries; `NtRaiseException=0`; `NtContinue=0` → C4-18 second-chance suspect falsified; no service re-dispatch
