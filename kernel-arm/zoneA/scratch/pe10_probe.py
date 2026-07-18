@@ -57,7 +57,7 @@ def send(line):
 
 drain(6)
 send("pe10")
-drain(10)
+drain(45)
 
 s.close()
 proc.send_signal(signal.SIGTERM)

@@ -278,12 +278,18 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
                     &ntdll_base, &ntdll_size, &ntdll_entry) != 0)
         return boot_err("ntdll map failed");
     nt_image_register(ntdll_name, ntdll_base, ntdll_size, ntdll_entry, 1);
+    puts("CHALICE PROBE: ntdll_base="); puthex(ntdll_base);
+    puts(" ntdll_size="); puthex(ntdll_size);
+    puts(" ntdll_entry="); puthex(ntdll_entry); puts("\n");
 
     u64b exe_base = 0, exe_size = 0, exe_entry = 0;
     if (PeMapImage(exe_bytes, exe_len, "pe5-exe", nt_territory_alloc, 0, 1,
                     &exe_base, &exe_size, &exe_entry) != 0)
         return boot_err("exe map failed");
     nt_image_register(exe_name, exe_base, exe_size, exe_entry, 0);
+    puts("CHALICE PROBE: exe_base="); puthex(exe_base);
+    puts(" exe_size="); puthex(exe_size);
+    puts(" exe_entry="); puthex(exe_entry); puts("\n");
 
     // ---- required ntdll exports (Architecture verdict 3 required-name
     // set; kernel only needs to LOOK UP the four it directly consumes --
