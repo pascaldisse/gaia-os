@@ -4,6 +4,7 @@ zealos/
 proton/
 reactos/
 wine/
+box64/
 .gaia/
 *.o
 *.elf
