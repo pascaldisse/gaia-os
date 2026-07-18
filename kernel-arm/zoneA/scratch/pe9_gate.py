@@ -101,6 +101,9 @@ required = [
     # ---- pe9/C4-2 -- WOW64 image trio maps, default backend (wowbox64) ----
     "CHALICE: wow64.dll mapped",
     "CHALICE: CPU backend mapped name=wowbox64.dll",
+    # ---- pe9/C4-4 (first slice) -- BTCpu export resolution, default backend ----
+    "CHALICE: BTCpu export scan name=wowbox64.dll",
+    "CHALICE: BTCpu wired",
     # ---- pe9/C4-3 -- TEB32/PEB32 floor (structures built+wired, no guest
     # code runs yet) -- must appear before this invocation's own "pe9 ret=0".
     "CHALICE: WOW64 teb32/peb32 built",
@@ -117,14 +120,21 @@ fex_line = "CHALICE: CPU backend mapped name=libwow64fex.dll"
 if fex_line not in txt:
     missing.append(fex_line)
 
+# CHALICE C4-4 (first slice): fex-backend BTCpu export-scan proof line,
+# same "appears somewhere after the first pe9 ret=0" substring check.
+fex_btcpu_line = "CHALICE: BTCpu export scan name=libwow64fex.dll"
+if fex_btcpu_line not in txt:
+    missing.append(fex_btcpu_line)
+
 print("---- required-green ----")
 for r in required:
     print(("OK  " if r in txt else "MISS") + " " + r)
 print(("OK  " if fex_line in txt else "MISS") + " " + fex_line)
+print(("OK  " if fex_btcpu_line in txt else "MISS") + " " + fex_btcpu_line)
 print("---- pe9-specific / fault lines ----")
 for line in txt.splitlines():
     if "pe9" in line or "wow64" in line.lower() or "CPU backend" in line or \
-       "FAULT" in line or "NtRaiseException" in line or "boot:" in line:
+       "BTCpu" in line or "FAULT" in line or "NtRaiseException" in line or "boot:" in line:
         print(line)
 
 if missing:

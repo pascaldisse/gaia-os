@@ -521,6 +521,53 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
     puts(" entry="); puthex(backend_entry); puts("\n");
 
     // =================================================================
+    // CHALICE C4-4 (C4-SPEC.md atom C4-4, first slice): BTCpu* export
+    // resolution from the mapped CPU backend. wow64.dll's own process_init
+    // (donor: dlls/wow64/syscall.c:1011-1032) resolves this EXACT list via
+    // GetProcAddress-equivalent (RtlFindExportedRoutineByName) against the
+    // loaded backend module, then calls BTCpuProcessInit() directly -- our
+    // kernel does NOT call it (no guest code runs this atom, C4-2/3
+    // doctrine unchanged); this slice proves the SAME resolution mechanism
+    // (pe_find_named_export, already proven by the unixlib wiring in
+    // nt_boot_process above) succeeds against the backend image we just
+    // mapped, name-for-name, both backends. ----
+    static const char *const btcpu_exports[] = {
+        "BTCpuGetBopCode", "BTCpuGetContext", "BTCpuIsProcessorFeaturePresent",
+        "BTCpuProcessInit" /* [3] */, "BTCpuThreadInit", "BTCpuResetToConsistentState",
+        "BTCpuSetContext", "BTCpuSimulate" /* [7] */, "BTCpuFlushInstructionCache2",
+        "BTCpuFlushInstructionCacheHeavy", "BTCpuNotifyMapViewOfSection",
+        "BTCpuNotifyMemoryAlloc", "BTCpuNotifyMemoryDirty", "BTCpuNotifyMemoryFree",
+        "BTCpuNotifyMemoryProtect", "BTCpuNotifyProcessExecuteFlagsChange",
+        "BTCpuNotifyReadFile", "BTCpuNotifyUnmapViewOfSection",
+        "BTCpuUpdateProcessorInformation", "BTCpuProcessTerm", "BTCpuThreadTerm",
+        "__wine_get_unix_opcode",
+    };
+    #define BTCPU_EXPORT_COUNT (sizeof(btcpu_exports) / sizeof(btcpu_exports[0]))
+    int btcpu_resolved = 0;
+    u64b btcpu_process_init_addr = 0, btcpu_simulate_addr = 0;
+    for (unsigned int i = 0; i < BTCPU_EXPORT_COUNT; i++) {
+        u64b addr = 0;
+        long rc = pe_find_named_export(backend_base, backend_size, btcpu_exports[i], &addr);
+        if (rc == 0) {
+            btcpu_resolved++;
+            if (i == 3) btcpu_process_init_addr = addr;   // BTCpuProcessInit
+            if (i == 7) btcpu_simulate_addr = addr;       // BTCpuSimulate
+        }
+    }
+    puts("CHALICE: BTCpu export scan name="); puts(cpu_backend_name);
+    puts(" resolved="); putdec_signed(btcpu_resolved);
+    puts("/"); putdec_signed((long)BTCPU_EXPORT_COUNT);
+    puts(" ProcessInit="); puthex(btcpu_process_init_addr);
+    puts(" Simulate="); puthex(btcpu_simulate_addr);
+    puts("\n");
+    if (btcpu_process_init_addr && btcpu_simulate_addr) {
+        puts("CHALICE: BTCpu wired\n");
+    } else {
+        puts("CHALICE: BTCpu wiring FAULT -- ProcessInit or Simulate missing from ");
+        puts(cpu_backend_name); puts("\n");
+    }
+
+    // =================================================================
     // CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor.
     // Still no guest code runs (C4-2's own doctrine, unchanged this atom) --
     // build a throwaway 64-bit TEB/PEB (nt_build_teb, image args zeroed:
