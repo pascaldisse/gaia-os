@@ -21,7 +21,9 @@ ZONEA = os.path.join(ROOT, "kernel-arm", "zoneA")
 LLVM_OBJDUMP = "/opt/homebrew/opt/llvm@20/bin/llvm-objdump"
 NTDLL = os.path.join(ROOT, "kernel-arm", "chalice", "stock", "ntdll.dll")
 DEFAULT_HLT = 0x2681B02F0
+DISPATCHER_ALLOC_SIZE = 0x4000
 OFFSETS = {"dispatcher": 0x66C40, "wow64_prepare": 0x1DA18, "fex_reset": 0x13423C}
+QS_SUPPORTED = "qSupported:multiprocess+;swbreak+;hwbreak+"
 
 
 def fail(message):
@@ -270,7 +272,7 @@ def main():
         wait_path(args.gdb_socket)
         print("TRACE gdb socket ready")
         rsp = RSP(args.gdb_socket)
-        print(f"RSP qSupported={rsp.command('qSupported:multiprocess+')}" )
+        print(f"RSP qSupported={rsp.command(QS_SUPPORTED)}" )
         print(f"RSP initial-stop={rsp.command('?')}")
         serial = connect_serial(args.serial_socket)
         capture = SerialCapture(serial, transcript)
@@ -293,7 +295,7 @@ def main():
         # fresh synchronous RSP session for breakpoint installation.
         rsp.close()
         rsp = RSP(args.gdb_socket)
-        print(f"RSP reattach-supported={rsp.command('qSupported:multiprocess+')}")
+        print(f"RSP reattach-supported={rsp.command(QS_SUPPORTED)}")
         print(f"RSP reattach-stop={rsp.command('?')}")
         text = capture.text()
         bases = module_bases(text)
@@ -311,13 +313,28 @@ def main():
         }
         print("TRACE BASES " + " ".join(f"{k}=0x{v:x}" for k, v in bases.items()))
         print("TRACE BREAKPOINTS " + " ".join(f"{k}=0x{v:x}" for k, v in points.items()))
+        # Live receipt before Z-packet probing; HLT resides at +0x2f0 in page.
+        dispatcher_alloc = hlt & ~0xfff
+        dispatcher_dump = rsp.memory(dispatcher_alloc, DISPATCHER_ALLOC_SIZE)
+        dump_path = "/tmp/gaia-fex-dispatcher.bin"
+        with open(dump_path, "wb") as out:
+            out.write(dispatcher_dump)
+        print(f"TRACE DISPATCHER DUMP addr=0x{dispatcher_alloc:x} bytes=0x{len(dispatcher_dump):x} path={dump_path}")
+        for offset in range(0, len(dispatcher_dump), 32):
+            print(f"TRACE DISPATCHER HEX +0x{offset:04x} " + dispatcher_dump[offset:offset + 32].hex())
+        breakpoints_live = True
         for name, address in points.items():
-            method = rsp.breakpoint(address)
-            print(f"TRACE BREAKPOINT {name} method={method} memory={rsp.memory(address, 4).hex()}")
+            try:
+                method = rsp.breakpoint(address)
+                print(f"TRACE BREAKPOINT {name} method={method} memory={rsp.memory(address, 4).hex()}")
+            except (OSError, RuntimeError):
+                print(f"TRACE BREAKPOINT UNAVAILABLE name={name}")
+                breakpoints_live = False
+                break
 
         delivery_context = None
         restore_context = None
-        for _ in range(args.hits):
+        for _ in range(args.hits if breakpoints_live else 0):
             rsp.continue_()
             stop = rsp.stop()
             pc = pc_from_stop(rsp, stop)

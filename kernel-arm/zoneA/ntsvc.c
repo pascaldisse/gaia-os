@@ -1203,8 +1203,16 @@ static void nt_log_putdec(u64b v) {
 void nt_dispatch_log_reset(void) { nt_dispatch_log_count = 0; }
 
 void nt_dispatch_log(unsigned long id_arg, void *handler) {
-    if (!nt_dispatch_log_enabled) return;
     u64b id = (u64b)id_arg;
+    volatile u8 *ctx = nt_exception_context_watch;
+    // C4-21 → every floor re-entry after exception delivery; brackets owner.
+    if (ctx) {
+        puts("CHALICE CONTEXT AT SVC: id="); nt_log_putdec(id);
+        puts(" flags="); puthex(rd32((const u8 *)ctx + 0));
+        puts(" pc="); puthex(rd64((const u8 *)ctx + 0x108));
+        puts(" sp="); puthex(rd64((const u8 *)ctx + 0x100)); puts("\n");
+    }
+    if (!nt_dispatch_log_enabled) return;
     nt_dispatch_log_count++;
     int unknown = (handler == 0);
     int unimpl  = (!unknown && handler == (void *)NtStub);

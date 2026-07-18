@@ -176,5 +176,6 @@ unsigned long nt_read_ctr_el0(void);
 // ptr); any other value is compared against NtStub to detect
 // "unimplemented but in-range".
 extern int nt_dispatch_log_enabled;
+extern volatile unsigned char *nt_exception_context_watch;
 void nt_dispatch_log_reset(void);
 void nt_dispatch_log(unsigned long id, void *handler);

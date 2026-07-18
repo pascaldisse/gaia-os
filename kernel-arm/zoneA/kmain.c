@@ -287,7 +287,8 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
 #define ARM64_CONTEXT_V_OFF      0x110
 #define ARM64_CONTEXT_FPCR_OFF   0x310
 #define ARM64_CONTEXT_FPSR_OFF   0x314
-#define ARM64_CONTEXT_ALL        0x0040001fU
+// Wine save_context() delivers CONTEXT_FULL, not debug/X18 requests.
+#define ARM64_CONTEXT_FULL       0x00400007U
 #define STATUS_ACCESS_VIOLATION  0xc0000005U  // wine/include/winnt.h:634
 #define STATUS_BREAKPOINT        0x80000003U  // wine/include/winnt.h:630
 #define STATUS_ILLEGAL_INSTRUCTION 0xc000001dU // wine/include/winnt.h:638
@@ -324,6 +325,8 @@ void nt_continue_trace(void *context) {
 // C4-20 assembly handoff: sync_entry reloads this target and writes ELR_EL1
 // immediately before ERET, after all C work has completed.
 volatile u64 sync_guest_exception_elr;
+// C4-21 zeroer bracket → live delivered CONTEXT; nt_dispatch_log samples it.
+volatile unsigned char *nt_exception_context_watch;
 
 static void move_bytes(void *dst_void, const void *src_void, u64 n) {
     unsigned char *dst = (unsigned char *)dst_void;
@@ -408,7 +411,7 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     if (!stack) return 0;
     unsigned char *ctx = (unsigned char *)stack;
     unsigned char *rec = ctx + ARM64_EXCEPTION_REC_OFF;
-    *(u32 *)(ctx + 0x00) = ARM64_CONTEXT_ALL;
+    *(u32 *)(ctx + 0x00) = ARM64_CONTEXT_FULL;
     u64 spsr, fpcr, fpsr;
     asm volatile("mrs %0, spsr_el1\n mrs %1, fpcr\n mrs %2, fpsr"
                  : "=r"(spsr), "=r"(fpcr), "=r"(fpsr));
@@ -420,6 +423,11 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
                SYNC_FRAME_Q_BYTES);
     *(u32 *)(ctx + ARM64_CONTEXT_FPCR_OFF) = (u32)fpcr;
     *(u32 *)(ctx + ARM64_CONTEXT_FPSR_OFF) = (u32)fpsr;
+    nt_exception_context_watch = ctx;
+    puts("CHALICE CONTEXT DELIVERY: flags="); puthex(*(u32 *)(ctx + 0));
+    puts(" cpsr="); puthex(*(u32 *)(ctx + 4));
+    puts(" pc="); puthex(*(u64 *)(ctx + ARM64_CONTEXT_PC_OFF));
+    puts(" sp="); puthex(*(u64 *)(ctx + ARM64_CONTEXT_SP_OFF)); puts("\n");
     for (u64 i = 0; i < ARM64_CONTEXT_SIZE; i++) prior_context[i] = ctx[i];
     prior_context_addr = stack;
     prior_context_valid = 1;
