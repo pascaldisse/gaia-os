@@ -1075,7 +1075,10 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 NT_READ_SYSREG(nt_read_midr_el1, midr_el1)
 NT_READ_SYSREG(nt_read_id_aa64pfr0, id_aa64pfr0_el1)
 NT_READ_SYSREG(nt_read_id_aa64pfr1, id_aa64pfr1_el1)
-NT_READ_SYSREG(nt_read_id_aa64zfr0, id_aa64zfr0_el1)
+// Raw architectural spelling: the default freestanding assembler target lacks
+// +sve and rejects its friendly ID_AA64ZFR0_EL1 alias; S3_0_C0_C4_4 is the
+// identical encoding and remains readable even when the register reports 0.
+NT_READ_SYSREG(nt_read_id_aa64zfr0, S3_0_C0_C4_4)
 NT_READ_SYSREG(nt_read_id_aa64isar0, id_aa64isar0_el1)
 NT_READ_SYSREG(nt_read_id_aa64isar1, id_aa64isar1_el1)
 NT_READ_SYSREG(nt_read_id_aa64isar2, id_aa64isar2_el1)
