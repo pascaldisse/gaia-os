@@ -210,7 +210,11 @@ sync_entry:
     ldr     x19, [x19]
     msr     elr_el1, x19
     isb
-    ldr     x18, [x21, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
+    // C4-23: x21's raw frame is clobbered by sync_try_guest_exception's own
+    // CONTEXT zero-fill (sync_frame.h ARM64_CONTEXT_X18_OFF comment) -- reload
+    // x18 from the delivered CONTEXT struct (x0=stack, built from a pre-
+    // clobber regs[] snapshot) instead, not the dead x21 memory.
+    ldr     x18, [x0, #ARM64_CONTEXT_X18_OFF] // dispatcher needs interrupted TEB
     mov     sp, x0
     eret
 2:

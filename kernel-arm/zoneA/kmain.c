@@ -306,6 +306,8 @@ typedef char sync_frame_q_must_match_asm[
     __builtin_offsetof(struct sync_frame_layout, q) == SYNC_FRAME_Q_OFF ? 1 : -1];
 typedef char sync_frame_x18_must_match_asm[
     SYNC_FRAME_X18_OFF == 18 * sizeof(u64) ? 1 : -1];
+typedef char arm64_context_x18_must_match_asm[
+    ARM64_CONTEXT_X18_OFF == ARM64_CONTEXT_X_OFF + 18 * sizeof(u64) ? 1 : -1];
 
 extern char _load_base[], _kernel_end[];
 extern unsigned long *nt_exit_jmpbuf;
@@ -398,14 +400,27 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     dispatcher = ki_user_exception_dispatcher();
     if (!dispatcher) return 0;
 
+    // CHALICE C4-23 -- guest_exception_stack() below zero-fills the full
+    // 0x460-byte CONTEXT/EX/RECORD region ending at orig_sp. SYNC_FRAME_SIZE
+    // (0x300, boot.S SAVEALL_SYNC) < ARM64_EXCEPTION_STACK (0x460), and BOTH
+    // regions end at the same orig_sp -- so that zero-fill fully overlaps
+    // and destroys the raw register-capture frame `regs` points into
+    // (x21=[orig_sp-0x300,orig_sp)) BEFORE it is read below. Snapshot it
+    // onto this function's own C frame (already off-guest-stack, on
+    // sync_exception_stack per C4-21) first -- measured via direct address
+    // arithmetic on the offsets above, not guessed.
+    unsigned char regs_snap[SYNC_FRAME_SIZE];
+    move_bytes(regs_snap, (unsigned char *)regs, SYNC_FRAME_SIZE);
+    u64 *regs_safe = (u64 *)regs_snap;
+
     // CHALICE C4-22: donor-grounded TLS probe -- FEX TEB64.TlsSlots @ 0x1480
     // (wine/include/winternl.h:1238); WOW64_TLS_MAX_NUMBER=19 (FEX
     // Source/Windows/include/winternl.h:29) -> THREAD_STATE slot 16,
     // CONTROL_WORD slot 17, ENTRY_CONTEXT slot 18 (FEX Module.cpp:77-80).
-    // Read the interrupted guest's OWN x18 (TEB, regs[18]) and the raw
+    // Read the interrupted guest's OWN x18 (TEB, regs_safe[18]) and the raw
     // bytes FEX itself keeps in those two slots -- measured, not guessed.
     {
-        u64 teb = regs[18];
+        u64 teb = regs_safe[18];
         puts("CHALICE TLS PROBE: x18="); puthex(teb);
         if (teb && teb >= NT_RAM_BASE && teb + 0x1490 < NT_RAM_TOP) {
             u64 thread_state = *(volatile u64 *)(teb + 0x1480 + 16 * 8);
@@ -444,10 +459,10 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     asm volatile("mrs %0, spsr_el1\n mrs %1, fpcr\n mrs %2, fpsr"
                  : "=r"(spsr), "=r"(fpcr), "=r"(fpsr));
     *(u32 *)(ctx + 0x04) = (u32)spsr;
-    for (u64 i = 0; i < 31; i++) *(u64 *)(ctx + ARM64_CONTEXT_X_OFF + i * 8) = regs[i];
+    for (u64 i = 0; i < 31; i++) *(u64 *)(ctx + ARM64_CONTEXT_X_OFF + i * 8) = regs_safe[i];
     *(u64 *)(ctx + ARM64_CONTEXT_SP_OFF) = sp_orig;
     *(u64 *)(ctx + ARM64_CONTEXT_PC_OFF) = elr;
-    move_bytes(ctx + ARM64_CONTEXT_V_OFF, (unsigned char *)regs + SYNC_FRAME_Q_OFF,
+    move_bytes(ctx + ARM64_CONTEXT_V_OFF, regs_snap + SYNC_FRAME_Q_OFF,
                SYNC_FRAME_Q_BYTES);
     *(u32 *)(ctx + ARM64_CONTEXT_FPCR_OFF) = (u32)fpcr;
     *(u32 *)(ctx + ARM64_CONTEXT_FPSR_OFF) = (u32)fpsr;
