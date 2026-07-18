@@ -29,12 +29,19 @@ extern const unsigned long pehello5_len;
 extern const unsigned char pefakentdll_bin[];
 extern const unsigned long pefakentdll_len;
 
+// CHALICE C3c Atom 3C-2j / 3C-2r: PE test artifact 6/7 -- hello6.exe (real
+// KERNEL32.dll import gate) + hello7.exe (widened Win32 surface walk).
+extern const unsigned char pehello6_bin[];
+extern const unsigned long pehello6_len;
+extern const unsigned char pehello7_bin[];
+extern const unsigned long pehello7_len;
+
 // CHALICE C3a Atom 3A: manifest-driven blob store (build.sh generated,
 // pehello_bin.c) -- {name, bytes, len} per embedded PE image, looked up by
 // ntfile.c's NtOpenFile (case-insensitive basename match). Replaces the
 // pattern of hardcoded per-name externs with one generic table.
 typedef struct { const char *name; const unsigned char *bytes; unsigned long len; } NtBlobEntry;
-#define NT_BLOB_MANIFEST_MAX 8
+#define NT_BLOB_MANIFEST_MAX 9
 extern NtBlobEntry nt_blob_manifest[NT_BLOB_MANIFEST_MAX];
 extern unsigned long nt_blob_manifest_count;
 void nt_blob_manifest_init(void);   // generated in pehello_bin.c, idempotent-by-caller

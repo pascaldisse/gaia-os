@@ -38,6 +38,10 @@ CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
     xxd -i -n pehello6_bin ../chalice/hello6.exe | sed \
         -e 's/^unsigned char/const unsigned char/' \
         -e 's/^unsigned int pehello6_bin_len/const unsigned long pehello6_len/'
+    # CHALICE C3c Atom 3C-2r — hello7.exe (widened KERNEL32.dll surface walk).
+    xxd -i -n pehello7_bin ../chalice/hello7.exe | sed \
+        -e 's/^unsigned char/const unsigned char/' \
+        -e 's/^unsigned int pehello7_bin_len/const unsigned long pehello7_len/'
     # Manifest-driven blob store (SLICE3-SPEC Atom 3A): run-time-initialized
     # (not a static initializer array) since the *_len consts above are
     # ordinary `const` objects, not integer-constant-expressions -- C
@@ -57,6 +61,7 @@ void nt_blob_manifest_init(void) {
     nt_blob_manifest[i].name = "hello5.exe"; nt_blob_manifest[i].bytes = pehello5_bin; nt_blob_manifest[i].len = pehello5_len; i++;
     nt_blob_manifest[i].name = "fake-ntdll.dll"; nt_blob_manifest[i].bytes = pefakentdll_bin; nt_blob_manifest[i].len = pefakentdll_len; i++;
     nt_blob_manifest[i].name = "hello6.exe"; nt_blob_manifest[i].bytes = pehello6_bin; nt_blob_manifest[i].len = pehello6_len; i++;
+    nt_blob_manifest[i].name = "hello7.exe"; nt_blob_manifest[i].bytes = pehello7_bin; nt_blob_manifest[i].len = pehello7_len; i++;
     nt_blob_manifest_count = i;
 }
 EOF

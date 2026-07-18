@@ -49,6 +49,7 @@ static void cmd_help(void) {
     puts("  pe5        run CHALICE hello5 over fake-ntdll: boot protocol dress rehearsal (slice3 Atom 3B)\n");
     puts("  pe6        run CHALICE hello5 over STOCK wine ntdll.dll (FS-backed): first walk + fault log (slice3 Atom 3C-1)\n");
     puts("  pe7        run CHALICE hello6 (real KERNEL32.dll import) over STOCK wine ntdll.dll: import-table/IAT gate (slice3 Atom 3C-2j)\n");
+    puts("  pe8        run CHALICE hello7 (widened KERNEL32.dll surface) over STOCK wine ntdll.dll (slice3 Atom 3C-2r)\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -179,6 +180,21 @@ static void run_cmd(const char *line) {
         nt_dispatch_log_enabled = 1;
         profile_armed = 1;
         nt_boot_process("hello6.exe", "ntdll.dll", 1, "pe7");
+        profile_armed = 0;
+        nt_dispatch_log_enabled = 0;
+        return;
+    }
+    if (streq(line, "pe8")) {
+        // CHALICE C3c Atom 3C-2r: stock ntdll.dll + hello7.exe (widened
+        // KERNEL32.dll surface walk: GetCommandLineA, GetModuleHandleA,
+        // GetProcAddress, GetProcessHeap/HeapAlloc/HeapFree,
+        // GetCurrentProcessId, GetLastError/SetLastError). Same log/
+        // profiler rig as pe7 -- diagnostic frontier past hello6's own
+        // proven WriteFile milestone.
+        nt_dispatch_log_reset();
+        nt_dispatch_log_enabled = 1;
+        profile_armed = 1;
+        nt_boot_process("hello7.exe", "ntdll.dll", 1, "pe8");
         profile_armed = 0;
         nt_dispatch_log_enabled = 0;
         return;

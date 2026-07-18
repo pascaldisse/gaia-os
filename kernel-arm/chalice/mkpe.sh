@@ -45,6 +45,12 @@ CFLAGS="-target $TARGET -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=
 # convention.
 "$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello6.exe hello6.c -lkernel32
 
+# CHALICE C3c Atom 3C-2r — hello7.exe: widened KERNEL32.dll surface walk
+# (GetCommandLineA/GetModuleHandleA/GetProcAddress/GetProcessHeap+HeapAlloc/
+# HeapFree/GetCurrentProcessId/GetLastError+SetLastError). Same import-table
+# build path as hello6 (-lkernel32, no ntstub.S).
+"$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello7.exe hello7.c -lkernel32
+
 echo "hello1.exe: $(wc -c < hello1.exe | tr -d ' ') bytes"
 echo "hello2.exe: $(wc -c < hello2.exe | tr -d ' ') bytes"
 echo "hello3.exe: $(wc -c < hello3.exe | tr -d ' ') bytes"
@@ -53,3 +59,4 @@ echo "mini.dll:   $(wc -c < mini.dll | tr -d ' ') bytes"
 echo "hello5.exe: $(wc -c < hello5.exe | tr -d ' ') bytes"
 echo "fake-ntdll.dll: $(wc -c < fake-ntdll.dll | tr -d ' ') bytes"
 echo "hello6.exe: $(wc -c < hello6.exe | tr -d ' ') bytes"
+echo "hello7.exe: $(wc -c < hello7.exe | tr -d ' ') bytes"
