@@ -322,6 +322,86 @@ rather than wiring the whole TEB32/PEB32 apparatus blind. `pe10` (opt-in,
 isolated) is the harness for iterating on this -- never wire it into
 `pe9_gate.py`'s canonical path until it stops crash-faulting.
 
+## CHALICE C4 state refresh (2026-07-18, leg 7 -- HEAD `<fill after commit>`)
+
+**BTCpuProcessInit genuinely executing wowbox64.dll's own native init --
+furthest point yet, real backend banners printed.** Continues from leg-6's
+`nt_boot_process` WOW64-signal graft (8a470b3/166b099/1af6121). Two missing-
+DLL faults burned down this leg, both via fetch-stock-dlls.sh/build.sh
+populate deltas only (zero kernel source changes):
+
+- **wow64win.dll** (`dlls/wow64/syscall.c:1035`): process_init loads it
+  UNCONDITIONALLY right after CPU-backend export resolution, before
+  `BTCpuProcessInit` ever runs -- missing it faulted `NtOpenFile
+  win32u.dll`... no, faulted the whole process cleanly at
+  `STATUS_DLL_NOT_FOUND` (`pe10 ret=0xC0000135`) with no BTCpu call
+  attempted at all. Fix: `fetch-stock-dlls.sh` `WOW64_NATIVE_TARGETS`
+  += `wow64win.dll` (same aarch64-windows source dir), `build.sh` mkdisk
+  populate += `wow64win.dll=`.
+- **win32u.dll**: NOT loaded by wow64's own process_init directly --
+  ground truth via `llvm-objdump -p wow64win.dll`: wow64win.dll's OWN
+  import table links against `wow64.dll` + **`win32u.dll`**
+  (`NtGdiAbortDoc`/`NtGdiAbortPath`/... stubs) + `ntdll.dll`. The guest
+  loader resolves a SEC_IMAGE-mapped DLL's imports right after its own
+  `NtMapViewOfSection` (real ntdll loader machinery, not a syscall this
+  floor implements) -- missing win32u.dll failed wow64win.dll's OWN load
+  (`STATUS_DLL_NOT_FOUND`), aborting process_init one step earlier than
+  visible without instrumentation (confirmed live: `NtOpenFile win32u.dll
+  dir=system32` then clean abort). Fix: same two files, `win32u.dll` added
+  alongside wow64win.dll.
+
+**With both DLLs present, `pe10` (isolated probe) now runs dramatically
+farther:** wow64.dll maps, WOW64 signal wires, `NtQuerySystemInformationEx`/
+`NtQueryInformationProcess(ProcessWow64Information)` answer correctly
+(leg-6), wowbox64.dll (CPU backend) + wow64win.dll + win32u.dll all open
+and map/resolve successfully, `BTCpuProcessInit` is CALLED and genuinely
+EXECUTES real backend code far enough to print **its own native startup
+banners to the serial console**: `[BOX64] WowBox64 arm64 v0.4.2 (Hangover
+11.9) with Dynarec built on May 17 2026 13:07:41` then `[BOX64] Dynarec for
+ARM64, with extension: ASIMD`. This is wowbox64.dll's C init code running
+for real (ARM64 native, not yet x86 simulation) -- proof `BTCpuProcessInit`
+is not merely called but is deep inside real Box64 engine bring-up,
+far past leg-4's `wowbox64.dll+0x1638`/`far=0xA1` fault.
+
+**Furthest-point blocker: territory exhaustion, not a resolvable fault
+line.** Box64's own init allocates heavily via repeated
+`NtAllocateVirtualMemory` (a halving retry pattern first: `0xFD0000` ->
+`0x7E8000` -> `0x3F4000`, each succeeding after backoff -- looks like a
+real Wine/Box64 heap-grow-with-retry algorithm, not a bug) until the
+0.75GB DLL territory (`NT_DLL_TERRITORY_BASE 0x45000000` ..
+`NT_DLL_TERRITORY_LIMIT 0x7ff00000`, `ntfile.c`) is genuinely full, then
+settles into an UNBOUNDED retry loop requesting the same `0x20000` (128KB)
+chunk forever (`CHALICE DEBUG: territory EXHAUSTED ... status=0xC0000017`
+repeating with zero backoff/giveup -- confirmed durable over a 30s drain
+window, `scratch/pe10_probe.py` extended-timeout variant, never escapes,
+never prints a further CHALICE line or a `pe10 ret=`). Root cause analysis
+(not yet fixed): the 0.75GB territory is already sized to consume nearly
+ALL of QEMU's `-m 1G` RAM (`kmain.c mmu_on` identity-maps exactly one 1GB
+L1 block at `0x40000000-0x80000000`; `KUSER_SHARED_DATA` at the real-
+Windows-fixed `0x7ffe0000` floors the territory ceiling, so nothing can
+simply grow upward past that in the current map) -- Box64's dynarec code-
+cache/heap needs is uncovering that ceiling for the first time now that
+BTCpuProcessInit is genuinely running deep native code. NOT a single-fault
+fix: needs either (a) a second physical RAM block + L1 identity-map entry
+(`-m 2G`, add `l1_table[2]` for `0x80000000-0xC0000000`) with a NEW pool
+dedicated to CPU-backend allocations (KUSER stays fixed, general DLL
+territory ceiling stays put -- only the backend gets more room), or (b)
+investigate whether Box64's request pattern is itself unbounded/wrong-sized
+for this environment (donor-grounded first, per HANDOFF doctrine) before
+assuming more RAM is the real fix. Left for the next leg with a fresh
+budget -- this is the exact HANDOFF "blocked >2 cycles" stopping point,
+analyzed and documented rather than patched uncommitted/rushed.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines) +
+`pe8_gate.py` standalone both verified PASS live at HEAD. qemu leak-checked
+(pgrep+kill) before/after every boot this leg.
+
+**Exact next step:** decide territory/RAM sizing approach above (Pascal-
+level call: is 2GB QEMU RAM the right move, or does Box64 need a request-
+size cap/pool config first) -- once BTCpuProcessInit completes past its
+own init, `BTCpuSimulate` entry against the real x86 CONTEXT is the
+remaining leg-goal atom, unattempted (blocked upstream of it this leg).
+
 ## Immediate next step for a fresh session
 
 `hello7`/`pe8`'s widened KERNEL32.dll surface walk is green (this slice) —
