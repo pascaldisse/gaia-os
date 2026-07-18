@@ -372,6 +372,26 @@ NtContinue:
     ldr  x9,       [x9, #0x50]
     eret
 
+// C4-19 trace bridge for wow64.dll's pBTCpuResetToConsistentState.  This
+// pointer is normally a direct FEX call; retain the guest TEB while kernel C
+// logs the call/return, then invoke the measured original target.  NtContinue
+// may eret out of it; a normal return is itself the required evidence.
+.global nt_btcpu_reset_trace
+nt_btcpu_reset_trace:
+    stp  x18, x30, [sp, #-32]!
+    stp  x0,  x1,  [sp, #16]
+    bl   nt_btcpu_reset_trace_enter
+    ldp  x0,  x1,  [sp, #16]
+    ldr  x18,      [sp]
+    adrp x16, nt_btcpu_reset_target
+    ldr  x16, [x16, :lo12:nt_btcpu_reset_target]
+    blr  x16
+    str  x0,  [sp, #16]
+    bl   nt_btcpu_reset_trace_return
+    ldr  x0,  [sp, #16]
+    ldp  x18, x30, [sp], #32
+    ret
+
 // Enter a measured KiUserExceptionDispatcher stack from NtRaiseException.
 // x18 remains the guest TEB; dispatcher owns all other incoming registers.
 .global nt_exception_enter
