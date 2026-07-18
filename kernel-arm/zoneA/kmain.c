@@ -77,6 +77,7 @@ static void timer_start(void) {
 // already uses) so both the profiler below and sync_handler further down
 // can call it.
 int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
+int nt_image_base_by_name(const char *name, u64 *base_out, u64 *size_out);
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -209,6 +210,48 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
             break;
         }
         fp = saved_fp;
+    }
+
+    // ---- CHALICE C3c-2p: root_key_names[] relocation spot-check.
+    // kernelbase.dll's donor registry.c table (root_key_names[], indices
+    // 0..6: L"\Registry\Machine", L"\Registry\User", ...) lives at RVA
+    // 0x11cc18 (donor ImageBase 0x180000000) -- read entries [0] and [1]
+    // straight out of THIS boot's actual mapped image (base varies run to
+    // run, DLL-territory bump allocator) rather than the on-disk file, so
+    // this proves whether base-relocation ran correctly. Whole 1GB RAM
+    // block is identity-mapped (kmain.c mmu_on) so a plain C dereference
+    // is safe once bounds-checked into that block. ----
+    puts("  -- root_key_names[] relocation spot-check (kernelbase.dll+0x11cc18) --\n");
+    {
+        u64 kb_base = 0, kb_size = 0;
+        if (nt_image_base_by_name("kernelbase.dll", &kb_base, &kb_size)) {
+            u64 table = kb_base + 0x11cc18ULL;
+            puts("  kernelbase.dll base="); puthex(kb_base);
+            puts(" table="); puthex(table); puts("\n");
+            if (table >= 0x40000000ULL && table + 16 < 0x80000000ULL) {
+                u64 *tp = (u64 *)table;
+                for (int i = 0; i < 2; i++) {
+                    u64 entry = tp[i];
+                    puts("  root_key_names["); putdec(i); puts("]="); puthex(entry);
+                    if (entry >= 0x40000000ULL && entry < 0x80000000ULL && !(entry & 1)) {
+                        puts(" -> \"");
+                        unsigned short *ws = (unsigned short *)entry;
+                        for (int k = 0; k < 24; k++) {
+                            unsigned short c = ws[k];
+                            if (c == 0) break;
+                            putc((c >= 0x20 && c < 0x7f) ? (char)c : '.');
+                        }
+                        puts("\"\n");
+                    } else {
+                        puts(" -> (out of RAM range or misaligned, not dereferenced)\n");
+                    }
+                }
+            } else {
+                puts("  table address out of plausible RAM range, skipped\n");
+            }
+        } else {
+            puts("  kernelbase.dll not found in image registry\n");
+        }
     }
 
     for (;;) asm volatile("wfe");

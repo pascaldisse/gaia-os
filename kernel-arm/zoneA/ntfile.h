@@ -83,3 +83,10 @@ void nt_image_register(const char *name, unsigned long base, unsigned long size,
 // fault dump (kmain.c sync_handler). See ntfile.c for contract.
 int nt_image_resolve(unsigned long addr, char *name_out, unsigned long namelen,
                       unsigned long *off_out);
+
+// CHALICE C3c-2p: name -> {base,size} lookup for the fault dump's targeted
+// diagnostics (e.g. reading a specific stock-DLL's .data table at a known
+// RVA, relative to THIS boot's actual DLL-territory placement). Same
+// registry nt_image_resolve reads, exact-name match (nt_image_find_by_name's
+// contract). Returns 0 if that image was never registered.
+int nt_image_base_by_name(const char *name, unsigned long *base_out, unsigned long *size_out);

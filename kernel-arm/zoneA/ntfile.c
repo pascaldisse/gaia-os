@@ -260,6 +260,16 @@ int nt_image_resolve(u64b addr, char *name_out, u64b namelen, u64b *off_out) {
     return 1;
 }
 
+// CHALICE C3c-2p: see ntfile.h -- thin public wrapper over the existing
+// exact-name lookup, for the fault dump's targeted table spot-checks.
+int nt_image_base_by_name(const char *name, u64b *base_out, u64b *size_out) {
+    NtImageEntry *img = nt_image_find_by_name(name);
+    if (!img) return 0;
+    if (base_out) *base_out = img->base;
+    if (size_out) *size_out = img->size;
+    return 1;
+}
+
 // =====================================================================
 // DLL-territory bump allocator (SLICE3-SPEC Atom 3A): 0x45000000 upward --
 // right past mem.c's 64MB heap ceiling (HEAP_BASE 0x41000000 + 64MB =
