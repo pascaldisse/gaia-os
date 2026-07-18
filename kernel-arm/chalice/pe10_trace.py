@@ -293,6 +293,7 @@ def main():
         # fresh synchronous RSP session for breakpoint installation.
         rsp.close()
         rsp = RSP(args.gdb_socket)
+        print(f"RSP reattach-supported={rsp.command('qSupported:multiprocess+')}")
         print(f"RSP reattach-stop={rsp.command('?')}")
         text = capture.text()
         bases = module_bases(text)
