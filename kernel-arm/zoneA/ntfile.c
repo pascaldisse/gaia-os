@@ -296,9 +296,68 @@ int nt_image_base_by_name(const char *name, u64b *base_out, u64b *size_out) {
 
 static u64b nt_dll_territory_next = NT_DLL_TERRITORY_BASE;
 
+// CHALICE C3c-2r: free-list reuse pool. Discovered live driving pe1/pe4/
+// pe5/pe6/pe7(+pe8) back-to-back in one boot: NtFreeVirtualMemory
+// (ntsvc.c nt_vm_free) was a pure bookkeeping no-op against this
+// allocator ("frees the *handle*, not the bump space", original comment
+// below) -- fine in isolation, but stock kernelbase's own heap-growth
+// negotiation (RtlCreateHeap's reserve-probe-then-release-then-reserve-
+// smaller retry loop, observed live via the CHALICE AVM/FVM trace: e.g.
+// reserve 0xFD0000, free it, reserve 0x7E8000, free it, reserve 0x3F4000
+// ...) burns a FRESH multi-MB bump slice on every retry of EVERY stock
+// boot (pe6/pe7/pe8 each map+init a full ntdll+kernel32+kernelbase chain);
+// three such boots back-to-back in one QEMU session exhausts the ~890MB
+// territory before the LAST boot's own DLL maps land (observed fault:
+// pe7 ret=0xC0000135/STATUS_DLL_NOT_FOUND, root cause traced via the AVM
+// log to NtAllocateVirtualMemory answering STATUS_NO_MEMORY/0xC0000017
+// mid-heap-negotiation). Fix: a small first-fit free list -- nt_vm_free
+// now feeds released regions back in here (nt_territory_free) instead of
+// only marking its own tracking slot unused, so a same-boot retry (or a
+// LATER boot's own heap negotiation) reuses already-freed space instead of
+// always bumping fresh territory. No split-on-reuse (simple over clever,
+// matches this allocator's existing style) -- a reused slot's leftover
+// tail (if any) is dropped, never worse than the pre-fix always-bump
+// behavior.
+#define NT_TERRITORY_FREELIST_MAX 64
+typedef struct { u64b addr; u64b size; int used; } NtTerritoryFreeSlot;
+static NtTerritoryFreeSlot nt_territory_freelist[NT_TERRITORY_FREELIST_MAX];
+
+void nt_territory_free(unsigned char *addr, unsigned long size) {
+    if (!addr || !size) return;
+    u64b pages = ((u64b)size + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    for (int i = 0; i < NT_TERRITORY_FREELIST_MAX; i++) {
+        if (!nt_territory_freelist[i].used) {
+            nt_territory_freelist[i].addr = (u64b)addr;
+            nt_territory_freelist[i].size = pages;
+            nt_territory_freelist[i].used = 1;
+            return;
+        }
+    }
+    // free-list full -- drop it (territory leaked for this one region,
+    // same as the pre-fix always-leak behavior; never worse).
+}
+
 // CHALICE C3b Atom 3B: no longer static -- ntboot.c's nt_boot_process
 // allocates the Phase-0 thread stack (64K) from the same DLL territory.
 unsigned char *nt_territory_alloc(unsigned long size_of_image) {
+    u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    if (pages == 0) pages = NT_PAGE_SIZE;
+
+    // CHALICE C3c-2r: first-fit (smallest-fitting) free-list reuse before
+    // ever touching the bump pointer -- see receipt above.
+    int best = -1;
+    for (int i = 0; i < NT_TERRITORY_FREELIST_MAX; i++) {
+        if (nt_territory_freelist[i].used && nt_territory_freelist[i].size >= pages) {
+            if (best < 0 || nt_territory_freelist[i].size < nt_territory_freelist[best].size) best = i;
+        }
+    }
+    if (best >= 0) {
+        u8 *base = (u8 *)nt_territory_freelist[best].addr;
+        nt_territory_freelist[best].used = 0;
+        for (u64b i = 0; i < pages; i++) base[i] = 0;
+        return base;
+    }
+
     // CHALICE C3c-2l Phase B: round the START up to 64KB granularity before
     // handing out this allocation -- every DLL image map (and, for
     // simplicity/uniformity, every other territory consumer: thread stacks,
@@ -306,8 +365,6 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
     // as a real Windows VirtualAlloc/MapViewOfFile guarantee. Territory is
     // ~890MB (0x45000000..0x7ff00000) so the extra rounding waste is cheap.
     nt_dll_territory_next = (nt_dll_territory_next + (NT_DLL_TERRITORY_ALIGN - 1)) & ~(NT_DLL_TERRITORY_ALIGN - 1);
-    u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
-    if (pages == 0) pages = NT_PAGE_SIZE;
     if (nt_dll_territory_next + pages > NT_DLL_TERRITORY_LIMIT) return 0;
     u8 *base = (u8 *)nt_dll_territory_next;
     nt_dll_territory_next += pages;

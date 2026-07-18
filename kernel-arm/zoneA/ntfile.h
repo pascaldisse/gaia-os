@@ -65,6 +65,12 @@ int nt_file_handle_close(void *handle);
 // entries)" instruction -- no parallel/duplicate mechanism.
 void nt_blob_ensure_init(void);
 unsigned char *nt_territory_alloc(unsigned long size_of_image);
+// CHALICE C3c-2r: give a previously nt_territory_alloc'd region back to the
+// bump allocator's free-list for reuse (see ntfile.c receipt) -- called by
+// ntsvc.c's nt_vm_free on a real MEM_RELEASE. addr/size as originally
+// returned/committed by nt_territory_alloc (size need not be page-rounded,
+// nt_territory_free rounds it itself).
+void nt_territory_free(unsigned char *addr, unsigned long size);
 
 // CHALICE C3c Atom 3C-1: blob-manifest lookup with FS fallback (stock DLLs
 // too big to embed, live on the RedSea-spirit disk instead -- fs.c/

@@ -196,6 +196,12 @@ static int nt_vm_free(void *aligned, u64b *out_size) {
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (!nt_vm_regions[i].used || nt_vm_regions[i].aligned != aligned) continue;
         if (out_size) *out_size = nt_vm_regions[i].size;
+        // CHALICE C3c-2r: hand the released territory back to
+        // nt_territory_alloc's free-list pool (ntfile.c) -- pre-fix this
+        // only freed the tracking-slot *handle*, leaving the underlying bump
+        // space permanently unreachable (root cause of the pe6+pe7(+pe8)
+        // cumulative territory exhaustion, see ntfile.c receipt).
+        nt_territory_free((unsigned char *)nt_vm_regions[i].aligned, (unsigned long)nt_vm_regions[i].size);
         nt_vm_regions[i].used = 0;
         return 1;
     }
