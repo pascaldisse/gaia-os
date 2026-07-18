@@ -115,6 +115,7 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
                               unsigned long Protect);
 long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
                           unsigned long FreeType);
+long NtFlushInstructionCache(void *ProcessHandle, const void *BaseAddress, unsigned long Length);
 // CHALICE C4-13: NtAllocateVirtualMemoryEx -- see ntsvc.c for the donor
 // (virtual.c) receipt. Parameters/ParameterCount are the guest's own
 // MEM_EXTENDED_PARAMETER array/count (opaque here -- parsed inside).

@@ -317,6 +317,32 @@ static void nt_avm_loopbreak_hit(u64b pages) {
     // silent again.
 }
 
+// CHALICE C4-15: real NtFlushInstructionCache floor. FEX's WinAPI wrapper
+// forwards FlushInstructionCache straight here (FEX/Source/Windows/Common/
+// WinAPI/Alloc.cpp:110-111); the next-stage JIT executes bytes written into
+// freshly allocated ARM64 code pages, so STATUS_SUCCESS without cache
+// maintenance is not sufficient. Same dc-cvau/dsb/ic-ivau/dsb/isb sequence
+// already used by this kernel's own JIT (`hc.c:657-663`). NULL/zero means a
+// process-wide synchronization request: barriers still run, no range walk.
+long NtFlushInstructionCache(void *ProcessHandle, const void *BaseAddress, unsigned long Length) {
+    (void)ProcessHandle;
+    u64b start = (u64b)BaseAddress;
+    u64b end = start + (u64b)Length;
+    if (Length && (!start || end < start)) return STATUS_INVALID_PARAMETER;
+
+    if (Length) {
+        for (u64b p = start & ~63ULL; p < end; p += 64)
+            __asm__ volatile("dc cvau, %0" :: "r"(p) : "memory");
+    }
+    __asm__ volatile("dsb ish" ::: "memory");
+    if (Length) {
+        for (u64b p = start & ~63ULL; p < end; p += 64)
+            __asm__ volatile("ic ivau, %0" :: "r"(p) : "memory");
+    }
+    __asm__ volatile("dsb ish; isb" ::: "memory");
+    return STATUS_SUCCESS;
+}
+
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
                               unsigned long *RegionSize, unsigned long AllocationType,
                               unsigned long Protect) {
@@ -1054,6 +1080,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTALLOCATEVIRTUALMEMORY:    return "NtAllocateVirtualMemory";
     case NT_SVC_NTALLOCATEVIRTUALMEMORYEX:  return "NtAllocateVirtualMemoryEx";
     case NT_SVC_NTFREEVIRTUALMEMORY:        return "NtFreeVirtualMemory";
+    case NT_SVC_NTFLUSHINSTRUCTIONCACHE:    return "NtFlushInstructionCache";
     case NT_SVC_NTPROTECTVIRTUALMEMORY:     return "NtProtectVirtualMemory";
     case NT_SVC_NTCREATESECTION:            return "NtCreateSection";
     case NT_SVC_NTMAPVIEWOFSECTION:         return "NtMapViewOfSection";
@@ -1143,6 +1170,8 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTALLOCATEVIRTUALMEMORYEX] = 7 * 8;
     nt_svc_table0[NT_SVC_NTFREEVIRTUALMEMORY] = (void *)NtFreeVirtualMemory;
     nt_svc_argtable0[NT_SVC_NTFREEVIRTUALMEMORY] = 4 * 8;
+    nt_svc_table0[NT_SVC_NTFLUSHINSTRUCTIONCACHE] = (void *)NtFlushInstructionCache;
+    nt_svc_argtable0[NT_SVC_NTFLUSHINSTRUCTIONCACHE] = 3 * 8;
     nt_svc_table0[NT_SVC_NTQUERYINFORMATIONTHREAD] = (void *)NtQueryInformationThread;
     nt_svc_table0[NT_SVC_NTQUERYINFORMATIONPROCESS] = (void *)NtQueryInformationProcess;
     nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONPROCESS] = 5 * 8;

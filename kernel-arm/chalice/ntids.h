@@ -56,6 +56,7 @@
 #define NT_SVC_NTQUERYINFORMATIONTHREAD    37  // REAL, CHALICE C4-9 (wine-arm64-syscalls.txt:29, 0x25) -- ThreadWow64Context(29) only, see ntsvc.c receipt
 #define NT_SVC_NTSETINFORMATIONTHREAD      13  // REAL, CHALICE C4-11 (wine-arm64-syscalls.txt:210, 0xd) -- instrument-first stub, see ntsvc.c receipt
 #define NT_SVC_NTALLOCATEVIRTUALMEMORYEX  107  // REAL, CHALICE C4-13 (wine-arm64-syscalls.txt:103, 0x6b)
+#define NT_SVC_NTFLUSHINSTRUCTIONCACHE   147  // REAL, CHALICE C4-15 (wine-arm64-syscalls.txt:149, 0x93) -- FEX WinAPI FlushInstructionCache wrapper directly forwards to this syscall (FEX/Source/Windows/Common/WinAPI/Alloc.cpp:110-111); generated ARM64 code must become visible before execution.
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via

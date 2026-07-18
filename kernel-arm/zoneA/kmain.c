@@ -184,6 +184,43 @@ static void resolve_line(const char *label, u64 addr) {
     }
 }
 
+// CHALICE C4-15: FEX's Windows allocator deliberately installs raw Linux
+// prctl/madvise SVC hooks when Wine exposes __wine_unix_call_dispatcher but
+// its call-checker prevents the unixlib trampoline path (pinned donor
+// FEX/Source/Windows/Common/Allocator.cpp:140-176,178-241). Linux normally
+// consumes x8=167/233. GAIA has no Linux substrate, so recover only these
+// two advisory calls, only when ELR resolves inside libwow64fex.dll. prctl
+// returns nonzero -> donor disables later VirtualName attempts (:162-169);
+// madvise is an ignored THP hint (:173-175). ELR_EL1 already points at the
+// instruction after SVC; sync_entry restores the modified frame + eret.
+int sync_try_fex_linux_hint(u64 esr, u64 elr, u64 *regs) {
+    if (((esr >> 26) & 0x3f) != 0x15) return 0; // AArch64 SVC
+    if (regs[8] != 167 && regs[8] != 233) return 0;
+
+    char name[64]; u64 off;
+    if (!nt_image_resolve(elr, name, sizeof(name), &off)) return 0;
+    const char expected[] = "libwow64fex.dll";
+    int i = 0;
+    while (expected[i] && name[i] == expected[i]) i++;
+    if (expected[i] || name[i]) return 0;
+
+    static int logged_prctl, logged_madvise;
+    if (regs[8] == 167) {
+        regs[0] = ~0ULL; // nonzero: disable optional VirtualName path
+        if (!logged_prctl) {
+            puts("CHALICE: FEX raw prctl VirtualName hint -> unsupported; resumed\n");
+            logged_prctl = 1;
+        }
+    } else {
+        regs[0] = 0; // advisory THP madvise accepted as a no-op
+        if (!logged_madvise) {
+            puts("CHALICE: FEX raw madvise THP hint -> no-op; resumed\n");
+            logged_madvise = 1;
+        }
+    }
+    return 1;
+}
+
 // CHALICE C3c Atom 3C-2a: sync_entry (boot.S) now hands over esr/elr/far/
 // orig-sp/regs-frame-ptr -- turn a silent CPU fault into one dense serial
 // dump instead of the old bare "!SYNC esr=.. elr=.." line.
