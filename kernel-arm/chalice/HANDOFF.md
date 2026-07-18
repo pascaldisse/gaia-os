@@ -487,27 +487,116 @@ quantified precisely instead of estimated.
 param) all verified PASS live at HEAD `2c2a25d`. qemu leak-checked
 (pgrep+kill) before/after every boot this leg.
 
-**Exact next step:** Pascal's call -- implement a real RESERVE-vs-COMMIT
-territory split (reservations carve address ranges without consuming
-backing pages; only COMMIT calls, whether upfront or at a tracked
-reserved base, actually bump/zero real territory) is the grounded fix for
-the ~20x waste measured this leg -- NOT more RAM (already tried, 2.3x more
-budget only delayed the same exhaustion by ~9x more calls before hitting
-the identical wall shape). Once that lands, re-run `pe10` -- `BTCpuSimulate`
-entry against a real x86 CONTEXT remains the unattempted leg-goal atom,
-still blocked upstream of it.
+
+
+## CHALICE C4 state refresh (2026-07-18, leg 11 -- HEAD `<fill after final commit>`)
+
+**FURTHEST POINT OF THE WHOLE C4 SLICE: genuine x86-side EIP progression
+through the dynarec, live-proven.** Continuation leg, single focus (pe10
+fault-by-fault past leg-9/10's RESERVE/COMMIT arena, which is confirmed
+holding -- zero territory-exhaustion lines this entire leg, unlike leg-7/8).
+Three burn-down cycles, each moved the fault line:
+
+1. **Predecessor deltas disposed** (`8ee155d`): uncommitted `ntboot.c`
+   (+6 lines, ntdll/exe base+size+entry debug prints) kept -- useful,
+   harmless. `pe10_probe.py` drain 10->45s kept -- needed for the longer
+   traces below. Stray `.bak` deleted.
+2. **NtSetInformationThread (svc id=13, wine-arm64-syscalls.txt:210)
+   wired** (`b63a48f` instrument stub -> `d5ebba5` real handler): measured
+   live, class=0x1D(29)=ThreadWow64Context, len=0x2CC -- the documented
+   real-NT SET counterpart of the GET this floor already answers
+   (leg-9). Was a silent `NtStub`->`STATUS_NOT_IMPLEMENTED`; implemented
+   for real (stash Eip/Esp from the incoming I386_CONTEXT, same fields
+   the GET side already answers with). Did NOT move the fault (bit-
+   identical crash before/after -- correctly diagnosed as *not yet on
+   the path that consumes it* rather than declared a fix prematurely).
+3. **WOW64_CPURESERVED's embedded I386_CONTEXT seeded** (`a973b0a` --
+   THE fix that moved the fault): ground truth via `llvm-objdump`
+   (`wowbox64.dll`, real `ImageBase=0x4c0000`, NOT the `0x180000000`
+   convention that applies to the OTHER stock DLLs -- HANDOFF's own
+   `ImageBase 0x180000000` line is per-DLL, always check, don't assume)
+   on the exact faulting address (`wowbox64.dll+0xF88BC` -> file addr
+   `0x5B88BC`, function `native_pass0`, instruction `ldr w8,[x12]`
+   guarded by a `getProtection` call -- Box64's dynarec fetching the
+   FIRST x86 opcode byte at the code pointer in x12). x12=x20=`0x2`
+   exactly == `far=0x2` from the Data Abort -- root cause: `native_pass0`
+   reads the thread's Eip **directly from TLS-slot memory**
+   (`TlsSlots[WOW64_TLS_CPURESERVED]`'s embedded `I386_CONTEXT`, offset
+   +4), NOT via a syscall round-trip -- `nt_build_wow64_teb32` allocates+
+   zeroes that block but only ever wrote its `Machine` header field,
+   leaving Eip/Esp permanently 0 (`0+2` prefix-skip convention == exactly
+   `far=0x2`). Fix: `nt_wow64_cpureserved_set_context` (new, ntsvc.c/h)
+   writes the SAME real Eip/Esp/Ebp/CS/EFlags/SS fields the
+   `NtQueryInformationThread(ThreadWow64Context)` GET path already
+   computes, called once from `nt_boot_process` right after
+   `nt_wow64_set_initial_context` (same call site convention).
+
+**Live result after the fix (`scratch/pe10_probe.py`, isolated,
+GAIA_QEMU_MEM default 4G, both LOW+HIGH territory pools intact from
+leg-9/10, zero exhaustion lines observed): `native_pass0` now decodes
+REAL x86 bytes from `hello8_x86.exe`'s real entry.** Fault-dump registers
+prove it directly: `x19=x20=0x47661000` (== the exact `exe_entry` value
+our own `CHALICE: x86 guest initial context eip=0x47661000` line prints),
+`x25=0x47661001` (entry+1 -- one byte, `0x55`/`push ebp`, the exe's real
+first instruction per `llvm-objdump --triple=i386 hello8_x86.exe`,
+consumed and advanced), backtrace `[0]=hello8_x86.exe+0x2000` (inside the
+mapped image). **This is the leg's own success bar, met: "x86-side EIP
+progression in fault lines counts, dynarec trace counts."**
+
+**New furthest-point fault (analyzed, not a resolvable single line this
+leg): `elr=0x0 far=0x0 lr=0x0`, `esr=0x02000000`/`ec=0x0` (ARM64 "Unknown
+reason" == Undefined Instruction, NOT a Data/Instruction Abort).** Root
+cause quantified: `kmain.c`'s `l1_table[0]` identity-maps physical address
+`0x0` as **device nGnRnE** (QEMU virt's unimplemented-device stub, which
+silently returns `0x00000000` on read rather than bus-faulting) -- so a
+`br`/`blr` through a NULL function pointer lands on a real, mapped,
+zero-filled word, which ARM64 decodes as an Undefined Instruction (EC=0)
+rather than an Instruction Abort (which is what an actually-unmapped
+address would produce). This is a genuine **null entry in wowbox64.dll's
+own internal opcode-dispatch table** (the decoder correctly consumed
+`0x55`/`push ebp` -- x25 proves it -- then presumably reached the next
+opcode byte, `0x89`/`mov r/m32,r32`, 2-byte ModRM form, and its handler
+slot in Box64's internal jump table is null in THIS build), not a kernel
+bug -- reverse-engineering which exact table/offset needs the entry is
+binary-level work inside a large stripped DLL (no Box64/Hangover source
+available, unlike the vanilla-Wine files this floor has been grounding
+against) -- genuinely the HANDOFF "blocked >2 cycles" stopping point, now
+on a THIRD distinct fault category this leg (syscall-answer gap ->
+TLS-memory-seed gap -> binary opcode-table gap), each one real forward
+motion, analyzed and documented rather than guessed past.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines) +
+`pe8_gate.py` standalone + `scratch/ramfb_gate.py` all verified PASS live
+at HEAD post-fix. qemu leak-checked (pgrep+kill) before/after every boot
+this leg (network fetch of vanilla `wine/dlls/wow64/syscall.c`+`include/
+winternl.h`+friends done read-only via `curl` this leg for THREADINFOCLASS
+grounding -- no local `wine/` donor clone present this session, HANDOFF's
+"main working copy has it" was not true this leg; fetched the specific
+files needed instead, same grounding standard, no guessing).
+
+**Exact next step:** with real x86 execution now proven reachable, the
+remaining path to a full `BTCpuSimulate` entry / `hello8_x86` print needs
+BOX64 OPCODE-TABLE reverse engineering (not more kernel-side syscall/TEB
+work) -- disassemble `wowbox64.dll`'s dispatch structure around
+`native_pass0`/`dynarec64_000`'s handling of `0x89` (and likely several
+following opcodes) to find whether the null slot is a genuinely-missing
+opcode (unlikely for something as common as `mov r/m32,r32` in a real
+Box64 build -- more likely a **table/base-pointer setup step this floor
+still hasn't wired**, e.g. a per-process JIT code-cache or opcode-table
+init call BTCpuProcessInit makes via ANOTHER unimplemented syscall not
+yet hit because this is the first opcode past the entry) -- instrument
+further (add a table dump/trace around x8=`wowbox64.dll+0x805D38`, the
+global/table base register live at the fault) before assuming a specific
+fix. `pe10` (isolated, opt-in) remains the harness -- never wire into
+`pe9_gate.py` until it stops crash-faulting.
 
 ## Immediate next step for a fresh session
 
-`hello7`/`pe8`'s widened KERNEL32.dll surface walk is green (this slice) —
-GetCommandLineA/GetModuleHandleA/GetProcAddress/GetProcessHeap+HeapAlloc+
-HeapFree/GetCurrentProcessId/GetLastError+SetLastError all proven. To push
-further, either (a) extend `hello7.exe`/a new `hello8.exe` to call more Win32
-surface (console setup, file I/O beyond NtOpenFile/ReadFile, more kernelbase
-APIs) and burn down whatever it newly needs, or (b) start C3/C4 per Pascal's
-ruling (see NEXT below — that's the real fork point now, not more surface-
-walk atoms). Every gap from here shows itself as a legible `CHALICE FAULT` /
+Same fork point as leg-8 (superseded by leg-9-11's WOW64/dynarec work,
+kept for history): `hello7`/`pe8`'s widened KERNEL32.dll surface walk is
+green -- GetCommandLineA/GetModuleHandleA/GetProcAddress/GetProcessHeap+
+HeapAlloc+HeapFree/GetCurrentProcessId/GetLastError+SetLastError all
+proven. Every gap from here shows itself as a legible `CHALICE FAULT` /
 `NtRaiseException` line resolved to `<module>+offset` — instrument-first,
-measure, then fix (TEB.StaticUnicodeString this slice: no fault line at all,
-just a wrong return value — disassemble the DONOR when there's no crash to
-chase, not just when there is).
+measure, then fix. **Current real next step is C4-11's own "Exact next
+step" just above -- Box64 opcode-table gap, not a syscall gap.**
