@@ -127,6 +127,7 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
 // (SLICE2-SPEC A3 mechanism, reused verbatim) -- turns an unrecoverable
 // kernel crash into a one-line diagnosis + clean return to the shell.
 long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance) {
+    (void)FirstChance;
     u8 *er = (u8 *)ExceptionRecord;
     u32b code = 0;
     u64b addr = 0;
@@ -134,8 +135,7 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
         code = (u32b)er[0] | ((u32b)er[1] << 8) | ((u32b)er[2] << 16) | ((u32b)er[3] << 24);
         for (int i = 0; i < 8; i++) addr |= (u64b)er[0x10 + i] << (8 * i);
     }
-    puts("CHALICE: NtRaiseException first="); puthex(FirstChance);
-    puts(" code="); puthex(code);
+    puts("CHALICE: NtRaiseException code="); puthex(code);
     puts(" addr="); puthex(addr);
     char name[64]; u64b off = 0;
     if (addr && nt_image_resolve(addr, name, sizeof(name), &off)) {

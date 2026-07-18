@@ -141,7 +141,6 @@ int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned lon
 int nt_arena_commit(unsigned long base, unsigned long size);
 void nt_fault_region(const char *label, unsigned long addr);
 int nt_fault_read32(unsigned long addr, unsigned int *word_out);
-void nt_dispatch_log_reset(void);
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -292,9 +291,6 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
 #define STATUS_BREAKPOINT        0x80000003U  // wine/include/winnt.h:630
 #define STATUS_ILLEGAL_INSTRUCTION 0xc000001dU // wine/include/winnt.h:638
 #define NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA 0x66c40U
-// `adrp x16, ntdll+0x152000; ldr x16,[x16,#0xf98]` in the stock dispatcher.
-// LLVM disassembly § FEX-MAP C4-19; ImageBase rule -> writable hook RVA.
-#define NTDLL_WOW64_EXCEPTION_HOOK_RVA 0x152f98U
 
 extern char _load_base[], _kernel_end[];
 extern unsigned long *nt_exit_jmpbuf;
@@ -348,32 +344,6 @@ static u64 ki_user_exception_dispatcher(void) {
     return base + NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA;
 }
 
-// C4-19 measurement: one fresh service trace begins at every hardware
-// delivery.  The stock dispatcher first reads this ntdll .data hook; resolve
-// both slot and pointee so an empty hook is distinguished from an FEX return.
-static void audit_exception_delivery(void) {
-    static u64 delivery;
-    u64 base = 0, size = 0;
-    u64 hook = 0;
-    nt_dispatch_log_reset();
-    delivery++;
-    puts("CHALICE EXCEPTION CYCLE #"); putdec(delivery);
-    if (nt_image_base_by_name("ntdll.dll", &base, &size) &&
-        size >= NTDLL_WOW64_EXCEPTION_HOOK_RVA + 8) {
-        u64 slot = base + NTDLL_WOW64_EXCEPTION_HOOK_RVA;
-        hook = *(u64 *)(u64)slot;
-        puts(" ntdll="); puthex(base); puts(" hook_slot="); puthex(slot);
-        puts(" hook="); puthex(hook);
-        if (hook) {
-            char name[64]; u64 off = 0;
-            if (nt_image_resolve(hook, name, sizeof(name), &off)) {
-                puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
-            }
-        }
-    } else puts(" ntdll/hook-slot unavailable");
-    puts("\n");
-}
-
 // Return a dispatcher stack pointer, zero for kernel/unknown faults.  boot.S
 // keeps demand-commit ahead of this function, so an arena first-touch retries
 // transparently; a COMMITTED JIT HLT reaches the guest here.
@@ -421,7 +391,6 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
         *(u64 *)(rec + 0x20) = (esr >> 6) & 1;     // ESR.ISS.WnR
         *(u64 *)(rec + 0x28) = far;
     }
-    audit_exception_delivery();
     puts("CHALICE EXCEPTION: code="); puthex(status);
     puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
     asm volatile("msr elr_el1, %0" :: "r"(dispatcher));
