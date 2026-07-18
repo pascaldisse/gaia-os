@@ -397,6 +397,47 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
 
     dispatcher = ki_user_exception_dispatcher();
     if (!dispatcher) return 0;
+
+    // CHALICE C4-22: donor-grounded TLS probe -- FEX TEB64.TlsSlots @ 0x1480
+    // (wine/include/winternl.h:1238); WOW64_TLS_MAX_NUMBER=19 (FEX
+    // Source/Windows/include/winternl.h:29) -> THREAD_STATE slot 16,
+    // CONTROL_WORD slot 17, ENTRY_CONTEXT slot 18 (FEX Module.cpp:77-80).
+    // Read the interrupted guest's OWN x18 (TEB, regs[18]) and the raw
+    // bytes FEX itself keeps in those two slots -- measured, not guessed.
+    {
+        u64 teb = regs[18];
+        u32 lo = 0, hi = 0;
+        puts("CHALICE TLS PROBE: x18="); puthex(teb);
+        if (teb && nt_fault_read32(teb + 0x1480 + 16 * 8, &lo) &&
+            nt_fault_read32(teb + 0x1480 + 16 * 8 + 4, &hi)) {
+            u64 thread_state = ((u64)hi << 32) | lo;
+            puts(" slot16(ThreadState)="); puthex(thread_state);
+        } else {
+            puts(" slot16(ThreadState)=UNREADABLE");
+        }
+        if (teb && nt_fault_read32(teb + 0x1480 + 18 * 8, &lo) &&
+            nt_fault_read32(teb + 0x1480 + 18 * 8 + 4, &hi)) {
+            u64 entry_ctx = ((u64)hi << 32) | lo;
+            puts(" slot18(EntryContext)="); puthex(entry_ctx);
+            u32 clo = 0, chi = 0;
+            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_PC_OFF, &clo) &&
+                nt_fault_read32(entry_ctx + ARM64_CONTEXT_PC_OFF + 4, &chi)) {
+                puts(" ec.pc="); puthex(((u64)chi << 32) | clo);
+            }
+            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_SP_OFF, &clo) &&
+                nt_fault_read32(entry_ctx + ARM64_CONTEXT_SP_OFF + 4, &chi)) {
+                puts(" ec.sp="); puthex(((u64)chi << 32) | clo);
+            }
+            if (entry_ctx && nt_fault_read32(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8, &clo) &&
+                nt_fault_read32(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8 + 4, &chi)) {
+                puts(" ec.x18="); puthex(((u64)chi << 32) | clo);
+            }
+        } else {
+            puts(" slot18(EntryContext)=UNREADABLE");
+        }
+        puts("\n");
+    }
+
     // The prior dispatcher stack is still live at this point.  This is the
     // exact CONTEXT bytes RtlRestoreContext was handed in the prior pass.
     if (prior_context_valid && !context_return_logged) {
