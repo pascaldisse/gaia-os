@@ -10,7 +10,19 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — CURRENT: C4-21 delivered-CONTEXT fixed; FEX `CurrentFrame` frontier. Runtime `11a1244`; live 2026-07-18.
+## STATE — CURRENT: C4-23 x18/CONTEXT-clobber fixed; new frontier `NtRaiseException(0xC0000026)` loop at `ntdll+0x3868C`. Runtime `1184e5b`; live 2026-07-18.
+
+- probe receipts (`d9e98b8`/`9239e3d`, TEB64.TlsSlots@0x1480, WOW64_TLS_MAX_NUMBER=19 → THREAD_STATE=16/CONTROL_WORD=17/ENTRY_CONTEXT=18, FEX `Source/Windows/include/winternl.h:28-29`) → at first exception delivery (HLT `+0x2f0`), `x18=0x4116C120` (real TEB), `slot16(ThreadState)=0x270001000` (non-null), `slot18(EntryContext)=0x4116B7B0` with `ec.pc=0x4B7F34E4 ec.sp=0x4116B7A0 ec.x18=0x4116C120` — all sane, internally consistent (ec.x18 == live x18).
+- **VERDICT: BTCpuThreadInit RAN** (not never-ran, not wrong-thread) — TLS slots 16/18 were populated correctly by wow64/FEX per-thread init before the crash. TEB_SIZE=0x1600 audited against every offset this chain touches (TlsSlots[16..18] @ 0x1480+0x80..0x90, well inside bounds); **no truncation** — neither named C4-22 candidate ("TLS never populated" / "TEB truncated") applied. Both explicitly ruled out by receipt, not assumed.
+- second probe (at the `ReconstructCompactedEFLAGS` AV, `libwow64fex+0x11b28`, FAR=`0x409`) → `x18=0x0` (`teb-out-of-range`) — the guest's own x18 hardware register, captured directly by `SAVEALL_SYNC` (not a memory read that could spuriously read 0), was **zero** at this second fault, despite being valid (`0x4116C120`) moments earlier at the first fault, with **zero intervening floor syscalls** (verified: no `nt_dispatch`/`CHALICE ARENA` lines between the two probes other than exception #2's own entry).
+- **root cause (C4-23, file:line-grounded, address arithmetic, not speculative):** `guest_exception_stack()` (`kmain.c`) zero-fills the full `ARM64_EXCEPTION_STACK=0x460`-byte CONTEXT/EX/RECORD region ending at `orig_sp`. `SYNC_FRAME_SIZE=0x300` (boot.S `SAVEALL_SYNC`) is **smaller** than `0x460` and **both regions end at the same `orig_sp`** — so the CONTEXT zero-fill (`[orig_sp-0x460, orig_sp-0x18)`) **fully swallows** the raw register-capture frame `x21=[orig_sp-0x300, orig_sp)` that `regs` points into. `sync_try_guest_exception`'s own GPR-copy loop (`ctx[X_OFF+i*8]=regs[i]`) and Q-register `move_bytes` ran **after** that zero-fill and read back zeroed memory; `boot.S`'s `ldr x18,[x21,#SYNC_FRAME_X18_OFF]` (the reload-before-`eret` into `KiUserExceptionDispatcher`) read the same clobbered memory. **Every guest exception delivery therefore handed the dispatcher `x18=0` (TEB=NULL)** — explaining the null `Thread->CurrentFrame` in FEX's `ReconstructCompactedEFLAGS` (`Core.cpp:177,179`): FEX fetches `Thread` via `TEB->TlsSlots[THREAD_STATE]` (`FEX Source/Windows/WOW64/Module.cpp:101-102`, `TLS.ThreadState()`), unreachable with `TEB=0`; the observed `FAR=0x409` matches a near-null-derived garbage `Thread` pointer chained through `CurrentFrame`.
+- **fix (`1184e5b`):** snapshot `regs[]` onto `sync_try_guest_exception`'s own C frame (already off-guest-stack on `sync_exception_stack`, C4-21) *before* calling `guest_exception_stack()`; build the delivered CONTEXT from that snapshot; `boot.S` now reloads x18 from the delivered CONTEXT struct itself (`x0`, offset `ARM64_CONTEXT_X18_OFF=0x098`, new shared `sync_frame.h` constant with a compile-time assert tying it to `kmain.c`'s `ARM64_CONTEXT_X_OFF`) instead of the clobbered `x21` memory.
+- **outcome:** re-gate all-green (`pe8_gate` `ret=78`, `pe9_gate` both backends, `ramfb_gate`, no regression). `pe10 fex` — the `libwow64fex+0x11b28` null-deref crash **is gone**; execution now reaches `NtRaiseException id=207` with `pc=0x4B7F34E4 sp=0x4116B7A0` (exactly matching the earlier-probed `EntryContext.pc/sp` — FEX correctly reconstructed and delivered a *new* guest exception from real, non-zero state), then `code=0xC000001D addr=0`, then settles into a **stable, non-crashing loop**: `NtRaiseException code=0xC0000026 (STATUS_ASSERTION_FAILURE) addr=ntdll.dll+0x3868C`, poison `pc=0xFFFFFFFFFFFFFEFE`, repeating (~9200x/45s, no new fault addresses, no forensic termination). **No `hello8_x86`/WriteFile marker yet** — new frontier is this assertion loop, not a crash; genuinely deeper than C4-21/C4-22's frontier.
+- **next (new instrumentation, out of this salvage's "do not re-instrument" scope):** resolve `ntdll.dll+0x3868C` (`RtlAssert`-class internal assert, unresolved via static `llvm-objdump` symbol lookup this pass) and probe `NtRaiseException id=207`'s call site / the poison-pc `0xFFFFFFFFFFFFFEFE` origin to find what floor service or guest state the assertion is checking.
+
+---
+
+## STATE — C4-21 delivered-CONTEXT fixed; FEX `CurrentFrame` frontier (SUPERSEDED by C4-23 above). Runtime `11a1244`; live 2026-07-18.
 
 - raw data abort → `ESR_EL1=0x96000006`; EC=`0x25`; ISS=`0x6`; ELR=`libwow64fex.dll+0x148A0` → `FEXCore::LookupCache::FindBlock`; FAR=`0x2909C0008` → reserve-commit arena, reservation `[0x2881C0000, +0x9800000)`, initially RESERVED.
 - demand commit → seen; fired; 2MB backing + retry; proof → FAR class COMMITTED on later fault. C4-15 gate correct; no EC decoder defect.
@@ -195,6 +207,16 @@ registry floor, NtRaiseException/HardError, NtQueryDefaultLocale.
     since `GetModuleHandleA(NULL)` (a different, PEB-based path) keeps
     working. `nt_build_teb` must wire an empty, properly-capacitied
     `UNICODE_STRING` there before the guest ever runs.
+11. **Guest-exception CONTEXT stack (`0x460` bytes) can swallow the raw
+    register-capture frame (`0x300` bytes) if both end at the same `orig_sp`.**
+    `guest_exception_stack()`'s zero-fill silently destroyed `SAVEALL_SYNC`'s
+    x0-x30/q0-q31 snapshot before it was read for CONTEXT population *and*
+    before boot.S's x18-reload-before-`eret` — delivering `x18=0` (TEB=NULL)
+    to every guest exception dispatch, C4-23. Any future stack-region layout
+    change here must re-check for overlap by address arithmetic, not just by
+    inspection; this one hid behind two prior "fixed" C4-20/C4-21 stack-
+    isolation passes that addressed a *different* overlap (the C locals) and
+    didn't catch this one.
 
 ---
 
@@ -266,9 +288,10 @@ them under a socket harness and SIGTERMs QEMU regardless of outcome.
   dynarec initializes), then faults in its own JIT code-cache region
   (`elr=0/far=0`), unchanged since leg-11.
 
-**Next step:** clone the FEX-Emu source at the version Hangover 11.9 vendors,
-map `libwow64fex.dll+0x1545DC`/`+0x165D14` to its published symbols
-(donor-grounded, exactly like box64 was pinned to `v0.4.2`), and find the floor
-service or init state FEX's JIT expects there. Once the backend runs the exe's
-instruction stream, `hello8_x86`'s WriteFile printing through the 32→64 thunk =
-C4-5 complete. Then the graphics rung (C3) gets `zoneA` back for MXO's window.
+**Next step (superseded by C4-23 above — kept for prior-leg archaeology only):**
+the `libwow64fex.dll+0x1545DC`/`elr+0x11b28` faults described here and in
+C4-19/20/21 are now understood and fixed (C4-23: x18/CONTEXT clobber). Current
+true frontier is the `NtRaiseException(0xC0000026)` assertion loop at
+`ntdll+0x3868C` — see the C4-23 STATE block at the top of this file. Once that
+resolves, `hello8_x86`'s WriteFile printing through the 32→64 thunk = C4-5
+complete. Then the graphics rung (C3) gets `zoneA` back for MXO's window.
