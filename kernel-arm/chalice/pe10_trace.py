@@ -168,13 +168,14 @@ def latest_hex(text, pattern, label):
 
 
 def module_bases(text):
-    # nt_boot_process emits the first form; the WOW64 probe emits the other
-    # two, each from actual mapping rather than a baked address.
-    return {
-        "ntdll": latest_hex(text, r"CHALICE PROBE: ntdll_base=0x([0-9a-f]+)", "ntdll"),
-        "wow64": latest_hex(text, r"CHALICE: wow64\.dll mapped base=0x([0-9a-f]+)", "wow64"),
-        "fex": latest_hex(text, r"CHALICE: CPU backend mapped name=libwow64fex\.dll\s*\r?\n\s*base=0x([0-9a-f]+)", "FEX"),
-    }
+    # nt_image_register logs each actual map.  Do not use a prior boot's
+    # territory addresses: the breakpoint targets are reconstructed here.
+    def image(name, label):
+        return latest_hex(text, r"CHALICE IMAGE: name=" + re.escape(name) +
+                          r" base=0x([0-9a-f]+)", label)
+    return {"ntdll": image("ntdll.dll", "ntdll"),
+            "wow64": image("wow64.dll", "wow64"),
+            "fex": image("libwow64fex.dll", "FEX")}
 
 
 def pc_from_stop(rsp, stop):
@@ -248,7 +249,9 @@ def main():
         drain(serial, transcript, 6)
         serial.sendall(b"pe10 fex\r")
         wait_for(serial, transcript,
-                 lambda t: "CHALICE EXCEPTION:" in t and "CPU backend mapped name=libwow64fex.dll" in t,
+                 lambda t: "CHALICE EXCEPTION:" in t and
+                 "CHALICE IMAGE: name=wow64.dll" in t and
+                 "CHALICE IMAGE: name=libwow64fex.dll" in t,
                  args.timeout)
         # Freeze the known delivery loop, then derive every image-relative
         # address from this boot's serial receipts before setting breakpoints.

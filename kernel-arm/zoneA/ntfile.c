@@ -233,6 +233,10 @@ void nt_image_register(const char *name, u64b base, u64b size, u64b entry, int i
         nt_images[i].name[j] = 0;
         nt_images[i].base = base; nt_images[i].size = size; nt_images[i].entry = entry;
         nt_images[i].is_dll = is_dll; nt_images[i].used = 1;
+        // C4-20 trace receipt: module bases must be this boot's values, not
+        // addresses copied from a prior run.  The raw-RSP harness consumes it.
+        puts("CHALICE IMAGE: name="); puts(nt_images[i].name);
+        puts(" base="); puthex(base); puts(" size="); puthex(size); puts("\n");
         return;
     }
 }

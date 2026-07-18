@@ -199,10 +199,12 @@ sync_entry:
     bl      sync_try_guest_exception
     cbz     x0, 1f
     // C4-20: this reads ELR_EL1/SPSR_EL1 immediately before this ERET;
-    // it is system-register truth, not the C-built CONTEXT copy.
+    // it is system-register truth, not the C-built CONTEXT copy.  x0 is
+    // the returned guest stack, so retain it across the diagnostic call.
+    mov     x19, x0
     bl      sync_exception_eret_truth
     ldr     x18, [sp, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
-    mov     sp, x0
+    mov     sp, x19
     eret
 2:
     RESTOREALL_SYNC
