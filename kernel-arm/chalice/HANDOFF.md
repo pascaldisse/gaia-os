@@ -1,3 +1,59 @@
+## State refresh (2026-07-18, C3c-2o) -- minimal registry floor (NtCreateKey/NtOpenKey/NtQueryValueKey/NtSetValueKey/NtQueryDefaultLocale) IMPLEMENTED + VERIFIED WORKING; registry-value-garbage-read HYPOTHESIS FALSIFIED live -- wcslen fault unchanged, real cause is elsewhere (likely NLS blob data/version, not the registry)
+HEAD `a7876bb`. Registry-floor handlers (ntfile.c) + 2 new real ids
+(NtSetValueKey=96/0x60, NtQueryDefaultLocale=21/0x15; NtCreateKey=29/
+NtOpenKey=18/NtQueryValueKey=23 already existed in ntids.h unregistered)
+registered in ntsvc.c per SLICE2-SPEC contract: NtQueryValueKey ->
+STATUS_OBJECT_NAME_NOT_FOUND (never writes the out buffer -- load-bearing
+for the hypothesis); NtCreateKey -> fixed pseudo-handle
+NT_REGISTRY_KEY_HANDLE=0x84 (ntids.h, singleton constant below
+NT_HANDLE_BASE, same idiom as NT_STDOUT_HANDLE -- NOT drawn from ntfile.c's
+shared {file,section} 32-slot handle table; a first cut that DID use that
+table broke differently, STATUS_NO_MEMORY once the DLL-load-heavy boot
+path exhausted it before NtCreateKey ever ran, confirmed via the
+fault-time stack backtrace showing 0xC0000017); NtOpenKey ->
+STATUS_OBJECT_NAME_NOT_FOUND; NtSetValueKey -> STATUS_SUCCESS no-op;
+NtQueryDefaultLocale -> STATUS_SUCCESS + *DefaultLocaleId=0x0409.
+PER-HANDLER DIAGNOSTIC LOGGING added (nt_dispatch_log_enabled-gated, same
+idiom as NtGetNlsSectionPtr's existing prints) -- names the actual
+key/value path being probed, not just an anonymous hit-count; this is
+what let this session's live trace definitively rule OUT the registry as
+the wcslen fault's cause instead of guessing from address bytes alone.
+LIVE RESULT (pe6/pe7 gate, hello5.exe+stock ntdll, HEAD `a7876bb`): the
+registry floor fires correctly and cleanly -- 4x NtOpenKey (early-boot/
+Wine-config probes: `\Registry\Machine\System\...\Session Manager`,
+`Software\Wine`, `...\Microsoft\Windows NT\CurrentVersion`,
+`...\Microsoft\Windows\CurrentVersion` -- NONE are the locale-override
+path this atom targeted) all -> NOT_FOUND, ZERO NtCreateKey calls, ZERO
+NtQueryValueKey calls, 2x NtQueryDefaultLocale -> SUCCESS 0x0409, no
+crash anywhere in that sequence. The wcslen fault itself is BYTE-IDENTICAL
+to before this atom (esr=0x96000004 elr=ntdll.dll+0x7857C
+far=0xFFFFFFFF32E3DA98, same kernelbase.dll+0x65C34 caller) and fires
+immediately after the second NtQueryDefaultLocale answer with NO
+intervening syscall (known or UNIMPLEMENTED) logged in between -- i.e.
+it's driven by data already resident (the sortdefault.nls/l_intl.nls blob
+content itself, mapped successfully by C3c-2n), not by any further
+syscall answer this or any prior atom controls.
+NEXT ATOM (not registry, not syscalls): C3c-2n's own unresolved caveat --
+the donor NLS blobs (chalice/stock/{locale,sortdefault,l_intl}.nls) came
+from this repo's wine/ 11.13 donor build, "NOT re-verified byte-identical
+to whatever hangover-11.9's own wine build generated" (C3c-2n note,
+verbatim). Compare sortdefault.nls's on-disk table layout/offsets against
+what Hangover-11.9-built ntdll.dll's NlsValidateLocale (locale.c:737) /
+GetLocaleInfoEx path actually indexes into for lcid 0x409, or re-fetch
+the version-matched blobs (fetch-stock-dlls.sh's Hangover-deb-first path,
+not yet re-tried this session per C3c-2n's own note that the deb wasn't
+re-fetched).
+No-regression gate green: scratch/pe7_gate.py (all 14 required-green
+lines OK) + scratch/ramfb_gate.py (all 7 checks OK, screendump
+corner/bar pixels exact). No qemu leaks (pgrep clean before/after every
+drive, this session's every boot/test loop checkpoint-committed first per
+discipline). Squashed to one clean commit (`a7876bb`, amend of the
+checkpoint) -- source-only (ntfile.c/ntfile.h/ntsvc.c/ntids.h); build
+artifacts (chalice/*.exe/.pdb, pehello_bin.c, disk.img, gaia-os.img/.elf)
+left uncommitted per convention.
+
+---
+
 ## State refresh (2026-07-18, C3c-2n) -- NtInitializeNlsFiles + NtGetNlsSectionPtr implemented; init_locale's header fault (kernelbase+0x3AAA0) AND RtlInitNlsTables fault (ntdll+0x496C4) both CLOSED; new frontier is an ntdll wcslen(garbage) crash, likely the registry floor (NtOpenKey/NtQueryValueKey still NtStub)
 HEAD `b404d4a`+this note. Implemented the real Wine syscalls
 NtInitializeNlsFiles (id=158/0x9e, ntfile.c) and NtGetNlsSectionPtr
