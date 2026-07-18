@@ -10,28 +10,15 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — CURRENT: FEX door is the live lead. HEAD `2c24a58` (leg-15), gates re-verified green 2026-07-18 (Ari).
+## STATE — CURRENT: C4-16 CPU registry floor. Runtime `01dfce9`; live 2026-07-18.
 
-leg-15's 4 floor changes (JIT icache flush, VirtualQuery region coalescing, FEX
-thread-handle context path, demand-commit overcommit arena) landed UNPROVEN — leg-14
-cap-killed to a gitignore-only commit, leg-15 worker timed out, leg-16 stopped
-before it could gate. **Re-verified live at HEAD `2c24a58`:** `pe8_gate` (`ret=78`,
-surface walk complete) + `pe9_gate` (both backends, wow64 teb32/peb32/cpureserved
-built) + `ramfb_gate` all PASS, no regression, no qemu leaks. Floor is green; leg-15
-is safe to build on.
+- C4-16 → `NtOpenKeyEx` HKLM/root-relative CentralProcessor\0 → success; \1 → `STATUS_OBJECT_NAME_NOT_FOUND`; `NtQueryValueKey(KeyValuePartialInformation)` → all 11 FEX CP REG_QWORD values, raw EL1 `mrs`; CP packing receipt → `FEX-MAP.md`.
+- proof → `pe10 fex`: `starting FEX`; opens CentralProcessor\0; reads CP 4030/4020/4021/4031/4038/403A/4024/4039/4032/5801/4000; enumeration opens \1 → NOT_FOUND; **past FetchHostFeatures / ForcedAssert**.
+- new frontier → generated JIT code: `ec=0`, `elr=lr=0x2681B02F0`, unmapped; `far=0x2909C0008`; mapper candidate `libwow64fex.dll+0x1B94C8` → embedded `sprintf` (`External/tiny-json/tiny-json.c:640`), not fault PC. § `FEX-MAP.md`
+- regressions → `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS; leak check → none.
+- wowbox64 → parked fallback; prior `elr=0/far=0` JIT-cache fault.
 
-Two backends, two furthest points (full detail in leg-13 section below — still current):
-- **FEX (`pe10 fex`) = the lead.** Its own banner prints (`starting FEX (Hangover
-  11.9)`), `NtAllocateVirtualMemoryEx` serves it, then faults deep FEX-internal at
-  `libwow64fex.dll+0x1545DC` (lr→`+0x165D14`, a real FEX call chain — its own JIT
-  init gap, shape-analogous to box64's).
-- **wowbox64 (`pe10`) = parked.** Fault unchanged since leg-11 (`elr=0/far=0`, its
-  JIT code-cache region); feature-gate hypothesis died on evidence. Fallback only.
-
-**Next step (unchanged from leg-13, register-safe phrasing):** clone the FEX-Emu donor
-source at the Hangover-11.9-vendored version, map the `+0x1545DC`/`+0x165D14` call chain
-to its published symbols (donor-grounded, like box64@`v0.4.2`), find the floor service or
-init the FEX JIT expects. `hello8_x86`'s WriteFile through the 32→64 thunk = C4-5 done.
+Next → instrument generated-code entry/context; resolve new floor gap; then `hello8_x86` WriteFile via 32→64 thunk.
 
 ---
 

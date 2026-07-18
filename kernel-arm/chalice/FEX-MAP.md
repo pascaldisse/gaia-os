@@ -39,14 +39,13 @@ wow64.dll → BTCpuProcessInit
 - assert macro → log + `FEX_TRAP_EXECUTION` → `FEX/FEXCore/include/FEXCore/Utils/LogManager.h:147-151`; trap target → `FEX/FEXCore/Source/Utils/ForcedAssert.cpp:5-9`
 - Win32→NT bridge: `RegOpenKeyExA` → `NtOpenKeyEx` → `FEX/Source/Windows/Common/WinAPI/Misc.cpp:126-145`; NT declaration → `FEX/Source/Windows/include/winternl.h:519`
 
-## Floor requirement / candidate
+## C4-16 registry floor — live
 
-- historical top candidate → `NtOpenKeyEx(KeyHandle, DesiredAccess, ObjectAttributes, OpenOptions)`; must accept HKLM root then root-relative `Hardware\Description\System\CentralProcessor\0`; failure is the sole direct branch condition at donor `CPUFeatures.cpp:59-63`
-- current-tree audit → exact key route present: `kernel-arm/zoneA/ntfile.c:1564-1577`; `NtOpenKeyEx` registered/pass-through: `:1590-1616`; dispatch table: `kernel-arm/zoneA/ntsvc.c:1300-1302`
-- consequence → mapped fault diagnoses an older/no-`NtOpenKeyEx` floor state; static analysis cannot claim current live clearance
-- next required init state after open → registry values consumed unconditionally:
-  - `CP 4030`, `4020`, `4021`, `4031`, `4038`, `403A`, `4024`, `4039`, `4032` → donor `FEX/Source/Windows/Common/CPUFeatures.cpp:42-53`
-  - `CP 5801` / `CP 4000` → donor `:67-68`; per-core `CP 4000` enumeration/close → `:72-75`
-  - value bridge → `RegGetValueA` / `NtQueryValueKey` → donor `FEX/Source/Windows/Common/WinAPI/Misc.cpp:147-184`; NT declaration → `FEX/Source/Windows/include/winternl.h:525`
-- current floor supplies only `CP 4030`, `CP 4039`, `CP 403A` → `kernel-arm/zoneA/ntfile.c:1647-1682`; missing FEX-consumed values above → top post-open candidate; notably CTR/MIDR + all six omitted feature-register values
-- priority → prove `NtOpenKeyEx` live first; then extend `NtQueryValueKey` CentralProcessor values from real ID/CTR register reads; no claim of a JIT-init fault from these two offsets
+- source → `01dfce9` + `606c2de`; `zoneA/ntfile.c`, `ntsvc.c`, `ntsvc.h`, `chalice/ntids.h`
+- open route → FEX `RegOpenKeyExA` → `NtOpenKeyEx` → HKLM `\\Registry\\Machine` root pseudo-handle → root-relative `Hardware\\Description\\System\\CentralProcessor\\0` → CentralProcessor\\0 pseudo-handle; exact/case-insensitive; CentralProcessor\\1 → `STATUS_OBJECT_NAME_NOT_FOUND` → finite donor enumeration
+- value route → FEX `RegGetValueA` → `NtQueryValueKey(..., KeyValuePartialInformation=2, ..., 512, ...)`; floor validates class; writes `KEY_VALUE_PARTIAL_INFORMATION` `[TitleIndex=0, Type=REG_QWORD(11), DataLength=8, Data=raw-mrs]`; unknown CentralProcessor names → `STATUS_OBJECT_NAME_NOT_FOUND`
+- CP packing derivation → Windows `CP xxxx` = `((op0-2)<<14)|(op1<<11)|(CRn<<7)|(CRm<<3)|op2` for AArch64 `S<op0>_<op1>_C<CRn>_C<CRm>_<op2>`; checks: `S3_0_C0_C6_0` → `0x4030` → `ID_AA64ISAR0_EL1`; `S3_3_C0_C0_1` → `0x5801` → `CTR_EL0`
+- served → `4000` MIDR_EL1; `4020` ID_AA64PFR0_EL1; `4021` ID_AA64PFR1_EL1; `4024` ID_AA64ZFR0_EL1 (`S3_0_C0_C4_4`: raw spelling; freestanding assembler lacks `+sve` alias); `4030` ID_AA64ISAR0_EL1; `4031` ID_AA64ISAR1_EL1; `4032` ID_AA64ISAR2_EL1; `4038` ID_AA64MMFR0_EL1; `4039` ID_AA64MMFR1_EL1; `403A` ID_AA64MMFR2_EL1; `5801` CTR_EL0
+- IRON → every value → direct EL1 `mrs`; no model constants
+- live `pe10 fex` → banner; CentralProcessor\\0 success; all 11 reads; CentralProcessor\\1 NOT_FOUND; **past `FetchHostFeatures` / `ForcedAssert`**
+- new fault → `ec=0`; `elr=lr=0x2681B02F0`, unmapped generated JIT code; `far=0x2909C0008`; mapper candidate `libwow64fex.dll+0x1B94C8` → `sprintf` (`External/tiny-json/tiny-json.c:640`), not fault PC
