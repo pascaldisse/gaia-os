@@ -32,6 +32,10 @@ long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
 // contract receipt (wine/dlls/ntdll/unix/env.c:2243).
 long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,
                            void *DefaultCasingTableSize);
+// CHALICE C3c-2n: NtGetNlsSectionPtr -- see ntfile.c for the donor contract
+// receipt (wine/dlls/ntdll/unix/env.c NtGetNlsSectionPtr/get_nls_file_path).
+long NtGetNlsSectionPtr(unsigned long Type, unsigned long Id, void *Unknown,
+                         void **BaseAddress, unsigned long *Size);
 
 // NtClose (ntsvc.c) also releases handle-table entries allocated here --
 // this is the release hook it calls for any handle value >= the table's

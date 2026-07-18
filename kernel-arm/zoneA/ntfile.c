@@ -701,3 +701,97 @@ long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,
     }
     return STATUS_SUCCESS;
 }
+
+// =====================================================================
+// CHALICE C3c-2n: NtGetNlsSectionPtr -- the sibling NLS-mapping syscall
+// (real Wine id 155/0x9b) kernelbase's own locale init calls RIGHT AFTER
+// NtInitializeNlsFiles succeeds: load_sortdefault_nls (donor wine/dlls/
+// kernelbase/locale.c:494) does NtGetNlsSectionPtr(NLS_SECTION_SORTKEYS=9,
+// 0, NULL, &header, &size) to map sortdefault.nls -- observed live
+// (nt_dispatch_log) firing 3x UNIMPLEMENTED immediately before this atom's
+// deepest fault (a garbage `header` dereference inside kernelbase, the
+// direct consequence of this call always failing). Donor contract (env.c
+// get_nls_file_path/get_nls_section_name, both receipted in this file's
+// header comment above): open "<dir>/nls/<name>.nls" where name depends on
+// `type` (enum nls_section_type, dlls/ntdll/locale_private.h) --
+// SORTKEYS(9)->"sortdefault", CASEMAP(10)->"l_intl",
+// CODEPAGE(11)->"c_%03u"%id, NORMALIZE(12)->"normnfc"/"normnfd"/
+// "normnfkc"/"normnfkd"/"normidna" keyed by NormalizationForm `id` -- map
+// SEC_COMMIT/PAGE_READONLY (flat data, not SEC_IMAGE), *ptr=mapped base,
+// *size=the mapped size (donor's map_section DOES feed this one back,
+// unlike NtInitializeNlsFiles's dead `size` param). Same territory-backed-
+// blob-pointer-reuse idiom as NtInitializeNlsFiles above (no extra copy on
+// the FS-fallback hit). Only SORTKEYS/CASEMAP are pre-staged on the disk
+// (chalice/stock/, fetch-stock-dlls.sh) -- CODEPAGE/NORMALIZE resolve
+// through the exact same lookup and will succeed too if their file is ever
+// added there; until then they cleanly answer STATUS_OBJECT_NAME_NOT_FOUND
+// (same as any other unstaged nt_blob_lookup_or_fs miss, e.g. NtOpenFile).
+// =====================================================================
+#define NLS_SECTION_SORTKEYS   9
+#define NLS_SECTION_CASEMAP   10
+#define NLS_SECTION_CODEPAGE  11
+#define NLS_SECTION_NORMALIZE 12
+
+static int nt_nls_section_name(u32b type, u32b id, char *out, int outmax) {
+    const char *fixed = 0;
+    switch (type) {
+    case NLS_SECTION_SORTKEYS: fixed = "sortdefault"; break;
+    case NLS_SECTION_CASEMAP:  fixed = "l_intl"; break;
+    case NLS_SECTION_NORMALIZE:
+        switch (id) {
+        case 1: fixed = "normnfc"; break;    // NormalizationC
+        case 2: fixed = "normnfd"; break;    // NormalizationD
+        case 5: fixed = "normnfkc"; break;   // NormalizationKC
+        case 6: fixed = "normnfkd"; break;   // NormalizationKD
+        case 13: fixed = "normidna"; break;
+        default: return 0;
+        }
+        break;
+    case NLS_SECTION_CODEPAGE: {
+        // "c_%03u" (min 3 digits, no upper truncation -- real codepage ids
+        // like 1252 print in full, matching donor snprintf semantics).
+        char digits[12]; int nd = 0;
+        u32b v = id;
+        do { digits[nd++] = (char)('0' + (v % 10)); v /= 10; } while (v);
+        while (nd < 3) digits[nd++] = '0';   // zero-pad up to 3
+        int i = 0;
+        out[i++] = 'c'; out[i++] = '_';
+        for (int k = nd - 1; k >= 0 && i < outmax - 1; k--) out[i++] = digits[k];
+        out[i] = 0;
+        return 1;
+    }
+    default: return 0;
+    }
+    int i = 0;
+    for (; fixed[i] && i < outmax - 1; i++) out[i] = fixed[i];
+    out[i] = 0;
+    return 1;
+}
+
+long NtGetNlsSectionPtr(unsigned long Type, unsigned long Id, void *Unknown,
+                         void **BaseAddress, u64b *Size) {
+    (void)Unknown;
+    nt_blob_ensure_init();
+    if (!BaseAddress) return STATUS_INVALID_PARAMETER;
+
+    char base[24];
+    if (!nt_nls_section_name((u32b)Type, (u32b)Id, base, sizeof(base)))
+        return STATUS_INVALID_PARAMETER;
+    char name[NT_PATH_MAX];
+    int i = 0;
+    for (; base[i] && i < NT_PATH_MAX - 5; i++) name[i] = base[i];
+    name[i++] = '.'; name[i++] = 'n'; name[i++] = 'l'; name[i++] = 's'; name[i] = 0;
+
+    const unsigned char *bytes; u64b len; const char *manifest_name;
+    if (!nt_blob_lookup_or_fs(name, &bytes, &len, &manifest_name)) return STATUS_OBJECT_NAME_NOT_FOUND;
+
+    *BaseAddress = (void *)bytes;
+    if (Size) *Size = len;
+
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtGetNlsSectionPtr type="); puthex(Type);
+        puts(" id="); puthex(Id); puts(" name="); puts(name);
+        puts(" base="); puthex((u64b)bytes); puts(" len="); puthex(len); puts("\n");
+    }
+    return STATUS_SUCCESS;
+}
