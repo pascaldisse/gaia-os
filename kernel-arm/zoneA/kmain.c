@@ -45,8 +45,23 @@ static void mmu_on(void) {
         l1_table[1 + i] = base | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL;  // normal WBWA ISH
     }
 
+    // CHALICE C4-8: T0SZ 32->25 -- T0SZ=32 gave only a 32-bit (4GB) TTBR0
+    // VA range (0x0-0xFFFFFFFF), so `l1_table` slots beyond index 3 (any
+    // physical address >= 0x100000000, i.e. the entire HIGH territory pool,
+    // ntfile.c) were OUTSIDE the address space the MMU could translate AT
+    // ALL -- not a missing block-descriptor bug, an address-size fault the
+    // table content can never fix (live-confirmed: sync_handler fired on
+    // the very first HIGH-pool touch, far=0x100000000, immediately after
+    // this leg's pool split landed). ARMv8 4KB-granule starting-level rule
+    // (ARM ARM D8.2.1): T0SZ 25-33 (IA 31-39 bits) all start at level 1 --
+    // same single-level block-descriptor scheme this file already uses, NO
+    // new table level needed -- so T0SZ=25 (IA=39 bits, 512GB VA range)
+    // stays on the exact same mechanism, just makes the FULL 512-entry
+    // l1_table addressable (2^(39-30)=512 entries) instead of only its
+    // first 4. Comfortable headroom past NT_RAM_TOP for any GAIA_QEMU_MEM
+    // this floor is likely to need before the next architecture change.
     u64 mair = 0xFF00;
-    u64 tcr  = 32ULL | (1ULL << 8) | (1ULL << 10) | (3ULL << 12)
+    u64 tcr  = 25ULL | (1ULL << 8) | (1ULL << 10) | (3ULL << 12)
              | (1ULL << 23) | (1ULL << 32);
     asm volatile("msr mair_el1, %0\n msr tcr_el1, %1\n msr ttbr0_el1, %2\n isb"
                  :: "r"(mair), "r"(tcr), "r"((u64)l1_table));
