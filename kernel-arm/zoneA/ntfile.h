@@ -101,6 +101,9 @@ unsigned char *nt_high_territory_alloc(unsigned long size_of_image);
 unsigned long nt_high_territory_mark(void);
 void nt_high_territory_release_since(unsigned long mark);
 
+// ntsvc.c VM-region tracking; fault classifier + NtQueryVirtualMemory.
+int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out);
+
 // CHALICE C4-9 (monad ruling): RESERVE/COMMIT arena -- see ntfile.c for the
 // full donor-grounded design receipt. ntsvc.c's NtAllocateVirtualMemory
 // routes ZeroBits==0 requests here instead of the HIGH pool directly;
@@ -109,6 +112,7 @@ void nt_high_territory_release_since(unsigned long mark);
 // two pools. NtQueryVirtualMemory/NtFreeVirtualMemory use nt_arena_contains/
 // nt_arena_query/nt_arena_release to answer honestly for arena addresses.
 int nt_arena_contains(unsigned long addr);
+void nt_fault_region(const char *label, unsigned long addr);
 unsigned char *nt_arena_reserve(unsigned long size);
 int nt_arena_commit(unsigned long base, unsigned long size);
 int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);

@@ -569,6 +569,28 @@ int nt_arena_contains(unsigned long addr) {
     return addr >= NT_ARENA_BASE && addr < NT_ARENA_LIMIT;
 }
 
+// Fault-path classifier → allocator ownership + reservation/commit state.
+void nt_fault_region(const char *label, unsigned long addr) {
+    char name[64]; u64b off, base = 0, size = 0; int committed = -2;
+    puts("CHALICE REGION "); puts(label); puts("="); puthex(addr); puts(" -> ");
+    if (nt_image_resolve(addr, name, sizeof(name), &off)) {
+        puts("image "); puts(name); puts("+"); puthex(off);
+    } else if (nt_arena_query(addr, &base, &size, &committed)) {
+        puts("reserve-commit-arena ");
+        if (committed < 0) puts("unreserved");
+        else if (committed) puts("committed");
+        else puts("reserved");
+        puts(" base="); puthex(base); puts(" size="); puthex(size);
+    } else if (nt_vm_region_query(addr, &base, &size)) {
+        puts("vm-region base="); puthex(base); puts(" size="); puthex(size);
+    } else if (addr >= NT_DLL_TERRITORY_BASE && addr < NT_DLL_TERRITORY_LIMIT) {
+        puts(addr < nt_dll_territory_next ? "territory-live" : "territory-unallocated");
+    } else if (addr >= NT_HIGH_TERRITORY_BASE && addr < NT_HIGH_TERRITORY_LIMIT) {
+        puts(addr < nt_dll_high_territory_next ? "high-pool-live" : "high-pool-unallocated");
+    } else puts("outside-known-allocators");
+    puts("\n");
+}
+
 // RESERVE: carve `size` bytes of VA from the arena -- bump-only, zero
 // physical cost (no window touched, no L2 entry written). NULL on arena
 // VA exhaustion (bump-only per-boot; wholesale reset below is the reclaim,

@@ -136,7 +136,9 @@ static void timer_start(void) {
 int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
 int nt_image_base_by_name(const char *name, u64 *base_out, u64 *size_out);
 int nt_arena_contains(unsigned long addr);
+int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);
 int nt_arena_commit(unsigned long base, unsigned long size);
+void nt_fault_region(const char *label, unsigned long addr);
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -230,17 +232,38 @@ int sync_try_fex_linux_hint(u64 esr, u64 elr, u64 *regs) {
 // Common/OvercommitTracker.h:31-53). GAIA doesn't yet deliver ARM64 data
 // aborts as Windows user exceptions, so perform the same floor operation
 // directly: back the containing arena window, retry the faulting instruction.
-int sync_try_arena_demand_commit(u64 esr, u64 far) {
-    u64 ec = (esr >> 26) & 0x3f;
-    if (ec != 0x24 && ec != 0x25) return 0; // Data Abort, lower/current EL
-    if (!nt_arena_contains(far)) return 0;
-    if (!nt_arena_commit(far & ~0xfffULL, 0x1000)) return 0;
+int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
+    u64 ec = (esr >> 26) & 0x3f, iss = esr & 0x1ffffff;
+    u64 base = 0, size = 0; int committed = -2;
+    puts("CHALICE ARENA: esr="); puthex(esr); puts(" ec="); puthex(ec);
+    puts(" iss="); puthex(iss); puts(" elr="); puthex(elr);
+    puts(" far="); puthex(far); puts("\n");
+    nt_fault_region("elr", elr);
+    nt_fault_region("far", far);
+    if (ec != 0x24 && ec != 0x25) {
+        puts("CHALICE ARENA: refused wrong-ec\n");
+        return 0;
+    }
+    if (!nt_arena_contains(far)) {
+        puts("CHALICE ARENA: refused not-arena\n");
+        return 0;
+    }
+    nt_arena_query(far, &base, &size, &committed);
+    if (committed < 0) {
+        puts("CHALICE ARENA: refused not-reserved\n");
+        return 0;
+    }
+    if (committed) {
+        puts("CHALICE ARENA: refused already-committed\n");
+        return 0;
+    }
+    if (!nt_arena_commit(far & ~0xfffULL, 0x1000)) {
+        puts("CHALICE ARENA: refused commit-failed\n");
+        return 0;
+    }
     static unsigned long faults;
     faults++;
-    if (faults <= 8) {
-        puts("CHALICE: arena demand-commit fault="); puthex(far);
-        puts(" count="); puthex(faults); puts("; retry\n");
-    }
+    puts("CHALICE ARENA: fired count="); puthex(faults); puts("; retry\n");
     return 1;
 }
 
@@ -251,12 +274,12 @@ int sync_try_arena_demand_commit(u64 esr, u64 far) {
 // x0-x30, 8B slots, word i == xN for N<=29, word 30 == x30 -- simpler,
 // uniform mapping vs the old x0-x18,x29,x30-only frame.
 void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
-    u64 ec = (esr >> 26) & 0x3F;
-    puts("\nCHALICE FAULT esr="); puthex(esr);
-    puts(" ec="); puthex(ec);
-    puts(" elr="); puthex(elr);
-    puts(" far="); puthex(far);
-    puts(" sp="); puthex(sp_orig);
+    u64 ec = (esr >> 26) & 0x3F, iss = esr & 0x1FFFFFF, spsr;
+    asm volatile("mrs %0, spsr_el1" : "=r"(spsr));
+    puts("\nCHALICE FAULT raw-esr="); puthex(esr);
+    puts(" ec="); puthex(ec); puts(" iss="); puthex(iss);
+    puts(" elr="); puthex(elr); puts(" far="); puthex(far);
+    puts(" spsr="); puthex(spsr); puts(" sp="); puthex(sp_orig);
     puts("\n");
 
     // ---- CHALICE C3c-2f p1: full x0-x30 dump (Phase A step 1: "print
