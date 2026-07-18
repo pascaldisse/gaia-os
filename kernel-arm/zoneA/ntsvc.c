@@ -174,6 +174,58 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
         }
         puts("\n");
     }
+    // CHALICE C4-24 fix (STATUS_INVALID_DISPOSITION loop) -- donor-grounded
+    // in wine/dlls/ntdll/exception.c:239-370 dispatch_exception(): the ONLY
+    // call site in the whole donor that passes FirstChance=FALSE is
+    // dispatch_exception's own tail, `return NtRaiseException(rec, context,
+    // FALSE);`, reached exactly when call_vectored_handlers found nothing,
+    // call_seh_handlers (signal_arm64.c:217-303, ARM64 .pdata/virtual_unwind
+    // frame search) returned STATUS_UNHANDLED_EXCEPTION, and status ==
+    // STATUS_UNHANDLED_EXCEPTION skipped the `RtlRaiseStatus(status)` branch
+    // just above it. On real Windows this is the second-chance report to
+    // the kernel: with no debugger attached (this floor has none -- PEB
+    // BeingDebugged is unconditionally 0, ntsvc.c nt_build_teb receipt),
+    // the kernel's own second-chance handling terminates the process; it
+    // does NOT re-run KiUserExceptionDispatcher a second time. Every
+    // RtlRaiseException-driven FIRST-CHANCE call (RtlRaiseException's own
+    // asm, signal_arm64.c:745-771, unconditionally passes FirstChance=TRUE
+    // at label "1:") is unaffected by this branch and keeps the existing
+    // C4-18 dispatcher route below.
+    //
+    // Prior floor code called nt_raise_guest_exception() unconditionally,
+    // ignoring FirstChance -- re-entering KiUserExceptionDispatcher on the
+    // FALSE call re-ran dispatch_exception on the SAME already-unhandled
+    // WOW64-boundary context (FEX's BTCpuSimulate-anchored TLS.EntryContext
+    // reconstruction, Module.cpp:757-777), which recursed into wine's own
+    // raise_status()/RtlRaiseException() defensive retry loop
+    // (exception.c:358-367, `for(;;) RtlRaiseException(&rec)` -- meant to
+    // never execute more than once since RtlRaiseException is
+    // DECLSPEC_NORETURN on real hardware). MEASURED (C4-24 instrumented
+    // capture, pe10 fex): RAISE#1 firstchance=0 code=0xC000001D
+    // ctx.pc=libwow64fex+0x34E4(BTCpuSimulate+0x10) addr=0; RAISE#2..#24
+    // firstchance=0 code=0xC0000026(STATUS_INVALID_DISPOSITION)
+    // addr=ntdll+0x3868C(raise_status+0x18) ctx.pc==ctx.lr==that same
+    // address every time, ctx.sp monotonically DECREASING by ~0x6c0 bytes
+    // per raise (0x4116B0E0 -> 0x4116AA20 -> ... over RAISE#2..#18) --
+    // genuine unbounded guest C-stack recursion driven purely by this
+    // floor's improper re-dispatch of the FALSE call, one exception.c
+    // dispatch_exception/call_seh_handlers/raise_status lap per syscall
+    // round-trip. Not a new record each time in the Windows sense (same
+    // ExceptionAddress, same code, same flags=EXCEPTION_NONCONTINUABLE=9
+    // every iteration) -- it is wine's own raise_status loop, made to spin
+    // by this floor re-entering the dispatcher after the exception was
+    // already second-chance/unhandled.
+    //
+    // Fix: FirstChance==0 terminates cleanly (same nt_setjmp/nt_longjmp
+    // channel NtTerminateProcess/NtRaiseHardError already use) instead of
+    // re-entering KiUserExceptionDispatcher. FirstChance!=0 keeps the
+    // C4-18 route unchanged.
+    if (!FirstChance) {
+        puts("CHALICE: NtRaiseException FirstChance=FALSE (second-chance, unhandled) -- terminating\n");
+        nt_exit_code = (long)code;
+        if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
+        for (;;) asm volatile("wfe");
+    }
     // C4-18: same KiUserExceptionDispatcher route as a hardware trap.
     // This does not return unless dispatcher policy itself eventually exits.
     nt_raise_guest_exception(ExceptionRecord, Context);
