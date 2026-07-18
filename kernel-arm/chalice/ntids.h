@@ -22,6 +22,8 @@
 // needs no renumber. NT_SERVICE_COUNT is now table CAPACITY (>= highest
 // real id here, 85, headroom for later real handlers), not entry count.
 #define NT_SVC_NTALLOCATEVIRTUALMEMORY    24  // REAL
+#define NT_SVC_NTQUERYOBJECT              16  // REAL, CHALICE C4-15 -- FEX ValidateHandleAccess (Source/Windows/Common/Handle.h:45-52)
+#define NT_SVC_NTDUPLICATEOBJECT          60  // REAL, CHALICE C4-15 -- FEX DupHandle (Source/Windows/Common/Handle.h:55-58)
 #define NT_SVC_NTFREEVIRTUALMEMORY        30  // REAL
 #define NT_SVC_NTPROTECTVIRTUALMEMORY     80  // REAL
 #define NT_SVC_NTCREATESECTION            74  // REAL

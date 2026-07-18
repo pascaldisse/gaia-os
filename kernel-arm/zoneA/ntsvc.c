@@ -62,6 +62,37 @@ long NtClose(void *Handle) {
     return STATUS_SUCCESS;
 }
 
+// CHALICE C4-15: FEX BTCpuGetContext first validates THREAD_GET_CONTEXT via
+// NtQueryObject(ObjectBasicInformation), then duplicates the pseudo current-
+// thread handle (pinned donor Source/Windows/Common/Handle.h:45-58 and WOW64/
+// Module.cpp:697-713). This floor has one process/thread + no ACL boundary:
+// every non-null pseudo handle has full granted access; duplication aliases
+// the same handle, with NtClose already a harmless no-op for pseudo handles.
+#define NT_OBJECT_BASIC_INFORMATION_SIZE 0x38
+long NtQueryObject(void *Handle, unsigned long ObjectInformationClass, void *ObjectInformation,
+                   unsigned long ObjectInformationLength, unsigned long *ReturnLength) {
+    if (!Handle || ObjectInformationClass != 0) return STATUS_INVALID_PARAMETER;
+    if (!ObjectInformation) return STATUS_INVALID_PARAMETER;
+    if (ObjectInformationLength < NT_OBJECT_BASIC_INFORMATION_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+    u8 *out = (u8 *)ObjectInformation;
+    for (int i = 0; i < NT_OBJECT_BASIC_INFORMATION_SIZE; i++) out[i] = 0;
+    wr32(out + 4, 0x001FFFFFUL); // OBJECT_BASIC_INFORMATION.GrantedAccess
+    wr32(out + 8, 1);           // HandleCount
+    wr32(out + 12, 1);          // PointerCount
+    if (ReturnLength) *ReturnLength = NT_OBJECT_BASIC_INFORMATION_SIZE;
+    return STATUS_SUCCESS;
+}
+
+long NtDuplicateObject(void *SourceProcessHandle, void *SourceHandle, void *TargetProcessHandle,
+                       void **TargetHandle, unsigned long DesiredAccess, unsigned long HandleAttributes,
+                       unsigned long Options) {
+    (void)SourceProcessHandle; (void)TargetProcessHandle; (void)DesiredAccess;
+    (void)HandleAttributes; (void)Options;
+    if (!SourceHandle || !TargetHandle) return STATUS_INVALID_PARAMETER;
+    *TargetHandle = SourceHandle;
+    return STATUS_SUCCESS;
+}
+
 // NtTerminateProcess: "unwind to PeRun w/ exit code — same mechanism PeRun
 // already uses for entry return" (SLICE2-SPEC A3). PeRun brackets its call
 // to entry (via pe_enter) with nt_setjmp/nt_longjmp; we just stash the exit
@@ -857,6 +888,22 @@ long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformatio
                                void *ThreadInformation, unsigned long ThreadInformationLength,
                                unsigned long *ReturnLength) {
     (void)ThreadHandle;
+    // CHALICE C4-15: FEX GetThreadTLS asks ThreadBasicInformation solely for
+    // TebBaseAddress (pinned donor WOW64/Module.cpp:141-145). One live thread
+    // model -> current x18 TEB + stable synthetic ClientId; real Win64 layout:
+    // ExitStatus@0, TebBaseAddress@8, CLIENT_ID@0x10, total 0x30.
+    if (ThreadInformationClass == 0 /* ThreadBasicInformation */) {
+        if (!ThreadInformation) return STATUS_INVALID_PARAMETER;
+        if (ThreadInformationLength < 0x30) return STATUS_INFO_LENGTH_MISMATCH;
+        u8 *out = (u8 *)ThreadInformation;
+        for (int i = 0; i < 0x30; i++) out[i] = 0;
+        u64b teb; __asm__ volatile("mov %0, x18" : "=r"(teb));
+        wr64(out + 0x08, teb);
+        wr64(out + 0x10, 1); // ClientId.UniqueProcess
+        wr64(out + 0x18, 1); // ClientId.UniqueThread
+        if (ReturnLength) *ReturnLength = 0x30;
+        return STATUS_SUCCESS;
+    }
     if (ThreadInformationClass != 29 /* ThreadWow64Context */) return STATUS_NOT_IMPLEMENTED;
     if (!ThreadInformation) return STATUS_INVALID_PARAMETER;
     if (ThreadInformationLength < CTX32_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
@@ -1105,6 +1152,8 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTREADFILE:                 return "NtReadFile";
     case NT_SVC_NTWRITEFILE:                return "NtWriteFile";
     case NT_SVC_NTCLOSE:                    return "NtClose";
+    case NT_SVC_NTQUERYOBJECT:              return "NtQueryObject";
+    case NT_SVC_NTDUPLICATEOBJECT:          return "NtDuplicateObject";
     case NT_SVC_NTCREATETHREAD:             return "NtCreateThread";
     case NT_SVC_NTRESUMETHREAD:             return "NtResumeThread";
     case NT_SVC_NTTERMINATETHREAD:          return "NtTerminateThread";
@@ -1174,6 +1223,10 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTWRITEFILE]     = 9 * 8;   // 9 args (HANDOFF/A2 receipt)
     nt_svc_table0[NT_SVC_NTCLOSE]            = (void *)NtClose;
     nt_svc_argtable0[NT_SVC_NTCLOSE]         = 1 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYOBJECT]      = (void *)NtQueryObject;
+    nt_svc_argtable0[NT_SVC_NTQUERYOBJECT]   = 5 * 8;
+    nt_svc_table0[NT_SVC_NTDUPLICATEOBJECT]  = (void *)NtDuplicateObject;
+    nt_svc_argtable0[NT_SVC_NTDUPLICATEOBJECT] = 7 * 8;
     nt_svc_table0[NT_SVC_NTTERMINATEPROCESS] = (void *)NtTerminateProcess;
     nt_svc_argtable0[NT_SVC_NTTERMINATEPROCESS] = 2 * 8;
 
