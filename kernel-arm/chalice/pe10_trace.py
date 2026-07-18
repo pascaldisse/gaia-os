@@ -288,6 +288,12 @@ def main():
         rsp.interrupt()
         frozen = rsp.stop()
         print(f"RSP frozen-stop={frozen} pc=0x{pc_from_stop(rsp, frozen):x}")
+        # QEMU's unix gdbstub can leave an async-interrupt connection unable
+        # to accept Z packets.  Reattach while the CPU is stopped, then use a
+        # fresh synchronous RSP session for breakpoint installation.
+        rsp.close()
+        rsp = RSP(args.gdb_socket)
+        print(f"RSP reattach-stop={rsp.command('?')}")
         text = capture.text()
         bases = module_bases(text)
         hlt = args.hlt
