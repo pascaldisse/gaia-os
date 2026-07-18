@@ -1,5 +1,46 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-28 — null-page guard gate salvage + fresh pe10-fex anatomy (guard changes the cascade)
+
+- **kmain.c diff adjudication**: uncommitted 3x `puts("DBG a/b/c")` in `mmu_on()`, no functional change — DROPPED (`git checkout`).
+- **guard-breaks-boot bug #1 (kmain.c, FIXED, kept: `volatile`)**: with the MMU off, `SCTLR_EL1.M=0` forces the ENTIRE address space to Device-nGnRnE memory type (ARM ARM), which requires natural alignment even for a plain `stp`. `d84c091`'s guard loop (`for i=1..511`, `l2_dev_table[0]` set separately) let the compiler fuse two adjacent element stores into one `stp` starting at an 8-byte-only-aligned offset (`l2_dev_table+8`) straddling a 16B boundary -> `ESR_EL1` EC=`0x25` DFSC=`0x21` (Alignment fault), crashing before `"MMU: on"` ever printed. Reordering the loop (index-0-last) only moved the SAME bug to `l1_table[0]`/`l1_table[1]`; `asm volatile("":::"memory")` barriers reduced but didn't fully suppress it (recurred inside the small `NT_RAM_BLOCKS` loop's own unrolling). `-mstrict-align` (tried, REVERTED) fixes the class architecturally but makes clang lower `fs.c`'s struct-copy code to a libcall `memcpy` this `-nostdlib` kernel doesn't provide (link fails). Final fix: `l1_table`/`l2_dev_table` declared `volatile` — C-semantics guarantee against store fusion, scoped to just these two arrays.
+- **guard-breaks-boot bug #2 (ntboot.c, FIXED)**: `RTL_USER_PROCESS_PARAMETERS.CurrentDirectory.DosPath.Buffer` always NULL (field named in a comment since an earlier leg, never wired). Fault site: ntdll's internal `get_full_path_helper` (`map-fex-offsets.sh stock/ntdll.dll 0x51CDC`, embedded-symbol, confidence medium) — `ldr x22,[x24,#0x8]` loads `DosPath.Buffer`, then unconditionally `ldrh w8,[x22,#0x2]` (drive-letter `':'` check on `Buffer[1]`, no NULL guard) — `far=0x2` exactly matches `NULL+2`. Hit by pe6/pe7/pe8 because their `ImagePathName` is a deliberately bare relative exe name (see C4-6's own comment predicting exactly this dependency for the non-`wow64_mode` path). Fix: wire `CurrentDirectory.DosPath = "C:\\"` unconditionally.
+- **guard-breaks-boot bug #3 (ntsvc.c, FIXED)**: `TEB.ActivationContextStackPointer` (offset `0x2c8`, well-known public Win64 TEB layout) always NULL. Fault site: ntdll's `RtlFindActivationContextSectionString` (`map-fex-offsets.sh stock/ntdll.dll 0x28180`, embedded-symbol, confidence medium) — `ldr x8,[x18,#0x2c8]; ldr x8,[x8]` dereferences the TEB field directly, only null-checking the RESULT of the load, not the field itself — `far=0x0`. Fix: `nt_build_teb` allocates + wires a small zeroed `ACTIVATION_CONTEXT_STACK` (only offset-0 `ActiveFrame` is read on this path; zeroed satisfies the immediately-following `cbz` fast-empty-stack branch).
+- **all three bugs pre-existed** (address 0/near-0 was always semantically wrong to touch) but were masked by the OLD identity-mapped-as-device page 0 (silent garbage reads, never faulted) — exactly the class of bug `d84c091`'s guard exists to catch, now proven catching real bugs AND fixed without regressing anything.
+- **re-gate, all green**: `pe8_gate.py` `ret=78`; `pe9_gate.py` both backends (wowbox64 `ret=0`, fex `ret=0`); `ramfb_gate.py` 7/7; `scratch/backtoback_gate.py` (pe6/7/8 x2 in one boot) — needs ~2min wall time, not the gate's own inline timeout, to fully complete. Direct `qemu-system-aarch64 -serial stdio` one-shot boots (bypassing the gate harness) used throughout this pass's debugging to get raw, unbuffered ESR/ELR/FAR/register receipts at each iteration — `pgrep qemu`+kill before/after every one.
+- **commit**: `6af950a` (source-only: `build.sh`, `kmain.c`, `ntboot.c`, `ntsvc.c`).
+
+### Fresh pe10-fex anatomy WITH the guard live (`scratch/pe10_probe.py fex`)
+
+The brief's own hypothesis ("the null-page fault may CHANGE the whole cascade") is **confirmed true**: the fault chain this pass is a **completely different identity** from every prior leg (C4-18/20/21/23/24/26/27), none of which ever recurred in this pass's transcript.
+
+```text
+FAULT #1 (first in the whole run, right after "starting FEX (Hangover 11.9)" + full CPU-feature-registry walk):
+  esr=0x96000006 ec=0x25 iss=0x6 elr=ntdll.dll+0x43DB8 far=0x0000000000000000
+  map-fex-offsets.sh stock/ntdll.dll 0x43DB8 (FEX_SOURCE stub, embedded-symbol only, confidence medium)
+    => RtlImageNtHeader, start=0x180043d84
+    0x43db4: ldur x8,[x29,#-0x18]   (x8 = module base arg, x0)
+    0x43db8: ldrh w8,[x8]           <- FAULTS: reads MZ signature; x8=NULL => far=0
+  interpretation: something called RtlImageNtHeader(NULL) -- caller not yet instrumented this pass.
+
+FAULT #2..#N (all subsequent faults in the run, repeating, NOT a hang -- NtRaiseException-cycled):
+  esr=0x96000006 ec=0x25 iss=0x6 elr=libwow64fex.dll+0x3B1C far=0x0000000000000042
+  map-fex-offsets.sh stock/wow64-chain/libwow64fex.dll 0x3B1C (default FEX_SOURCE, embedded-symbol, confidence high)
+    => BTCpuResetToConsistentStateImpl(_EXCEPTION_POINTERS*), start=0x180003af0
+    +0x24: mov  x20, x18                    (x20 = TEB)
+    +0x28: ldr  x21, [x20, #0x1500]          (x21 = TEB->TlsSlots[16], WOW64_TLS_THREAD_STATE)
+    +0x2c: ldr  x23, [x21, #0x40]            <- FAULTS (this IS elr+0x3B1C): far = x21+0x40
+  live CHALICE TLS PROBE at this fault: slot16(ThreadState)=0x0000000000000002
+  arithmetic check: 0x2 + 0x40 = 0x42 = far  -- confirmed exact.
+```
+
+- **`TlsSlots[16]` identity**: FEX's own private per-thread `InternalThreadState*` slot (`Source/Windows/include/winternl.h:28-29` `Slot::THREAD_STATE`; `Module.cpp:101-102` `TLS.ThreadState()` accessor: `reinterpret_cast<...*&>(TEB->TlsSlots[Slot::THREAD_STATE])`). The ONLY donor-confirmed write to this exact slot is `Module.cpp:626` inside `BTCpuThreadInit()`: `TLS.ThreadState() = Thread;` where `Thread = CTX->CreateThread(0,0)` — a real heap pointer, never a small integer.
+- **`2` is not this floor's own doing** — grepped `TlsSlots` writes across `ntboot.c`/`ntsvc.c`: only slot 1 (`WOW64_TLS_CPURESERVED`) and slot 10 (`WOW64_TLS_WOW64INFO`) are ever floor-written; slot 16 is never touched by this floor at all (read-only, C4-22's own probe).
+- **rival verdict, new evidence, still INCONCLUSIVE** — no `BTCpuThreadInit` narration/side-effect visible anywhere in the transcript between the `starting FEX` banner (`BTCpuProcessInit`) and this fault; the theorized real-pointer write (`Module.cpp:626`) does not appear to have executed. Two live candidates, neither confirmed this pass: (i) something reads `TlsSlots[16]` before `BTCpuThreadInit` ever runs (rung-C "abnormal arrival" flavor — `BTCpuResetToConsistentStateImpl` firing before thread-init completed), or (ii) FEX has an undiscovered lazy-init/placeholder-tag convention for this slot not found in this pass's donor read (only the one real-pointer write site was located; no smaller sentinel constant grep-matched nearby in `Module.cpp`). NOT resolved — next worker's starting point, needs `BTCpuThreadInit` call-site instrumentation (new instrumentation, appropriately out of THIS pass's "measure with existing tools first" scope) and/or a `RtlImageNtHeader` caller trace (who passes it NULL).
+- **ladder rung: (c)** — new, more precise, genuinely DIFFERENT mapped frontier (not a repeat of C4-18/21/24/26/27's `BTCpuSimulate+0x10` identity, which never recurred once in this full transcript). The guard moved the frontier EARLIER (into FEX's own WOW64-boundary exception-reconstruction machinery, `BTCpuResetToConsistentStateImpl`, and an even-earlier `RtlImageNtHeader(NULL)` call) rather than deeper — real forward information for the syscall-hinge investigation, though the underlying A/B/C rivals from the original C4-28 brief are not yet adjudicated against this new anatomy.
+
+---
+
 ## C4-27 — syscall-hinge stub design (BOP/Wow64Transition) + reconfirmed frontier
 
 - **BTCpuGetBopCode** (`FEX/Source/Windows/WOW64/Module.cpp:689-691`): `return BridgeInstrs::Syscall;` — a process-global `void*`, set exactly once, in `BTCpuProcessInit` (`:557-561`): `SIZE_T Size = 4; void* Addr = nullptr; NtAllocateVirtualMemory(NtCurrentProcess(), &Addr, (1U<<31)-1, &Size, MEM_RESERVE|MEM_COMMIT, PAGE_EXECUTE_READWRITE); *(uint32_t*)Addr = 0x2ecd2ecd; BridgeInstrs::Syscall = Addr; BridgeInstrs::UnixCall = Addr+2;`. `0x2ecd2ecd` little-endian = two back-to-back `int 0x2e` (`CD 2E`) opcodes — classic pre-syscall-instruction x86 trap encoding, never actually decoded as real x86 (FEX intercepts by RIP identity, `Module.cpp:451/461`, before any instruction fetch).
