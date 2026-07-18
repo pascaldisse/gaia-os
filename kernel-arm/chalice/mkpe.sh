@@ -51,6 +51,14 @@ CFLAGS="-target $TARGET -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=
 # build path as hello6 (-lkernel32, no ntstub.S).
 "$ZIG" cc $CFLAGS -Wl,-e,PeMain -o hello7.exe hello7.c -lkernel32
 
+# CHALICE C4 leg1 Atom C4-1 -- hello8_x86.exe: 32-bit x86 (Machine 0x14C)
+# toolchain proof, same freestanding zero-import pattern as hello1.c but
+# targeting the guest arch of the WOW64/x86 door. Built standalone (not
+# embedded/run yet -- no kernel WOW64 support exists, C4-SPEC.md atoms
+# C4-2+ land that). x86-windows-gnu is a distinct zig target triple from
+# aarch64-windows-gnu; no ntstub.S (that's ARM64-specific dispatch asm).
+"$ZIG" cc -target x86-windows-gnu -ffreestanding -nostdlib -fuse-ld=lld -O0 -fno-sanitize=all -Wl,-e,PeMain -o hello8_x86.exe hello8_x86.c
+
 echo "hello1.exe: $(wc -c < hello1.exe | tr -d ' ') bytes"
 echo "hello2.exe: $(wc -c < hello2.exe | tr -d ' ') bytes"
 echo "hello3.exe: $(wc -c < hello3.exe | tr -d ' ') bytes"
