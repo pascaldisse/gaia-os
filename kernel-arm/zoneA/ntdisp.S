@@ -376,6 +376,11 @@ NtContinue:
 // branch before tail-branching to stock KiUserExceptionDispatcher.
 .global nt_exception_dispatch_trace
 nt_exception_dispatch_trace:
+    // Raw UART marker: survives guest x18/stack state; bridge must emit B.
+    mov  x16, #0
+    movk x16, #0x0900, lsl #16
+    mov  w17, #0x42
+    str  w17, [x16]
     stp  x18, x30, [sp, #-16]!
     bl   nt_exception_dispatch_trace_enter
     ldp  x18, x30, [sp], #16
