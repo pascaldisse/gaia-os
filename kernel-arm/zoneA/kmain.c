@@ -325,6 +325,8 @@ void nt_continue_trace(void *context) {
 // C4-20 assembly handoff: sync_entry reloads this target and writes ELR_EL1
 // immediately before ERET, after all C work has completed.
 volatile u64 sync_guest_exception_elr;
+// C4-21 → sync_entry runs C on this stack; delivery lives below guest SP.
+unsigned char sync_exception_stack[16384] __attribute__((aligned(16)));
 // C4-21 zeroer bracket → live delivered CONTEXT; nt_dispatch_log samples it.
 volatile unsigned char *nt_exception_context_watch;
 

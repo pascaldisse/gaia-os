@@ -177,10 +177,15 @@ sync_entry:
     // orig-sp is simply current sp + frame size). x4 = pointer to the
     // frame itself, for full x0-x30 readback.
     SAVEALL_SYNC
+    // C4-21 → frame remains on interrupted guest stack; C must not overwrite
+    // its forthcoming CONTEXT at (orig_sp - 0x460).
+    mov     x21, sp
+    ldr     x20, =sync_exception_stack
+    add     sp, x20, #4, lsl #12
     // Advisory SVC -> demand-commit are transparent, ordered before NT SEH.
     mrs     x0, esr_el1
     mrs     x1, elr_el1
-    mov     x2, sp
+    mov     x2, x21
     bl      sync_try_fex_linux_hint
     cbnz    x0, 2f
     mrs     x0, esr_el1
@@ -194,8 +199,8 @@ sync_entry:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #SYNC_FRAME_SIZE
-    mov     x4, sp
+    add     x3, x21, #SYNC_FRAME_SIZE
+    mov     x4, x21
     bl      sync_try_guest_exception
     cbz     x0, 1f
     // C4-20: write the redirect at the last possible point.  A C-written
@@ -205,18 +210,19 @@ sync_entry:
     ldr     x19, [x19]
     msr     elr_el1, x19
     isb
-    ldr     x18, [sp, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
+    ldr     x18, [x21, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
     mov     sp, x0
     eret
 2:
+    mov     sp, x21
     RESTOREALL_SYNC
     eret
 1:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #SYNC_FRAME_SIZE
-    mov     x4, sp
+    add     x3, x21, #SYNC_FRAME_SIZE
+    mov     x4, x21
     bl      sync_handler        // kernel fault / unknown guest syndrome: fatal
 
 // ---- vector table: 16 slots, 0x80 apart ----
