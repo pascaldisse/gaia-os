@@ -163,9 +163,12 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
     resolve_line("far", far);
     resolve_line("lr ", regs[30]);
     resolve_line("x0 ", regs[0]);
+    resolve_line("x1 ", regs[1]);
+    resolve_line("x8 ", regs[8]);
     resolve_line("x9 ", regs[9]);
     resolve_line("x16", regs[16]);
     resolve_line("x18", regs[18]);
+    resolve_line("x21", regs[21]);
 
     // ---- CHALICE C3c-2f p1: mini backtrace -- top 8 words at orig-sp,
     // each resolved the same way. sp_orig is the PE-side stack pointer as
@@ -178,6 +181,34 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
     for (int i = 0; i < 8; i++) {
         char idx[4]; idx[0] = '['; idx[1] = (char)('0' + i); idx[2] = ']'; idx[3] = 0;
         resolve_line(idx, stk[i]);
+    }
+
+    // ---- CHALICE C3c-2p: real fp-chain backtrace (walk x29, not a blind
+    // stack scan). AAPCS64 standard frame layout is [x29+0]=saved (caller's)
+    // fp, [x29+8]=saved lr -- LLVM's ARM64 codegen (Wine's ntdll/kernelbase
+    // build, and our own zig-cc PE builds) keeps this chain intact unless a
+    // leaf function omitted a frame, so following it gives real caller PCs
+    // instead of whatever happens to sit in the next 64 bytes of stack.
+    // Guarded (range + monotonic-increase check) since this walks PE-side
+    // data at a fault site -- a garbage/cyclic fp must not re-fault the
+    // kernel or hang this dump; it just stops the walk early instead. ----
+    puts("  -- fp-chain backtrace (x29 walk) --\n");
+    u64 fp = regs[29];
+    for (int i = 0; i < 8; i++) {
+        if (!fp || fp < 0x40000000ULL || fp >= 0x80000000ULL || (fp & 7)) {
+            puts("  [fp "); putdec(i); puts("] fp="); puthex(fp);
+            puts(" -> out of plausible RAM range or misaligned, stop\n");
+            break;
+        }
+        u64 saved_fp = ((u64 *)fp)[0];
+        u64 saved_lr = ((u64 *)fp)[1];
+        puts("  [fp "); putdec(i); puts("] fp="); puthex(fp); puts("\n");
+        resolve_line("    lr", saved_lr);
+        if (saved_fp <= fp) {
+            puts("  (next fp non-increasing, stop)\n");
+            break;
+        }
+        fp = saved_fp;
     }
 
     for (;;) asm volatile("wfe");
