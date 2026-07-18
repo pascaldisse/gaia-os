@@ -242,13 +242,13 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // Architecture verdict 4: PE-side loader owns its own imports; there
     // is no Ldr walk here to resolve them against anyway). ----
     u64b ntdll_base = 0, ntdll_size = 0, ntdll_entry = 0;
-    if (PeMapImage(ntdll_bytes, ntdll_len, "pe5-ntdll", nt_territory_alloc, 0,
+    if (PeMapImage(ntdll_bytes, ntdll_len, "pe5-ntdll", nt_territory_alloc, 0, 1,
                     &ntdll_base, &ntdll_size, &ntdll_entry) != 0)
         return boot_err("ntdll map failed");
     nt_image_register(ntdll_name, ntdll_base, ntdll_size, ntdll_entry, 1);
 
     u64b exe_base = 0, exe_size = 0, exe_entry = 0;
-    if (PeMapImage(exe_bytes, exe_len, "pe5-exe", nt_territory_alloc, 0,
+    if (PeMapImage(exe_bytes, exe_len, "pe5-exe", nt_territory_alloc, 0, 1,
                     &exe_base, &exe_size, &exe_entry) != 0)
         return boot_err("exe map failed");
     nt_image_register(exe_name, exe_base, exe_size, exe_entry, 0);

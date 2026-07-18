@@ -64,9 +64,20 @@ long PeRun(const unsigned char *img, unsigned long len, const char *tag, int use
 // (kernel side is aarch64-none-elf/LP64: `unsigned long` is already 8 bytes
 // here -- no need for `unsigned long long`, and mixing the two just trips
 // clang's distinct-type pointer-compatibility warning for no benefit.)
+// apply_relocs: 1 = apply DIR64 base relocations here (PeRun's standalone
+// exes, ntboot.c's own ntdll/exe Phase-0 bootstrap maps -- no Wine PE-side
+// loader present to do it for them). 0 = skip relocation entirely and
+// leave the raw ImageBase-relative pointers as-is (NtMapViewOfSection,
+// ntfile.c -- CHALICE C3c-2q: the stock Wine-built guest ntdll.dll's own
+// PE-side loader ALWAYS self-relocates any module not at its preferred
+// ImageBase, unconditionally on the mapped address, regardless of
+// NtMapViewOfSection's return status -- see pemod.c's PeMapImage comment
+// for the donor-source receipt. Applying relocations on both sides
+// double-applies delta -- proven live via the root_key_names[] pointer
+// table ending up at file+2*delta).
 typedef unsigned char *(*PeAllocFn)(unsigned long size_of_image);
 long PeMapImage(const unsigned char *img, unsigned long len, const char *tag, PeAllocFn allocfn,
-                 int do_imports, unsigned long *out_base, unsigned long *out_size,
+                 int do_imports, int apply_relocs, unsigned long *out_base, unsigned long *out_size,
                  unsigned long *out_entry);
 
 // CHALICE C3a Atom 3A: export parser (pemod growth). Walks an

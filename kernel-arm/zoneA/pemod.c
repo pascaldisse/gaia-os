@@ -100,7 +100,7 @@ static unsigned char *pe_heap_alloc(unsigned long size_of_image) {
 // page-aligned buffer of >= size_of_image bytes (see pe_heap_alloc above /
 // ntfile.c's nt_territory_alloc for the two allocators in this codebase).
 long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, PeAllocFn allocfn,
-                 int do_imports, unsigned long *out_base, unsigned long *out_size,
+                 int do_imports, int apply_relocs, unsigned long *out_base, unsigned long *out_size,
                  unsigned long *out_entry) {
     u64b len = (u64b)lenL;
 
@@ -167,8 +167,29 @@ long PeMapImage(const unsigned char *img, unsigned long lenL, const char *tag, P
 
     long delta = (long)((u64b)(u64)alloc - image_base);
 
-    // ---- base relocations ----
-    if (num_dirs > IMAGE_DIR_BASERELOC) {
+    // CHALICE C3c-2q: relocations are applied here ONLY when apply_relocs
+    // is set. PROVEN (live PEMAP instrument, this atom): for DLLs mapped
+    // via NtMapViewOfSection, kernel-side relocation here is CORRECT and
+    // SINGLE at map time, but the stock Wine-built guest ntdll.dll's own
+    // PE-side loader (dlls/ntdll/loader.c build_module -> perform_relocations,
+    // donor source line ~2281) unconditionally re-relocates ANY module not
+    // mapped at its own OptionalHeader.ImageBase (`if (module == base)
+    // return STATUS_SUCCESS;` -- gated on the ADDRESS, not on our
+    // NtMapViewOfSection's return status) -- real Wine's Unix-side
+    // NtMapViewOfSection never relocates SEC_IMAGE maps at all (see
+    // wine/dlls/ntdll/unix/virtual.c: virtual_relocate_module is called
+    // only from the two special ntdll/apiset self-bootstrap paths in
+    // unix/loader.c, load_ntdll/load_apiset_dll -- NOT from the normal
+    // build_module path every other DLL takes), so applying relocations
+    // kernel-side there duplicates the guest's own unconditional pass ->
+    // root_key_names[]-class pointers end up at file+2*delta. Fix:
+    // NtMapViewOfSection (ntfile.c) now passes apply_relocs=0, leaving
+    // relocation entirely to the guest's perform_relocations, matching
+    // real Wine architecture. PeRun (slice-1 standalone exes, no Wine
+    // loader present) and ntboot.c's direct ntdll/exe Phase-0 maps (own
+    // bootstrap, mirrors unix/loader.c's load_ntdll -- ntdll can't
+    // relocate itself before it can run) keep apply_relocs=1.
+    if (apply_relocs && num_dirs > IMAGE_DIR_BASERELOC) {
         u32b rrva = rd32(dirs + IMAGE_DIR_BASERELOC * 8);
         u32b rsz  = rd32(dirs + IMAGE_DIR_BASERELOC * 8 + 4);
         if (rrva && rsz) {
@@ -430,7 +451,7 @@ long PeRun(const unsigned char *img, unsigned long lenL, const char *tag, int us
     // ntfile.c use; both are 8 bytes here regardless, but C treats them as
     // distinct pointer types).
     unsigned long base = 0, size = 0, entry_addr = 0;
-    if (PeMapImage(img, lenL, tag, pe_heap_alloc, 1, &base, &size, &entry_addr) != 0) return -1;
+    if (PeMapImage(img, lenL, tag, pe_heap_alloc, 1, 1, &base, &size, &entry_addr) != 0) return -1;
 
     long (*entry)(void) = (long (*)(void))(u64b)entry_addr;
     long ret;

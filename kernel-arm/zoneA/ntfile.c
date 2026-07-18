@@ -435,9 +435,18 @@ long NtCreateSection(void **SectionHandle, unsigned long DesiredAccess, void *Ob
 
 // =====================================================================
 // NtMapViewOfSection -- runs PeMapImage (pemod.c) over the section's blob
-// at a fresh DLL-territory base, kernel-side DIR64 relocs, NO import
-// resolution. Relocs applied kernel-side -> STATUS_SUCCESS (never
-// IMAGE_NOT_AT_BASE, per spec). Records an image-registry entry.
+// at a fresh DLL-territory base, NO kernel-side DIR64 relocs (CHALICE
+// C3c-2q -- proven live: the stock Wine-built guest ntdll.dll's own
+// PE-side loader (build_module -> perform_relocations) unconditionally
+// self-relocates any module not at its own preferred ImageBase, regardless
+// of NtMapViewOfSection's return status; real Wine's Unix-side
+// NtMapViewOfSection never relocates SEC_IMAGE maps either -- applying
+// relocations here duplicated the guest's own pass, landing pointer tables
+// like kernelbase.dll's root_key_names[] at file+2*delta instead of
+// file+delta), NO import resolution. Always STATUS_SUCCESS (never
+// IMAGE_NOT_AT_BASE, per spec -- the guest doesn't need that signal, it
+// relocates unconditionally on address mismatch either way). Records an
+// image-registry entry.
 // =====================================================================
 long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAddress,
                          unsigned long ZeroBits, unsigned long CommitSize, void *SectionOffset,
@@ -452,7 +461,7 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
 
     u64b base = 0, size = 0, entry = 0;
     const char *tag = sh->name ? sh->name : "dll";
-    long rc = PeMapImage(sh->blob, (unsigned long)sh->bloblen, tag, nt_territory_alloc, 0,
+    long rc = PeMapImage(sh->blob, (unsigned long)sh->bloblen, tag, nt_territory_alloc, 0, 0,
                           &base, &size, &entry);
     if (rc != 0) return STATUS_INVALID_IMAGE_FORMAT;
 
