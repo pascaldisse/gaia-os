@@ -234,7 +234,7 @@ int sync_try_fex_linux_hint(u64 esr, u64 elr, u64 *regs) {
 // directly: back the containing arena window, retry the faulting instruction.
 int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
     u64 ec = (esr >> 26) & 0x3f, iss = esr & 0x1ffffff;
-    u64 base = 0, size = 0; int committed = -2;
+    unsigned long base = 0, size = 0; int committed = -2;
     puts("CHALICE ARENA: esr="); puthex(esr); puts(" ec="); puthex(ec);
     puts(" iss="); puthex(iss); puts(" elr="); puthex(elr);
     puts(" far="); puthex(far); puts("\n");
