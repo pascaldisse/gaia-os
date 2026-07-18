@@ -133,6 +133,15 @@ if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$S
         if [ -s "$WOW64_DIR/wow64win.dll" ]; then
             WOW64_ARGS="$WOW64_ARGS wow64win.dll=$WOW64_DIR/wow64win.dll"
         fi
+        # CHALICE C4-7: win32u.dll -- wow64win.dll's OWN import table links
+        # against it (NtGdi*/NtUser* stubs); the guest loader resolves
+        # wow64win.dll's imports right after its NtMapViewOfSection, so a
+        # missing win32u.dll fails wow64win.dll's load (STATUS_DLL_NOT_FOUND)
+        # before BTCpuProcessInit/BTCpuSimulate ever run. Optional (stale
+        # fetch pre-C4-7 falls back silently), same wow64-chain/ dir.
+        if [ -s "$WOW64_DIR/win32u.dll" ]; then
+            WOW64_ARGS="$WOW64_ARGS win32u.dll=$WOW64_DIR/win32u.dll"
+        fi
     fi
     if [ -s "$I386_DIR/ntdll.dll" ] && [ -s "$I386_DIR/kernel32.dll" ] && [ -s "$I386_DIR/kernelbase.dll" ]; then
         WOW64_ARGS="$WOW64_ARGS syswow64/ntdll.dll=$I386_DIR/ntdll.dll syswow64/kernel32.dll=$I386_DIR/kernel32.dll syswow64/kernelbase.dll=$I386_DIR/kernelbase.dll"

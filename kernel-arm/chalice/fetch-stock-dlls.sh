@@ -199,7 +199,16 @@ X86_OUT_DIR="$OUT_DIR/i386-windows"
 # NtTerminateProcess) before BTCpuProcessInit/BTCpuSimulate ever run,
 # confirmed live (pe10 probe, C4-6). Same aarch64-windows source dir as
 # wow64.dll itself -- no new fetch mechanism, just one more filename.
-WOW64_NATIVE_TARGETS="wow64.dll wow64win.dll"
+# CHALICE C4-7: win32u.dll added -- wow64win.dll's OWN import table
+# (llvm-objdump -p wow64win.dll) links against win32u.dll (NtGdi*/NtUser*
+# stubs, e.g. NtGdiAbortDoc/NtGdiAbortPath) alongside wow64.dll+ntdll.dll.
+# The guest loader resolves EVERY import of a SEC_IMAGE-mapped DLL right
+# after NtMapViewOfSection (real ntdll loader behavior, not a syscall we
+# implement) -- a missing win32u.dll fails wow64win.dll's own load with
+# STATUS_DLL_NOT_FOUND, aborting process_init cleanly BEFORE
+# BTCpuProcessInit/BTCpuSimulate (confirmed live, pe10 probe, C4-7,
+# ret=0xC0000135). Same aarch64-windows source dir, no new mechanism.
+WOW64_NATIVE_TARGETS="wow64.dll wow64win.dll win32u.dll"
 WOW64_OUT_DIR="$OUT_DIR/wow64-chain"
 CPU_BACKEND_DEBS="hangover-libwow64fex_11.9_arm64.deb:libwow64fex.dll hangover-wowbox64_11.9_arm64.deb:wowbox64.dll"
 
