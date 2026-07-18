@@ -520,6 +520,34 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
     puts(" size="); putdec_signed((long)backend_size);
     puts(" entry="); puthex(backend_entry); puts("\n");
 
+    // =================================================================
+    // CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor.
+    // Still no guest code runs (C4-2's own doctrine, unchanged this atom) --
+    // build a throwaway 64-bit TEB/PEB (nt_build_teb, image args zeroed:
+    // nothing reads PEB.ImageBaseAddress/the Ldr self-entry in a probe with
+    // no entered guest), then graduate it with the WOW64 view
+    // (nt_build_wow64_teb32, ntsvc.c) and dump every structure's address +
+    // key field, becoming this leg's pe9_gate.py additions.
+    // =================================================================
+    void *teb64 = nt_build_teb(0, 0, 0);
+    if (!teb64) return boot_err("wow64 probe: nt_build_teb failed");
+
+    struct NtWow64Info wi;
+    long wow64_teb_rc = nt_build_wow64_teb32(teb64, 0xAA64 /* IMAGE_FILE_MACHINE_ARM64, native */,
+                                              0x14C /* IMAGE_FILE_MACHINE_I386, emulated */, &wi);
+    if (wow64_teb_rc != 0) return boot_err("wow64 probe: nt_build_wow64_teb32 failed");
+
+    puts("CHALICE: WOW64 teb32/peb32 built teb64="); puthex((u64b)teb64);
+    puts(" teb32="); puthex((u64b)wi.teb32);
+    puts(" peb32="); puthex((u64b)wi.peb32);
+    puts(" wow64info="); puthex((u64b)wi.wow64info);
+    puts("\n");
+    puts("CHALICE: WOW64 crossproclist addr="); puthex((u64b)wi.crossproclist);
+    puts(" size="); putdec_signed((long)wi.crossproclist_size);
+    puts(" entries="); putdec_signed((long)wi.crossproclist_entries);
+    puts(" cpureserved="); puthex((u64b)wi.cpureserved);
+    puts("\n");
+
     nt_territory_release_since(mark);
     nt_vm_regions_release_since((unsigned long)mark);
     puts(label); puts(" ret=0\n");

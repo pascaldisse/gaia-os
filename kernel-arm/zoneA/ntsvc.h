@@ -58,6 +58,26 @@ void nt_ldr_add_module(void *teb, void *image_base, void *entry, unsigned long i
       const unsigned short *name_utf16, unsigned long name_chars);
 void nt_ldr_dump(void *teb);
 
+// CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor -- extends
+// an already-built 64-bit TEB (nt_build_teb) with the WOW64 view (TEB32 at
+// teb64+0x2000, PEB32+WOW64INFO, CROSS_PROCESS_WORK_LIST, WOW64_CPURESERVED
+// scratch), all wired the way dlls/wow64/syscall.c reads them. See ntsvc.c
+// for the full donor-offset receipt. native_machine/emulated_machine are
+// the WOW64INFO Machine-type fields (e.g. 0xAA64/0x14C this leg). Returns
+// 0 on success (all allocations landed), -1 on alloc failure.
+struct NtWow64Info {
+    void         *teb32;
+    void         *peb32;
+    void         *wow64info;
+    void         *crossproclist;
+    unsigned long crossproclist_size;
+    unsigned int  crossproclist_entries;
+    void         *cpureserved;
+};
+long nt_build_wow64_teb32(void *teb64, unsigned short native_machine,
+                           unsigned short emulated_machine,
+                           struct NtWow64Info *out);
+
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).
 long NtWriteFile(void *FileHandle, void *Event, void *ApcRoutine, void *ApcContext,

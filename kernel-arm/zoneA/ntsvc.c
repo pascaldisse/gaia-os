@@ -659,7 +659,84 @@ void nt_service_tables_init(void) {
 #define TEB_STATICUNICODESTRING_OFF 0x1258
 #define TEB_STATICUNICODEBUFFER_OFF 0x1268
 #define TEB_STATICUNICODEBUFFER_LEN 0x2C0   // bytes; ballpark of real Windows' capacity, plenty for any single module/path name
-#define TEB_SIZE              0x1600   // generous; covers A1 dispatch slots (<=0x388) + StaticUnicodeString/Buffer above
+// CHALICE C4-3: TEB_SIZE 0x1600->0x3000 -- our TEB layout tracks the REAL
+// TEB64 (winternl.h _STRUCT64 TEB, C_ASSERT sizeof==0x1838: TlsSlots@0x1480,
+// WowTebOffset@0x180c) closely enough that 0x1600 didn't even reach
+// WowTebOffset, let alone the TEB32 view Wine places at teb+0x2000
+// (wine/dlls/ntdll/unix/unix_private.h:176 `teb_offset = 0x2000`, virtual.c
+// :4002 `TEB32 *teb32 = (TEB32*)((char*)ptr + teb_offset)`). 0x3000 covers
+// the real TEB64 body (0x1838) AND a full TEB32 (0x1000, winternl.h:1061
+// _TEB32 C_ASSERT sizeof==0x1000) at +0x2000..+0x3000, in ONE allocation --
+// same block nt_build_teb already hands back, no parallel allocator. Purely
+// additive (every existing offset below is unchanged; callers that never
+// touch the WOW64 fields see only a bigger, still-zeroed buffer -- no
+// regression risk, same growth pattern as scar #10's 0x400->0x1600 bump).
+#define TEB_SIZE              0x3000
+// ---- CHALICE C4-3: TEB64 WOW64 fields (winternl.h _STRUCT64 TEB, i.e. the
+// SAME struct this file's other TEB_* offsets above already track) ----
+#define TEB64_TLSSLOTS_OFF     0x1480   // winternl.h:1238 "TlsSlots[64]; /* 1480 */"
+#define TEB64_WOWTEBOFFSET_OFF 0x180c   // winternl.h:1300 "WowTebOffset; /* 180c */"
+#define TEB_WOW64_VIEW_OFF     0x2000   // unix_private.h:176 teb_offset
+#define WOW64_TLS_CPURESERVED  1        // winternl.h:1327
+#define WOW64_TLS_WOW64INFO    10       // winternl.h:1336
+
+// ---- TEB32 (winternl.h:1061 _TEB32, C_ASSERT sizeof==0x1000) ----
+#define TEB32_SIZE                     0x1000
+#define TEB32_TIB_EXCEPTIONLIST_OFF    0x00
+#define TEB32_TIB_FIBERDATA_OFF        0x10
+#define TEB32_TIB_SELF_OFF             0x18   // winnt.h:2564 NT_TIB32.Self
+#define TEB32_PEB_OFF                  0x30
+#define TEB32_STATICUNICODESTRING_OFF  0xbf8
+#define TEB32_STATICUNICODEBUFFER_OFF  0xc00
+#define TEB32_STATICUNICODEBUFFER_LEN  0x20a  // 261 WCHAR * 2 (winternl.h:1113 StaticUnicodeBuffer[261])
+#define TEB32_GDIBATCHCOUNT_OFF        0xf70
+#define TEB32_WOWTEBOFFSET_OFF         0xfdc
+#define US32_BUFFER_OFF                0x04   // UNICODE_STRING32 (winternl.h:673): Length(2)@0,MaximumLength(2)@2,Buffer(4)@4
+
+// ---- PEB32 (winternl.h:833 _PEB32, C_ASSERT sizeof==0x480) ----
+#define PEB32_SIZE                    0x480
+#define PEB32_NUMBEROFPROCESSORS_OFF  0x64
+#define PEB32_OSMAJORVERSION_OFF      0xa4
+#define PEB32_OSMINORVERSION_OFF      0xa8
+#define PEB32_OSBUILDNUMBER_OFF       0xac
+
+// ---- WOW64INFO (winternl.h:4395, C_ASSERT sizeof==40); stored
+// immediately after PEB32 (wine/dlls/wow64/syscall.c:1000 "wow64info =
+// (WOW64INFO *)(peb32 + 1)") ----
+#define WOW64INFO_SIZE                     0x28
+#define WOW64INFO_NATIVESYSTEMPAGESIZE_OFF 0x00
+#define WOW64INFO_CPUFLAGS_OFF             0x04
+#define WOW64INFO_CROSSPROCESSWORKLIST_OFF 0x18
+#define WOW64INFO_NATIVEMACHINETYPE_OFF    0x20
+#define WOW64INFO_EMULATEDMACHINETYPE_OFF  0x22
+
+// ---- CROSS_PROCESS_WORK_LIST (winternl.h:306-333). Real init sizes the
+// shared section to 0x4000 (syscall.c:952 "map_size = 0x4000") -- matched
+// exactly (not shrunk) so a later atom's real BTCpu-facing push/pop needs
+// no resize. Free list built with the SAME prepend-every-entry algorithm
+// as create_cross_process_work_list (syscall.c:972-973) +
+// RtlWow64PushCrossProcessWorkOntoFreeList (ntdll/process.c:411-425: new
+// entry's `next` = old first, `first` becomes byte-offset of new entry
+// FROM THE LIST BASE, counter++) -- built directly here since no code
+// executes yet to call the real Rtl function. ----
+#define CPWL_HDR_SIZE      0x30   // free_list(8)+work_list(8)+unknown[4](32)
+#define CPWL_ENTRY_SIZE    40     // next(4)+id(4)+addr(8)+size(8)+args[4](16), winternl.h:308-315
+#define CPWL_MAP_SIZE      0x4000
+#define CPWL_FREELIST_OFF  0x00
+#define CPWL_ENTRIES_OFF   CPWL_HDR_SIZE
+
+// ---- WOW64_CPURESERVED (winternl.h:4375): USHORT Flags + USHORT Machine,
+// followed by an inline i386 CONTEXT (winnt.h:1177 I386_CONTEXT, sizeof
+// 0xcc+0x200==0x2cc) + CONTEXT_EX (winnt.h:1596: 3 CONTEXT_CHUNK(8B each)
+// + ULONG64 align under _WIN64 == 0x20) when Machine==i386 (our only guest
+// arch this leg). Pure per-thread CPU-sim scratch -- BTCpuSimulate reads/
+// writes it once wired (C4-4/5); this atom allocates+zeroes it and wires
+// TlsSlots[WOW64_TLS_CPURESERVED] to it, no simulate call happens yet. ----
+#define WOW64_CPURESERVED_HDR_SIZE    4
+#define I386_CONTEXT_SIZE             0x2cc
+#define CONTEXT_EX_SIZE                0x20
+#define WOW64_CPURESERVED_SIZE (WOW64_CPURESERVED_HDR_SIZE + I386_CONTEXT_SIZE + CONTEXT_EX_SIZE)
+#define WOW64_CPURESERVED_MACHINE_OFF 0x02
 
 // ---- PEB (peb_teb.h _PEB), sequential from field order + C_ASSERT anchors
 // (Ldr==0x18, FastPebLock==0x038, TlsExpansionCounter==0x070,
@@ -793,6 +870,100 @@ void *nt_build_teb(void *image_base, void *entry, unsigned long image_size) {
     wr32(mod + MOD_SIZEOFIMAGE_OFF, (u32b)image_size);
 
     return teb;
+}
+
+// =====================================================================
+// CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor.
+// Extends an already-built 64-bit TEB (nt_build_teb, above -- TEB_SIZE now
+// 0x3000, grown this atom specifically to make room here) with the WOW64
+// view Wine's own code expects: a TEB32 in-place at teb64+0x2000, a PEB32
+// + trailing WOW64INFO, a CROSS_PROCESS_WORK_LIST, and a WOW64_CPURESERVED
+// per-thread CPU-sim scratch block -- wired into TEB64.TlsSlots exactly the
+// way dlls/wow64/syscall.c's process_init/BTCpuSimulate call sites read
+// them (offset citations in the struct-offset block above). No guest code
+// runs here (C4-2's own doctrine, unchanged) -- this only builds+wires the
+// structures and hands back their addresses for a serial proof dump.
+// =====================================================================
+long nt_build_wow64_teb32(void *teb64_v, unsigned short native_machine,
+                           unsigned short emulated_machine,
+                           struct NtWow64Info *out) {
+    u8 *teb64 = (u8 *)teb64_v;
+    if (!teb64 || !out) return -1;
+
+    // ---- TEB32 view, in-place at teb64+0x2000 (already zeroed -- part of
+    // teb64's own nt_zalloc(TEB_SIZE) block). ----
+    u8 *teb32 = teb64 + TEB_WOW64_VIEW_OFF;
+    wr32(teb32 + TEB32_TIB_EXCEPTIONLIST_OFF, 0xFFFFFFFFUL);        // virtual.c:4009 Tib.ExceptionList = ~0u
+    wr32(teb32 + TEB32_TIB_FIBERDATA_OFF, 0x1e00);                  // virtual.c:4010
+    wr32(teb32 + TEB32_TIB_SELF_OFF, (u32b)(u64b)teb32);
+    wr16(teb32 + TEB32_STATICUNICODESTRING_OFF + 0 /* Length */, 0);
+    wr16(teb32 + TEB32_STATICUNICODESTRING_OFF + 2 /* MaximumLength */, TEB32_STATICUNICODEBUFFER_LEN);
+    wr32(teb32 + TEB32_STATICUNICODESTRING_OFF + US32_BUFFER_OFF,
+         (u32b)(u64b)(teb32 + TEB32_STATICUNICODEBUFFER_OFF));
+    wr32(teb32 + TEB32_GDIBATCHCOUNT_OFF, (u32b)(u64b)teb64);       // virtual.c:4016 GdiBatchCount = PtrToUlong(teb64)
+    wr32(teb32 + TEB32_WOWTEBOFFSET_OFF, (u32b)(0UL - TEB_WOW64_VIEW_OFF));   // virtual.c:4017 WowTebOffset = -teb_offset
+
+    // ---- cross-link on the 64-bit TEB (virtual.c:4018 "teb64->WowTebOffset = teb_offset") ----
+    wr32(teb64 + TEB64_WOWTEBOFFSET_OFF, TEB_WOW64_VIEW_OFF);
+
+    // ---- PEB32 + trailing WOW64INFO (syscall.c:1000 "(peb32 + 1)"). PEB32's
+    // own trapdoor fields (ImageBaseAddress/LdrData/ProcessParameters/
+    // ApiSetMap) are left 0 this atom -- no 32-bit ntdll/exe image mapped
+    // yet (that's C4-4/5 territory); documented gap, not silent (dumped as
+    // 0 by the pe9 proof line, not hidden). ----
+    u8 *peb32 = (u8 *)nt_zalloc(PEB32_SIZE + WOW64INFO_SIZE);
+    if (!peb32) return -1;
+    u8 *wow64info = peb32 + PEB32_SIZE;
+
+    wr32(peb32 + PEB32_NUMBEROFPROCESSORS_OFF, 1);
+    wr32(peb32 + PEB32_OSMAJORVERSION_OFF, 10);
+    wr32(peb32 + PEB32_OSMINORVERSION_OFF, 0);
+    wr32(peb32 + PEB32_OSBUILDNUMBER_OFF, 19041);
+    wr32(teb32 + TEB32_PEB_OFF, (u32b)(u64b)peb32);
+
+    wr32(wow64info + WOW64INFO_NATIVESYSTEMPAGESIZE_OFF, 0x1000);           // syscall.c:1001
+    // WOW64INFO.CpuFlags: left 0 -- grep of the vanilla donor (dlls/wow64,
+    // dlls/ntdll) shows NO assignment to ->CpuFlags anywhere; it's read
+    // (syscall.c:252) but never written in-tree, presumably a backend-
+    // specific (BTCpuProcessInit) job -- measured, not guessed at.
+    wr16(wow64info + WOW64INFO_NATIVEMACHINETYPE_OFF, native_machine);      // syscall.c:1002
+    wr16(wow64info + WOW64INFO_EMULATEDMACHINETYPE_OFF, emulated_machine);  // syscall.c:1003
+
+    // ---- CROSS_PROCESS_WORK_LIST: exact 0x4000 size real Wow64 uses
+    // (syscall.c:952), free list fully populated (prepend-all-entries,
+    // matching syscall.c:972-973 + process.c:411-425). ----
+    u8 *cpwl = (u8 *)nt_zalloc(CPWL_MAP_SIZE);
+    if (!cpwl) return -1;
+    unsigned int n_entries = (CPWL_MAP_SIZE - CPWL_ENTRIES_OFF) / CPWL_ENTRY_SIZE;
+    u32b first_off = 0;
+    for (unsigned int i = 0; i < n_entries; i++) {
+        u8 *entry = cpwl + CPWL_ENTRIES_OFF + (u64b)i * CPWL_ENTRY_SIZE;
+        wr32(entry + 0 /* next */, first_off);
+        first_off = (u32b)(u64b)(entry - cpwl);
+    }
+    wr32(cpwl + CPWL_FREELIST_OFF + 0 /* .first */, first_off);
+    wr32(cpwl + CPWL_FREELIST_OFF + 4 /* .counter */, n_entries);
+    wr64(wow64info + WOW64INFO_CROSSPROCESSWORKLIST_OFF, (u64b)cpwl);       // syscall.c:975
+
+    // ---- TlsSlots wiring (real TEB64 offset 0x1480, winternl.h:1238) ----
+    wr64(teb64 + TEB64_TLSSLOTS_OFF + WOW64_TLS_WOW64INFO * 8, (u64b)wow64info);   // syscall.c:1004
+
+    // ---- WOW64_CPURESERVED per-thread CPU-sim scratch; TlsSlots[WOW64_TLS_
+    // CPURESERVED] is how BTCpuSimulate's caller locates it (syscall.c:1393
+    // "WOW64_CPURESERVED *cpu = NtCurrentTeb()->TlsSlots[WOW64_TLS_CPURESERVED]"). ----
+    u8 *cpureserved = (u8 *)nt_zalloc(WOW64_CPURESERVED_SIZE);
+    if (!cpureserved) return -1;
+    wr16(cpureserved + WOW64_CPURESERVED_MACHINE_OFF, emulated_machine);
+    wr64(teb64 + TEB64_TLSSLOTS_OFF + WOW64_TLS_CPURESERVED * 8, (u64b)cpureserved);
+
+    out->teb32 = teb32;
+    out->peb32 = peb32;
+    out->wow64info = wow64info;
+    out->crossproclist = cpwl;
+    out->crossproclist_size = CPWL_MAP_SIZE;
+    out->crossproclist_entries = n_entries;
+    out->cpureserved = cpureserved;
+    return 0;
 }
 
 // CHALICE C3c-2l Atom A/B — nt_ldr_add_module: insert a SECOND (or Nth)

@@ -101,6 +101,10 @@ required = [
     # ---- pe9/C4-2 -- WOW64 image trio maps, default backend (wowbox64) ----
     "CHALICE: wow64.dll mapped",
     "CHALICE: CPU backend mapped name=wowbox64.dll",
+    # ---- pe9/C4-3 -- TEB32/PEB32 floor (structures built+wired, no guest
+    # code runs yet) -- must appear before this invocation's own "pe9 ret=0".
+    "CHALICE: WOW64 teb32/peb32 built",
+    "CHALICE: WOW64 crossproclist addr=",
     "pe9 ret=0",
 ]
 missing = [r for r in required if r not in txt]
