@@ -1,6 +1,7 @@
 // GAIA-OS Zone A — M2: MMU + GICv3 + timer + MAlloc + cooperative tasks.
 // C for the stub; the kernel speaks HolyC once Zone C lands.
 #include "kernel.h"
+#include "sync_frame.h"
 
 // ---- PL011 ----
 #define UART_DR   0x09000000UL
@@ -292,6 +293,19 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
 #define STATUS_ILLEGAL_INSTRUCTION 0xc000001dU // wine/include/winnt.h:638
 #define NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA 0x66c40U
 
+// Matches SAVEALL_SYNC/RESTOREALL_SYNC.  Any future C/asm layout drift is a
+// compile error rather than a silent exception-delivery loop.
+struct sync_frame_layout {
+    unsigned char gpr[SYNC_FRAME_GPR_BYTES];
+    unsigned char q[SYNC_FRAME_Q_BYTES];
+};
+typedef char sync_frame_size_must_match_asm[
+    sizeof(struct sync_frame_layout) == SYNC_FRAME_SIZE ? 1 : -1];
+typedef char sync_frame_q_must_match_asm[
+    __builtin_offsetof(struct sync_frame_layout, q) == SYNC_FRAME_Q_OFF ? 1 : -1];
+typedef char sync_frame_x18_must_match_asm[
+    SYNC_FRAME_X18_OFF == 18 * sizeof(u64) ? 1 : -1];
+
 extern char _load_base[], _kernel_end[];
 extern unsigned long *nt_exit_jmpbuf;
 extern long nt_exit_code;
@@ -305,6 +319,18 @@ void nt_continue_trace(void *context) {
     puts("CHALICE CONTINUE: pc="); puthex(*(u64 *)(ctx + 0x108));
     puts(" sp="); puthex(*(u64 *)(ctx + 0x100));
     puts(" x18="); puthex(*(u64 *)(ctx + 0x98)); puts("\n");
+}
+
+// Called by sync_entry after it writes the dispatcher ELR and immediately
+// before its ERET.  This deliberately reads hardware state, never a frame or
+// CONTEXT field; cap prevents a delivery loop from flooding the serial log.
+void sync_exception_eret_truth(void) {
+    static u64 count;
+    u64 elr, spsr;
+    if (count++ >= 12) return;
+    asm volatile("mrs %0, elr_el1\n mrs %1, spsr_el1" : "=r"(elr), "=r"(spsr));
+    puts("CHALICE ERET TRUTH: elr_el1="); puthex(elr);
+    puts(" spsr_el1="); puthex(spsr); puts("\n");
 }
 
 static void move_bytes(void *dst_void, const void *src_void, u64 n) {
@@ -380,7 +406,8 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     for (u64 i = 0; i < 31; i++) *(u64 *)(ctx + ARM64_CONTEXT_X_OFF + i * 8) = regs[i];
     *(u64 *)(ctx + ARM64_CONTEXT_SP_OFF) = sp_orig;
     *(u64 *)(ctx + ARM64_CONTEXT_PC_OFF) = elr;
-    move_bytes(ctx + ARM64_CONTEXT_V_OFF, (unsigned char *)regs + 0x100, 0x200);
+    move_bytes(ctx + ARM64_CONTEXT_V_OFF, (unsigned char *)regs + SYNC_FRAME_Q_OFF,
+               SYNC_FRAME_Q_BYTES);
     *(u32 *)(ctx + ARM64_CONTEXT_FPCR_OFF) = (u32)fpcr;
     *(u32 *)(ctx + ARM64_CONTEXT_FPSR_OFF) = (u32)fpsr;
 

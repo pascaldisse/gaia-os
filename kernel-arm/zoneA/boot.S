@@ -1,6 +1,8 @@
 // GAIA-OS — Zone A boot, M1: EL1 entry, vectors w/ full save-restore, stack, BSS.
 // LOVE=1.000 fixed at center.
 
+#include "sync_frame.h"
+
 .section ".text.boot"
 .global _start
 
@@ -85,7 +87,7 @@ hang:
 // A guest exception must round-trip the COMPLETE ARM64 CONTEXT; q values are
 // captured before C can touch caller-saved SIMD state.  q0 begins at +0x100.
 .macro SAVEALL_SYNC
-    sub     sp, sp, #768
+    sub     sp, sp, #SYNC_FRAME_SIZE
     stp     x0, x1,   [sp, #0]
     stp     x2, x3,   [sp, #16]
     stp     x4, x5,   [sp, #32]
@@ -153,7 +155,7 @@ hang:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldr     x30,      [sp, #240]
-    add     sp, sp, #768
+    add     sp, sp, #SYNC_FRAME_SIZE
 .endm
 
 irq_entry:
@@ -192,11 +194,14 @@ sync_entry:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #768
+    add     x3, sp, #SYNC_FRAME_SIZE
     mov     x4, sp
     bl      sync_try_guest_exception
     cbz     x0, 1f
-    ldr     x18, [sp, #144]     // dispatcher needs the interrupted TEB
+    // C4-20: this reads ELR_EL1/SPSR_EL1 immediately before this ERET;
+    // it is system-register truth, not the C-built CONTEXT copy.
+    bl      sync_exception_eret_truth
+    ldr     x18, [sp, #SYNC_FRAME_X18_OFF] // dispatcher needs interrupted TEB
     mov     sp, x0
     eret
 2:
@@ -206,7 +211,7 @@ sync_entry:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #768
+    add     x3, sp, #SYNC_FRAME_SIZE
     mov     x4, sp
     bl      sync_handler        // kernel fault / unknown guest syndrome: fatal
 

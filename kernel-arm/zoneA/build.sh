@@ -192,6 +192,12 @@ QEMU_MEM="${GAIA_QEMU_MEM:-4G}"
 # Canonical gates never set this (inherit the default), same convention as
 # GAIA_QEMU_MEM/GAIA_SERIAL/GAIA_DISPLAY above.
 QEMU_CPU="${GAIA_QEMU_CPU:-cortex-a72}"
+# C4-20: optional QEMU gdbstub for the trace harness.  Empty is the default
+# and adds no QEMU argument, preserving every normal gate's behavior.
+# A nonempty socket waits for the harness before CPUs start.
+if [ -n "${GAIA_GDB_SOCKET:-}" ]; then
+    set -- "$@" -gdb "unix:${GAIA_GDB_SOCKET},server=on,wait=on"
+fi
 # GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
 # harness that attaches QEMU to stdio; gate scripts run build.sh themselves).
 [ -n "${GAIA_NO_RUN:-}" ] && { echo "build ok (GAIA_NO_RUN set, skipping QEMU)"; exit 0; }
