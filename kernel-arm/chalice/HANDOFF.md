@@ -10,28 +10,48 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — SLICE 3 COMPLETE (2026-07-18), verified live. HEAD ~`2c1adf9`.
+## STATE — hello7 surface walk COMPLETE (2026-07-18), verified live. HEAD `dada57f`.
 
-**A real Win32-API-calling PE runs natively on the Temple.** `pe7` runs
-`hello6.exe` — a genuine ARM64 PE with a real `KERNEL32.dll` import table
-(`GetStdHandle`/`WriteFile`/`ExitProcess`) — over the three stock **Hangover
-11.9 ARM64** core libraries (`ntdll.dll`, `kernel32.dll`, `kernelbase.dll`,
-unmodified, in `chalice/stock/`). Full chain fires:
+**pe8/hello7 green: widened KERNEL32.dll surface over stock ntdll+kernel32+
+kernelbase.** `hello7.exe` exercises `GetCommandLineA`, `GetModuleHandleA`
+(NULL + by-name), `GetProcAddress` (+ indirect call through the resolved
+pointer), `GetProcessHeap`/`HeapAlloc`/`HeapFree` (write+readback a live
+block), `GetCurrentProcessId`, `SetLastError`/`GetLastError` roundtrip — each
+prints one proof line, all present, `CHALICE: hello7 surface walk complete`,
+`pe8 ret=78`. `pe7`'s WriteFile-via-import-table milestone (`kernel32
+speaks`, `ret=77`) unchanged, no regression.
 
-`hello6.exe → kernel32!WriteFile → kernelbase → ntdll → our NtWriteFile → serial`
+**Fix this slice: TEB.StaticUnicodeString (offset `0x1258`, this ABI).**
+`GetModuleHandleA("kernel32.dll")` always failed (`ERROR_MOD_NOT_FOUND`,
+`0x7E`) while `GetModuleHandleA(NULL)` worked — different code paths.
+Ground truth via disassembly: `kernelbase.dll!GetModuleHandleA` →
+`file_name_AtoW` → `add x19,x18,#0x1258` (dest `UNICODE_STRING*` for
+`RtlAnsiStringToUnicodeString`/`RtlOemStringToUnicodeString`,
+`AllocateDestinationString=FALSE`). Our `nt_build_teb` never wrote this
+slot — `MaximumLength=0` → `STATUS_BUFFER_OVERFLOW` on ANY non-empty ANSI
+name → `GetModuleHandleA` maps that to `0x7E` regardless of real cause.
+Fix (`ntsvc.c`): `TEB_SIZE` `0x400`→`0x1600`; write an empty, properly-
+capacitied `UNICODE_STRING` at `teb+0x1258` (`MaximumLength=0x2C0`,
+`Buffer=teb+0x1268`) in `nt_build_teb`, before the guest ever runs.
 
-Verified serial output: **`CHALICE: kernel32 speaks`** then **`pe7 ret=77`**,
-clean exit, shell survives (`T:/>` returns). No macOS / Wine call-translation
-layer underneath — the kernel answers the NT service ABI itself.
+**Per-boot territory reset (prior slice, reconfirmed this slice):**
+wholesale reset of the DLL-territory bump pointer + VM-arena tracking table
+at the top/bottom of every `nt_boot_process` call (`nt_territory_mark`/
+`nt_territory_release_since`, `nt_vm_regions_release_since`) — one guest
+process resident at a time, full reclaim on exit. A prior free-list-reuse
+design (`nt_territory_free`) was tried and **reverted** (over-engineering
+for a single-process-at-a-time kernel with no concurrent guests to isolate);
+wholesale reset is simpler and sufficient. Proven exhaustion-dead this
+slice: `pe6`/`pe7`/`pe8` run **twice back-to-back in one QEMU session** (6
+`nt_boot_process` calls total) — zero `STATUS_NO_MEMORY`/`0xC0000017`, all
+completion markers present twice (`scratch/backtoback_gate.py`).
 
-Shell verbs (all green in the gate):
-- `pe1`/`pe2`/`pe` — slice-1 PE loader (our own test exes over `libgaia` shims)
-- `pe3` — NtContinue leap + KUSER floor
-- `pe4` — DLL load-by-name + export link (`mini.dll`)
-- `pe5` — boot-protocol dress rehearsal over `fake-ntdll.dll`
-- `pe6` — stock ntdll runs an import-less exe to completion (`ret=99`)
-- `pe7` — **stock ntdll+kernel32+kernelbase run a real WriteFile-calling exe**
-  (`kernel32 speaks`, `ret=77`)
+**Gate list, current (all required-green, no regression):** `pe1`–`pe5`
+required-green lines (below) + `scratch/pe7_gate.py` (adds `pe7`) +
+**`scratch/pe8_gate.py`** (adds `pe6`/`pe7`/`pe8`, now the canonical
+full-surface gate — supersedes `pe7_gate.py` for day-to-day use) +
+`scratch/ramfb_gate.py` + `scratch/backtoback_gate.py` (exhaustion-dead
+proof, new this slice).
 
 ---
 
@@ -42,15 +62,20 @@ cd kernel-arm/zoneA && GAIA_NO_RUN=1 bash build.sh    # build ONLY
 ```
 - **NEVER launch QEMU naked** — `build.sh`'s tail `exec`s QEMU on stdio. Build
   with `GAIA_NO_RUN=1`; run shell verbs ONLY through the unix-socket harnesses
-  `scratch/chalice_gate.py` (pe1–pe6 + required-green lines) and
-  `scratch/pe7_gate.py` (pe7). `pgrep qemu` + kill leaks before every boot.
+  `scratch/pe7_gate.py` (pe1–pe6 required-green + pe7) and
+  **`scratch/pe8_gate.py`** (same required-green + pe7 + pe8, canonical
+  full-surface gate). `scratch/` is gitignored/session-local — a fresh
+  clone/worker has none; recreate from the pattern in either file if missing.
+  `pgrep qemu` + kill leaks before every boot.
 - **Checkpoint-commit before every boot/test loop** — the 30-min worker cap /
   900s stall abort has eaten uncommitted work repeatedly.
 - **Required-green gate (no regression):** `pe1 ret=42` · cup fills ·
   `pe2 ret=7` · cup speaks · continue lands · NT10 · `pe3 ret=99` · cup links ·
   `pe4 ret=60` · thunk enters · chain speaks · `pe5 ret=99` · stock ntdll
-  mapped · stock thunk enters. Plus `scratch/ramfb_gate.py` (`-m 1G` baked into
-  build.sh; 7 pixel checks).
+  mapped · stock thunk enters · `pe6 ret=99` · `pe7 ret=77`/kernel32 speaks ·
+  **`pe8 ret=78`/hello7 surface walk complete (new this slice)**. Plus
+  `scratch/ramfb_gate.py` (`-m 1G` baked into build.sh; 7 pixel checks) and
+  `scratch/backtoback_gate.py` (exhaustion-dead: pe6/pe7/pe8 x2 in one boot).
 - **Source-only commits** — `chalice/*.exe`/`.dll`/`.pdb` and
   `zoneA/pehello_bin.c` are build artifacts that churn every `build.sh`; leave
   them uncommitted.
@@ -143,6 +168,15 @@ registry floor, NtRaiseException/HardError, NtQueryDefaultLocale.
    allocation granularity).
 9. **Trapdoor pointers first:** miss one of TEB.NtTib.Self / PEB / PEB.Ldr /
    ProcessParameters and ntdll dies silently before its first service call.
+10. **TEB.StaticUnicodeString (offset `0x1258`, this ABI) is load-bearing**
+    for ANY ANSI-name resolution (`GetModuleHandleA` by name,
+    `GetModuleFileNameA`, etc — the `AllocateDestinationString=FALSE` path
+    through `RtlAnsiStringToUnicodeString`/`RtlOemStringToUnicodeString`).
+    Left zeroed it silently fails every such call with `STATUS_BUFFER_
+    OVERFLOW` → `ERROR_MOD_NOT_FOUND` (`0x7E`), NOT a crash — easy to miss
+    since `GetModuleHandleA(NULL)` (a different, PEB-based path) keeps
+    working. `nt_build_teb` must wire an empty, properly-capacitied
+    `UNICODE_STRING` there before the guest ever runs.
 
 ---
 
@@ -172,10 +206,15 @@ reference · **Proton** = games-grade compatibility reference.
 
 ## Immediate next step for a fresh session
 
-Read a full fresh `pe7` trace past `kernel32 speaks` — `pe7` currently exits at
-the WriteFile milestone (`ret=77`) by design (hello6 prints and exits). To push
-further, either (a) extend `hello6.exe` to call more Win32 surface (console
-setup, more kernelbase/kernel32 APIs) and burn down whatever it newly needs, or
-(b) start C3/C4 per Pascal's ruling. Every gap from here shows itself as a
-legible `CHALICE FAULT` / `NtRaiseException` line resolved to `<module>+offset`
-— instrument-first, measure, then fix.
+`hello7`/`pe8`'s widened KERNEL32.dll surface walk is green (this slice) —
+GetCommandLineA/GetModuleHandleA/GetProcAddress/GetProcessHeap+HeapAlloc+
+HeapFree/GetCurrentProcessId/GetLastError+SetLastError all proven. To push
+further, either (a) extend `hello7.exe`/a new `hello8.exe` to call more Win32
+surface (console setup, file I/O beyond NtOpenFile/ReadFile, more kernelbase
+APIs) and burn down whatever it newly needs, or (b) start C3/C4 per Pascal's
+ruling (see NEXT below — that's the real fork point now, not more surface-
+walk atoms). Every gap from here shows itself as a legible `CHALICE FAULT` /
+`NtRaiseException` line resolved to `<module>+offset` — instrument-first,
+measure, then fix (TEB.StaticUnicodeString this slice: no fault line at all,
+just a wrong return value — disassemble the DONOR when there's no crash to
+chase, not just when there is).
