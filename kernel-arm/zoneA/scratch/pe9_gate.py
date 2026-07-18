@@ -116,6 +116,14 @@ required = [
     "CHALICE: fstest wow64-redirect wow64active=1 path=\\??\\C:\\windows\\system32\\kernel32.dll open_rc=0 machine=0x000000000000014C",
     "CHALICE: fstest sysnative-escape wow64active=1 path=\\??\\C:\\windows\\sysnative\\ntdll.dll open_rc=0 machine=0x000000000000AA64",
     "CHALICE: fstest explicit-syswow64 wow64active=0 path=\\??\\C:\\windows\\syswow64\\kernelbase.dll open_rc=0 machine=0x000000000000014C",
+    # ---- pe9/C4-5 -- PE32 (i386) section-path live proof: real
+    # NtOpenFile->NtCreateSection(SEC_IMAGE)->NtQuerySection->
+    # NtMapViewOfSection chain over a genuine i386 blob (syswow64/ntdll.dll
+    # AND hello8_x86.exe), format-CORRECT now via pemod.c's is_pe32 path
+    # (not the raw-byte-read fstest workaround above) -- both must resolve
+    # Machine=0x14C and map successfully (rc=0 at every stage).
+    "CHALICE: pe32sec syswow64-ntdll path=\\??\\C:\\windows\\syswow64\\ntdll.dll open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C",
+    "CHALICE: pe32sec hello8-x86-exe path=\\??\\C:\\windows\\hello8_x86.exe open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C",
     # ---- pe9/C4-3 -- TEB32/PEB32 floor (structures built+wired, no guest
     # code runs yet) -- must appear before this invocation's own "pe9 ret=0".
     "CHALICE: WOW64 teb32/peb32 built",

@@ -544,6 +544,74 @@ static void nt_wow64_fs_selftest(void) {
 }
 
 // =====================================================================
+// CHALICE C4-5: PE32 section-path live proof -- the real gate this leg's
+// pemod.c deltas exist for. Drives a genuine i386 (Machine 0x14C) blob
+// through NtOpenFile -> NtCreateSection(SEC_IMAGE) -> NtQuerySection
+// (SectionImageInformation, pe_query_image_info's is_pe32 path) ->
+// NtMapViewOfSection (PeMapImage's is_pe32 path, incl. the new <4GB
+// assert) -- all three already-proven kernel services, unmodified this
+// leg; only pemod.c's header parser gained the is_pe32 branch. Prints
+// Machine (from NtQuerySection, format-CORRECT now, not the raw-byte-read
+// nt_wow64_fs_selftest workaround above) + mapped base/size/entry (from
+// NtMapViewOfSection) -- concrete proof the whole SEC_IMAGE chain now
+// round-trips a 32-bit image end to end.
+// =====================================================================
+static void nt_pe32_section_selftest_one(const char *ascii_path, int wow64_active, const char *tag) {
+    nt_wow64_set_active(wow64_active);
+
+    u64b plen = strlen_local(ascii_path);
+    u16b *wpath = (u16b *)nt_territory_alloc((plen + 1) * 2);
+    widen_ascii(ascii_path, wpath, plen);
+
+    u8 *us = nt_territory_alloc(0x10);
+    wr16(us + US_LENGTH_OFF, (u16b)(plen * 2));
+    wr16(us + US_MAXLENGTH_OFF, (u16b)(plen * 2));
+    wr64(us + US_BUFFER_OFF, (u64b)wpath);
+
+    u8 *oa = nt_territory_alloc(0x30);
+    wr64(oa + NT_SELFTEST_OA_OBJECTNAME_OFF, (u64b)us);
+
+    void *fh = 0;
+    long orc = NtOpenFile(&fh, 0, oa, 0, 0, 0);
+    puts("CHALICE: pe32sec "); puts(tag); puts(" path="); puts(ascii_path);
+    puts(" open_rc="); putdec_signed(orc);
+    if (orc != 0) { puts("\n"); nt_wow64_set_active(0); return; }
+
+    void *sh = 0;
+    long crc = NtCreateSection(&sh, 0, 0, 0, 0, SEC_IMAGE, fh);
+    puts(" create_rc="); putdec_signed(crc);
+    if (crc != 0) { puts("\n"); nt_wow64_set_active(0); return; }
+
+    u8 sii[0x40];
+    unsigned long retlen = 0;
+    long qrc = NtQuerySection(sh, 1 /* SectionImageInformation */, sii, sizeof(sii), &retlen);
+    puts(" query_rc="); putdec_signed(qrc);
+    if (qrc == 0) {
+        u16b qmachine = (u16b)((u32b)sii[0x30] | ((u32b)sii[0x31] << 8));
+        u64b transfer = rd64(sii + 0x00);
+        puts(" Machine="); puthex(qmachine);
+        puts(" TransferAddress="); puthex(transfer);
+    }
+
+    void *mapbase = 0;
+    unsigned long viewsize = 0;
+    long mrc = NtMapViewOfSection(sh, 0, &mapbase, 0, 0, 0, &viewsize, 0, 0, 0);
+    puts(" map_rc="); putdec_signed(mrc);
+    if (mrc == 0) {
+        puts(" base="); puthex((u64b)mapbase);
+        puts(" size="); putdec_signed((long)viewsize);
+    }
+    puts("\n");
+
+    nt_wow64_set_active(0);
+}
+
+static void nt_pe32_section_selftest(void) {
+    nt_pe32_section_selftest_one("\\??\\C:\\windows\\syswow64\\ntdll.dll", 0, "syswow64-ntdll");
+    nt_pe32_section_selftest_one("\\??\\C:\\windows\\hello8_x86.exe", 0, "hello8-x86-exe");
+}
+
+// =====================================================================
 // CHALICE C4-2 (C4-SPEC.md atom C4-2): native WOW64 image trio maps.
 // Reuses boot_blob_lookup (nt_blob_lookup_or_fs, above) + PeMapImage +
 // nt_territory_alloc + nt_image_register -- the exact same 3A machinery
@@ -648,6 +716,10 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, co
     // execution involved (unlike the opt-in BTCpuProcessInit call below).
     // =================================================================
     nt_wow64_fs_selftest();
+
+    // CHALICE C4-5: PE32 (i386) section-path live proof -- see helper
+    // comment above for the exact chain this exercises.
+    nt_pe32_section_selftest();
 
     // =================================================================
     // CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor.
