@@ -366,6 +366,12 @@ static u64 ki_user_exception_dispatcher(void) {
 // keeps demand-commit ahead of this function, so an arena first-touch retries
 // transparently; a COMMITTED JIT HLT reaches the guest here.
 u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
+    // C4-20 fallback context probe: QEMU's bundled RSP advertises neither
+    // swbreak nor hwbreak, so retain the before-delivery bytes and inspect
+    // that same stack slot on the next delivery before overwriting it.
+    static unsigned char prior_context[ARM64_CONTEXT_SIZE];
+    static u64 prior_context_addr;
+    static int prior_context_valid;
     u64 ec = (esr >> 26) & 0x3f, status = 0, params = 0, dispatcher, stack;
     u32 insn = 0;
     int known_guest = nt_image_resolve(elr, (char[1]){0}, 1, &(u64){0}) ||
@@ -386,6 +392,18 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
 
     dispatcher = ki_user_exception_dispatcher();
     if (!dispatcher) return 0;
+    // The prior dispatcher stack is still live at this point.  This is the
+    // exact CONTEXT bytes RtlRestoreContext was handed in the prior pass.
+    u64 prior_slot = (sp_orig & ~15ULL) - ARM64_EXCEPTION_STACK;
+    if (prior_context_valid && prior_slot == prior_context_addr) {
+        unsigned char *after = (unsigned char *)prior_slot;
+        puts("CHALICE CONTEXT RETURN: flags "); puthex(*(u32 *)(prior_context + 0));
+        puts("->"); puthex(*(u32 *)(after + 0));
+        puts(" pc "); puthex(*(u64 *)(prior_context + ARM64_CONTEXT_PC_OFF));
+        puts("->"); puthex(*(u64 *)(after + ARM64_CONTEXT_PC_OFF));
+        puts(" sp "); puthex(*(u64 *)(prior_context + ARM64_CONTEXT_SP_OFF));
+        puts("->"); puthex(*(u64 *)(after + ARM64_CONTEXT_SP_OFF)); puts("\n");
+    }
     stack = guest_exception_stack(sp_orig, 0, 0);
     if (!stack) return 0;
     unsigned char *ctx = (unsigned char *)stack;
@@ -402,6 +420,9 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
                SYNC_FRAME_Q_BYTES);
     *(u32 *)(ctx + ARM64_CONTEXT_FPCR_OFF) = (u32)fpcr;
     *(u32 *)(ctx + ARM64_CONTEXT_FPSR_OFF) = (u32)fpsr;
+    for (u64 i = 0; i < ARM64_CONTEXT_SIZE; i++) prior_context[i] = ctx[i];
+    prior_context_addr = stack;
+    prior_context_valid = 1;
 
     *(u32 *)(rec + 0x00) = (u32)status;
     *(u64 *)(rec + 0x10) = elr;
