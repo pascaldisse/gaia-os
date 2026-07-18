@@ -531,6 +531,61 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
                 puts(" ec.sp="); puthex(*(volatile u64 *)(entry_ctx + ARM64_CONTEXT_SP_OFF));
                 puts(" ec.x18="); puthex(*(volatile u64 *)(entry_ctx + ARM64_CONTEXT_X_OFF + 18 * 8));
             }
+            // CHALICE C4-31 MEASURE step 2b: the consume-check's own state --
+            // FEXCore::Core::CpuStateFrame::SynchronousFaultData, written by
+            // IR::Break (FEXCore/Source/Interface/Core/JIT/MiscOps.cpp:65-77)
+            // immediately before branching to the GuestSignal_SIGSEGV self-
+            // fault trampoline (C4-30), and consumed by FEX::Windows::
+            // HandleGuestException (Source/Windows/Common/Exception.h:14-79,
+            // called from BTCpuResetToConsistentStateImpl, Module.cpp:936-937)
+            // to translate this self-fault into the REAL guest x86 exception
+            // (Fault.Signal/TrapNo/si_code/err_code). Donor-derived offsets
+            // (no donor edits, computed by hand from CoreState.h field list,
+            // clang++ offsetof cross-check blocked -- fmt/ submodule not
+            // checked out in this quarry):
+            //   InternalThreadState::CurrentFrame is the FIRST member, offset
+            //     0 (FEXCore/include/FEXCore/Debug/InternalThreadState.h:91)
+            //     -> Thread == CurrentFrame's address is *(u64*)ThreadState.
+            //   CpuStateFrame::SynchronousFaultData offset 0x5D8: sizeof
+            //     (CPUState)=0x5C0 (alignas(64), raw sum 1464 -> round to
+            //     1472) + ReturningStackLocation(8)@0x5C0 + InSyscallInfo(8)
+            //     @0x5C8 + SignalHandlerRefCounter(u32)@0x5D0 -> next=0x5D4,
+            //     rounded to 8 (alignas(8) SynchronousFaultDataStruct) =
+            //     0x5D8 (CoreState.h:393-432; matches the file's own
+            //     static_assert "offsetof(...) % 8 == 0").
+            //   Struct packing (SynchronousFaultDataStruct, 8 bytes, LE):
+            //     byte0=FaultToTopAndGeneratedException(bool) byte1=Signal
+            //     byte2=TrapNo byte3=si_code bytes4-5=err_code(u16)
+            //     bytes6-7=_pad -- matches DEF_OP(Break)'s own memcpy(&
+            //     Constant,&State,8) packing exactly (MiscOps.cpp:65-74).
+            // thread_state/CurrentFrame live in the reserve-commit ARENA
+            // (>=4GB, C4-8/C4-15 HIGH-pool-backed), NOT the plain NT_RAM_BASE
+            // .. NT_RAM_TOP identity window -- use the existing safe-probe
+            // reader (nt_fault_read32, ntfile.c, already arena/territory/VM
+            // aware) instead of a raw bounds check, two u32 halves LE-packed.
+            {
+                u32 cf_lo = 0, cf_hi = 0;
+                if (thread_state && nt_fault_read32(thread_state + 0, &cf_lo) &&
+                    nt_fault_read32(thread_state + 4, &cf_hi)) {
+                    u64 current_frame = ((u64)cf_hi << 32) | cf_lo;
+                    puts(" CurrentFrame="); puthex(current_frame);
+                    u32 f_lo = 0, f_hi = 0;
+                    if (current_frame && nt_fault_read32(current_frame + 0x5D8, &f_lo) &&
+                        nt_fault_read32(current_frame + 0x5DC, &f_hi)) {
+                        u64 fault_raw = ((u64)f_hi << 32) | f_lo;
+                        puts(" CHALICE C4-31 SynchronousFaultData raw="); puthex(fault_raw);
+                        puts(" FaultToTopAndGeneratedException="); puthex(fault_raw & 0xff);
+                        puts(" Signal="); puthex((fault_raw >> 8) & 0xff);
+                        puts(" TrapNo="); puthex((fault_raw >> 16) & 0xff);
+                        puts(" si_code="); puthex((fault_raw >> 24) & 0xff);
+                        puts(" err_code="); puthex((fault_raw >> 32) & 0xffff);
+                    } else {
+                        puts(" CurrentFrame-unreadable");
+                    }
+                } else if (thread_state) {
+                    puts(" ThreadState-unreadable");
+                }
+            }
         } else {
             puts(" teb-out-of-range");
         }

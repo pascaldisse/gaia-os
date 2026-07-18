@@ -1,5 +1,84 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-31 — the consume-check anatomy DONOR-TRACED end-to-end + its OWN input state PROVEN correct+present at the self-fault (`FaultToTopAndGeneratedException=1 Signal=SIGSEGV(11) TrapNo=PF(14) si_code=2 err_code=0x15`, byte-exact match to FEX's own `NoExecOp` `BreakDefinition`) -- REFUTES both suspects the brief posed (A: PC/field-match failure -- not found; B: missing thread-state -- state is present and correct) -- NEW verdict, evidence-driven, beyond the brief's own A/B frame: the consume-check DOES claim/translate this self-fault correctly (FEX's own design), and the resulting real x86 `STATUS_ACCESS_VIOLATION(EXECUTE_FAULT)` at `RIP=exe_entry` then genuinely, correctly goes UNHANDLED at guest SEH (hello8_x86.exe has zero SEH handlers) -- NOT a floor bug in the exception-delivery/consume machinery itself. The REAL newly-named gap is one layer further upstream: FEX's frontend decoder believes `exe_entry` (a correctly `IMAGE_SCN_MEM_EXECUTE`-flagged, header-intact, byte-correct .text section) is NOT EXECUTABLE -- i.e. FEX's `InvalidationTracker` executable-range tracking (`XIntervals`) was never populated for hello8_x86.exe's own image, despite every donor-traced input this pass could verify (PEB.ImageBaseAddress correct, PE headers correctly copied by `PeMapImage`, this floor's own `NtQueryVirtualMemory` correctly reporting `PAGE_EXECUTE_READWRITE` for the registered image, `nt_image_register` running well before FEX's own `BTCpuProcessInit`) looking correct. Named, not chased further this pass (new instrumentation -- reading FEX's own `InvalidationTracker::XIntervals`/`IntervalList` state is not reachable from this floor's own memory without donor edits, per project law; time-boxed). Runtime `<uncommitted at write time, see HANDOFF>`; live 2026-07-19.
+
+### MEASURE 1 -- the consume-check, donor-traced end-to-end (file:line for every claim)
+
+`BTCpuResetToConsistentStateImpl` (`FEX/Source/Windows/WOW64/Module.cpp:871-951`) is FEX's WOW64 "reset to consistent state" callback, invoked by wow64.dll's `Wow64PrepareForException` when native `dispatch_exception` (stock ntdll) is about to hand an exception to guest SEH -- **this IS the consume-check** this task's brief asked about (no separate `RtlAddVectoredExceptionHandler` exists for the WOW64 build -- confirmed: `FEX::DummyHandlers::DummySignalDelegator` (`Source/Tools/CommonTools/DummyHandlers.cpp`) registers NO host signal/exception handler at all, only a thread-local `TLSThread` pointer -- WOW64 FEX relies ENTIRELY on this one BTCpu-API hook as its "signal handler"; `RtlAddVectoredExceptionHandler` only appears in `Source/Windows/Defs/ntdll.def` as an export declaration, never called from `Source/Windows/WOW64/`).
+
+Return contract (`BTCpuResetToConsistentState`, `:952-958`): `true` -> `NtContinue(Context,FALSE)` (silently absorbed, guest never sees an exception -- self-modifying-code/overcommit/call-ret-stack/JIT-guard fast paths only). `false` -> exception delivery CONTINUES to guest SEH, but `Context` may have been rewritten first.
+
+Gate (`:921-923`):
+```cpp
+if (!Thread || !IsAddressInJit(Context->Pc)) {
+  return false;
+}
+```
+`IsAddressInJit` (`Module.cpp:166-172`):
+```cpp
+bool IsDispatcherAddress(uint64_t Address) {
+  const auto& Config = SignalDelegator->GetConfig();
+  return Address >= Config.DispatcherBegin && Address < Config.DispatcherEnd;
+}
+bool IsAddressInJit(uint64_t Address) {
+  if (IsDispatcherAddress(Address)) return true;
+  auto Thread = GetTLS().ThreadState();
+  return Thread->CTX->IsAddressInCodeBuffer(Thread, Address);
+}
+```
+`Config.DispatcherBegin/End` are `Dispatcher::Start`/`Dispatcher::End` (`FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp:2221-2222`), set at `:597-598` (`Start=DispatchPtr` captured at `:61`, essentially the buffer's first emitted instruction; `End=GetCursorAddress()` captured AFTER `EmitDispatcher()` finishes ALL emission, `:598`) -- `GuestSignal_SIGSEGV`'s own emission (`:417`) happens strictly BETWEEN `:61` and `:597/598`, inside the SAME function -- by construction `[Start,End)` spans (at minimum) everything `EmitDispatcher()` emits, which structurally MUST include the self-fault's own address (C4-30's `elr=base+0x2B0`, deep inside the SAME 0x4000 buffer). Not independently live-measured this pass (`SignalDelegator->GetConfig()` lives in FEX's own process memory, no floor-side reader built) -- inferred from the donor's own emission ORDER, not guessed; flagged as the one remaining un-measured link in this chain.
+
+Past the gate (Thread valid + Pc in Dispatcher range, both true per below): `EXCEPTION_ACCESS_VIOLATION`-specific pre-checks (CallRetStack / OvercommitTracker / HandleSuspendInterrupt / JITGuardPage / RWX-self-modifying-code, `:878-916`) don't match this fault's shape (`FaultAddress=far=0`, not a call-ret/overcommit/SMC pattern) -- falls through to `:924-950` ("Reconstructing context"): builds `WowContext` (the guest i386 CONTEXT, incl. `WowContext.Eip` = `Thread->CurrentFrame->State.rip`), then:
+```cpp
+auto& Fault = Thread->CurrentFrame->SynchronousFaultData;
+*Exception = FEX::Windows::HandleGuestException(Fault, *Exception, WowContext.Eip, WowContext.Eax);
+```
+`HandleGuestException` (`Source/Windows/Common/Exception.h:12-79`) is **the actual field-translation step**: if `Fault.FaultToTopAndGeneratedException` is false, it's a no-op passthrough (`Dst=Src`, unmodified raw host AV). If true, it clears the flag and switches on `Fault.Signal`/`Fault.TrapNo` to build a REAL x86-level `EXCEPTION_RECORD` (`EXCEPTION_ILLEGAL_INSTRUCTION`/`BREAKPOINT`/`SINGLE_STEP`/`PRIV_INSTRUCTION`/`INT_OVERFLOW`, or for `X86_TRAPNO_PF` specifically: leaves `ExceptionCode` untouched (stays whatever the host delivered) but sets `NumberParameters=2, ExceptionInformation[0]=EXCEPTION_EXECUTE_FAULT, ExceptionInformation[1]=Rip` -- "a page-fault raised by an explicit break in JIT code is always an execute fault", `Exception.h:63-68`). Then `BTCpuSetContext(...,&WowContext)` publishes the (possibly-rewritten) guest CONTEXT, `Context::UnlockJITContext(TLS)`, and `memcpy(Context, TLS.EntryContext(), sizeof(*Context))` (`:947`) replaces the HOST ARM64 context with the stable pre-JIT-entry anchor captured at `BTCpuSimulate`'s own `RtlCaptureContext` (`Module.cpp:757-761`) -- **this is the origin of the `BTCpuSimulate+0x10` identity every prior leg (C4-18/21/24/26/27/29) observed at RAISE#1** -- it is a NORMAL, DESIGNED side effect of THIS SAME reconstruction path succeeding, not evidence the fault went unclaimed. `return false` -- exception delivery continues to guest SEH with the now-translated `Exception` record and the anchor host context.
+
+### MEASURE 2b -- the consume-check's OWN input state, LIVE-READ from OUR floor (new receipt, `kmain.c` `sync_try_guest_exception`, CHALICE C4-31)
+
+Offsets (no donor edits; `clang++`-`offsetof` cross-check blocked -- `External/fmt` submodule not checked out in this quarry -- computed by hand from the field list, cross-checked against the donor's own `static_assert(offsetof(CpuStateFrame,SynchronousFaultData)%8==0)`):
+- `InternalThreadState::CurrentFrame` is the FIRST member, offset `0` (`FEXCore/include/FEXCore/Debug/InternalThreadState.h:91`) -> `CurrentFrame = *(u64*)ThreadState`.
+- `CpuStateFrame::SynchronousFaultData` offset `0x5D8`: `sizeof(CPUState)=0x5C0` (`alignas(64)`, raw field sum 1464 bytes -> rounds to 1472=`0x5C0`, `CoreState.h:74-251`) + `ReturningStackLocation`(8)@`0x5C0` + `InSyscallInfo`(8)@`0x5C8` + `SignalHandlerRefCounter`(u32)@`0x5D0` -> next=`0x5D4`, rounded up to 8 (`alignas(8) SynchronousFaultDataStruct`) = `0x5D8` (`CoreState.h:393-421`).
+- Packing (8 bytes, LE): `byte0=FaultToTopAndGeneratedException(bool) byte1=Signal byte2=TrapNo byte3=si_code bytes4-5=err_code(u16) bytes6-7=_pad` -- matches `DEF_OP(Break)`'s own `memcpy(&Constant,&State,8)` packing exactly (`FEXCore/Source/Interface/Core/JIT/MiscOps.cpp:59-77`).
+
+Live capture (`pe10 fex`, `scratch/pe10_probe.py`), at the SAME C4-30 self-fault event:
+```text
+CHALICE TLS PROBE: ... slot16(ThreadState)=0x0000000270001000 ... CurrentFrame=0x0000000270001140
+CHALICE C4-31 SynchronousFaultData raw=0x00000015020E0B01 FaultToTopAndGeneratedException=0x1 Signal=0xB TrapNo=0xE si_code=0x2 err_code=0x15
+```
+`Signal=0xB=11=FAULT_SIGSEGV` (`FEXCore/include/FEXCore/Core/SignalDelegator.h:14,18`, `= SIGSEGV = 11`). `TrapNo=0xE=14=X86_TRAPNO_PF` (`FEXCore/include/FEXCore/Core/X86Enums.h:119`). `si_code=2`, `err_code=0x15=0b10101=X86_PF_PROT(1)|X86_PF_USER(4)|X86_PF_INSTR(0x10)` (`X86Enums.h:134-138`). **This is a byte-for-byte, field-for-field EXACT match to `OpDispatchBuilder::NoExecOp`'s own `BreakDefinition`** (`FEXCore/Source/Interface/Core/OpcodeDispatcher.cpp:5018-5024`):
+```cpp
+void OpDispatchBuilder::NoExecOp(OpcodeArgs) {
+  BreakOp(Op, FEXCore::IR::BreakDefinition {
+    .ErrorRegister = X86State::X86_PF_PROT | X86State::X86_PF_USER | X86State::X86_PF_INSTR,
+    .Signal = Core::FAULT_SIGSEGV,
+    .TrapNumber = X86State::X86_TRAPNO_PF,
+    .si_code = 2, // SEGV_ACCERR
+  });
+}
+```
+(the OTHER three `FAULT_SIGSEGV` sites -- `INT n` non-syscall #GP, `INTO`, `HLT` -- all use `TrapNo=GP` or `OF`, `OpcodeDispatcher.cpp:4679-4703`; only `NoExecOp` uses `TrapNo=PF`, so this match is unambiguous, not a coincidence of overlapping trap numbers). `Core.cpp:695-699`: `NoExecOp` fires specifically when a decoded block's FIRST instruction fails to decode with `BlockStatus==NOEXEC_INST` (not `INVALID_INST`/`BAD_RELOCATION`) -- i.e. `Block.Entry == GuestRIP == WowContext.Eip`, matching this leg's own already-captured `WowContext.Eip=0x47661000` (`hello8_x86.exe+0x1000`, = `exe_entry`, C4-25/C4-30's own `CHALICE C4-25 GUEST CTX: Eip=0x47661000` receipt) EXACTLY.
+
+### VERDICT vs the brief's own A/B
+
+**Neither A nor B, as framed.** (B, missing state) is DIRECTLY REFUTED for this fault instance: `SynchronousFaultData` is present, correctly written by `IR::Break` (`MiscOps.cpp:59-77`, unconditional `FaultToTopAndGeneratedException=1` write before every `Break`), and correctly read back by our own floor-side probe with values that exactly, unambiguously match one specific donor `BreakDefinition` (`NoExecOp`) -- the check does NOT "honestly answer not mine" for lack of state; the state says exactly what fired and why. (A, PC/field-match) also NOT found: `Context->Pc` (`elr`) sits inside `[Start,End)` by construction (donor emission order, `Dispatcher.cpp:61/417/597-598`, not independently live-measured this pass -- the one flagged gap above) and `Thread` is proven non-null (the SAME `TlsSlots[16]`/`CurrentFrame` chain that yielded the correct `SynchronousFaultData` read). Both named suspects are, on the evidence gathered, absent.
+
+**New verdict, evidence-driven**: the consume-check WORKS AS DESIGNED for this self-fault -- `HandleGuestException`'s `X86_TRAPNO_PF` branch correctly leaves `ExceptionCode` as delivered (`STATUS_ACCESS_VIOLATION`, matching this pass's own observed `pe10 ret=3221225477`=`0xC0000005` exactly, and C4-29's own identical observation) and stamps `ExceptionInformation=[EXECUTE_FAULT, Rip=exe_entry]` -- a CORRECTLY SYNTHESIZED real x86 exception, handed to guest SEH at the guest's own `exe_entry` RIP. `hello8_x86.exe` (a bare 10-byte freestanding function, `hello8_x86.c`'s own header comment: "no imports, no CRT") has ZERO SEH handlers registered -- so this exception is, correctly, by Windows' own design, UNHANDLED -- terminating the process. **This is not a floor bug in the exception-delivery/consume machinery** -- it is FEX correctly reporting (via a real, designed x86-level exception) that it believes `exe_entry` is not executable.
+
+### The REAL newly-named gap (not chased this pass -- named, evidence-narrowed, time-boxed)
+
+WHY does FEX's frontend (`Decoder::CheckRangeExecutable`, `FEXCore/Source/Interface/Core/Frontend.cpp:89-108`, consulting `CTX->SyscallHandler->QueryGuestExecutableRange` -> WOW64's `InvalidationTracker->QueryExecutableRange` -> `Source/Windows/Common/InvalidationTracker.cpp:177-190`, querying an `IntervalList` named `XIntervals`) believe `exe_entry` (`hello8_x86.exe+0x1000`) is not executable, when every input this pass could verify looks correct:
+- `hello8_x86.exe`'s `.text` section genuinely has `IMAGE_SCN_MEM_EXECUTE` set (`llvm-readobj -S hello8_x86.exe`: `Characteristics [0x60000020] IMAGE_SCN_CNT_CODE | IMAGE_SCN_MEM_EXECUTE | IMAGE_SCN_MEM_READ`, `VirtualAddress=0x1000 VirtualSize=0xA`, `AddressOfEntryPoint=0x1000` -- exactly matches `exe_entry`).
+- `PeMapImage` (`kernel-arm/zoneA/pemod.c:119-171`) copies `SizeOfHeaders` bytes (DOS+PE+COFF+optional headers+section table, `SizeOfHeaders=1024` here) VERBATIM from the file before copying sections -- the PE header/section-table region FEX's `RtlImageNtHeader`+`IMAGE_FIRST_SECTION` walk (`InvalidationTracker::HandleImageMap`, `InvalidationTracker.cpp:63-92`) would read is present and byte-correct in guest memory, not synthesized/truncated.
+- `PEB.ImageBaseAddress=exe_base` is correctly wired (C4-29, live-receipted) -- `BTCpuProcessInit`'s `MainModule` (`Module.cpp:547`) reads the SAME value `HandleImageMap`'s PE-section walk would need.
+- This floor's own `NtQueryVirtualMemory` (`ntfile.c:1273-1339`) reports `AllocationProtect=Protect=PAGE_EXECUTE_READWRITE` (EXECUTE bit set) for ANY address inside a registered image (`if (img) {...}` branch, unconditional, not section-specific) -- `InvalidationTracker`'s OWN constructor (`InvalidationTracker.cpp:19-30`) independently walks the WHOLE address space via `VirtualQuery`/`NtQueryVirtualMemory` and would ALSO register any committed executable region this way, a SECOND, independent path to the same XIntervals table.
+- `nt_image_register(exe_name,...)` (`ntboot.c:325`) runs during Phase-0, provably before FEX/wow64.dll is even mapped (same `nt_boot_process` call, Phase-0 comment `:303`) -- not an ordering/timing gap on this floor's own image-registration side.
+
+Given all of these check out, the remaining candidates are ALL inside FEX's own `InvalidationTracker`/`IntervalList` internals (does the 10-byte `.text` VirtualSize hit some edge case in the interval-tree query; does `RtlImageNtHeader` on a PE32 -- not PE32+ -- "native" `MainModule` address behave unexpectedly; does the constructor's `VirtualQuery` walk terminate or skip past `exe_base` before reaching it) -- **none of these are reachable from this floor's own memory without a donor edit** (per this project's law), and instrumenting them would require either a donor-source probe or a NEW floor-side receipt at a point this pass didn't reach. Named here, not chased further -- next worker's starting point, with the entire consume-check chain above already fully donor-traced so no re-derivation is needed.
+
+---
+
 ## C4-30 — the ORIGINAL fault (pre-reset) captured and named: FEX's own GuestSignal_SIGSEGV self-fault ("force a SIGSEGV by loading zero", `Dispatcher.cpp`), inside its fixed dispatcher buffer (0x4000 bytes == `MAX_DISPATCHER_CODE_SIZE`), reached before `BTCpuSimulate` ever dispatches to PeMain's block. Runtime `ec45bd6`; live 2026-07-19.
 
 ### Receipt, live (`pe10 fex`, this pass's own new instrumentation)
