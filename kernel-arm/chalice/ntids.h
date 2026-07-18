@@ -133,6 +133,21 @@
 // free, same as NT_STDOUT_HANDLE already does.
 #define NT_REGISTRY_KEY_HANDLE 0x84UL
 
+// ---- CHALICE C4-6: distinct pseudo-handle for ONE special-cased registry
+// key -- "\Registry\Machine\Software\Microsoft\Wow64\x86" -- the CONFIRMED
+// (not guessed, per C4-SPEC's own open item) mechanism wow64.dll's
+// get_cpu_dll_name() (donor dlls/wow64/syscall.c:919-936) uses to pick a
+// non-Microsoft CPU-backend replacement (Hangover's libwow64fex.dll/
+// wowbox64.dll) instead of the hardcoded "xtajit.dll" this donor tree
+// never ships. Below NT_HANDLE_BASE, same free-pseudo-handle idiom as
+// NT_REGISTRY_KEY_HANDLE/NT_STDOUT_HANDLE above.
+#define NT_REGISTRY_WOW64CPU_KEY_HANDLE 0x88UL
+// Backend module our registry floor answers with -- HANDOFF C4-4's own
+// default probe backend (Box64 engine); Pascal's FEX-vs-Box64 ruling
+// (HANDOFF NEXT) still open, swap this one literal to libwow64fex.dll if
+// he calls it the other way, nothing else in the chain depends on which.
+#define NT_WOW64_CPU_BACKEND_NAME "wowbox64.dll"
+
 // ---- Atom B: syscall_frame extension. Donor's __wine_syscall_dispatcher
 // (wine/dlls/ntdll/unix/signal_arm64.c:1630-1785) stashes the PE stub's own
 // pre-blr x30 at frame+0xf0 (paired stp with frame+0xf8=entry sp) and

@@ -248,6 +248,22 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     if (!boot_blob_lookup(ntdll_name, &ntdll_bytes, &ntdll_len)) return boot_err("ntdll blob not found");
     if (!boot_blob_lookup(exe_name, &exe_bytes, &exe_len))       return boot_err("exe blob not found");
 
+    // ---- CHALICE C4-6: WOW64 signal, derived from the ALREADY-PARSED main
+    // exe header (pe_query_image_info, pemod.c's is_pe32 path, C4-5) --
+    // IRON law: no exe-name hardcode, this is the exact Machine field
+    // pe32sec's own live proof already reads. Grounded gate (donor wine/
+    // dlls/ntdll/loader.c:4487/4526, loader_init): "if (NtCurrentTeb()->
+    // WowTebOffset) init_wow64(context);" is the ENTIRE native-ntdll-side
+    // branch that decides whether a booted process takes the wow64cpu/
+    // BTCpuSimulate path at all -- WowTebOffset is exactly the TEB64 field
+    // nt_build_wow64_teb32 (ntsvc.c, C4-3) already knows how to wire (teb64+
+    // 0x180c); this leg's whole job is plugging that helper into THIS real
+    // boot TEB (below) instead of only the disconnected nt_boot_wow64_probe's
+    // throwaway one.
+    PeImageInfo exe_info;
+    int wow64_mode = (pe_query_image_info(exe_bytes, exe_len, &exe_info) == 0 &&
+                       exe_info.machine == 0x14C /* IMAGE_FILE_MACHINE_I386 */);
+
     // ---- Phase 0: map ntdll + exe via the 3A machinery (do_imports=0,
     // Architecture verdict 4: PE-side loader owns its own imports; there
     // is no Ldr walk here to resolve them against anyway). ----
@@ -361,6 +377,25 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     wr64(teb + TEB_NTTIB_STACKBASE_OFF, stack_top);     // StackBase = highest addr
     wr64(teb + TEB_NTTIB_STACKLIMIT_OFF, stack_base);   // StackLimit = lowest addr
 
+    // ---- CHALICE C4-6: graft C4-3's WOW64 TEB32/PEB32/WOW64INFO/
+    // CROSSPROCESSWORKLIST/CPURESERVED machinery onto THIS SAME real-boot
+    // TEB (previously only reachable from nt_boot_wow64_probe's own
+    // throwaway teb64) -- wires TEB64.WowTebOffset (0x180c) nonzero, the
+    // exact signal loader_init's native ntdll reads to take the wow64
+    // branch. native_machine=0xAA64 (this floor's host arch), emulated_
+    // machine=0x14C (the only guest arch C4 targets) -- same pair the
+    // probe already proved live. ----
+    if (wow64_mode) {
+        struct NtWow64Info wow64_wire;
+        if (nt_build_wow64_teb32(teb, 0xAA64, 0x14C, &wow64_wire) != 0)
+            return boot_err("wow64 teb32 wiring failed");
+        puts("CHALICE: WOW64 signal wired teb64="); puthex((u64b)teb);
+        puts(" WowTebOffset="); puthex((u64b)rd64(teb + 0x180c /* TEB64_WOWTEBOFFSET_OFF, ntsvc.c */));
+        puts(" teb32="); puthex((u64b)wow64_wire.teb32);
+        puts(" wow64info="); puthex((u64b)wow64_wire.wow64info);
+        puts("\n");
+    }
+
     // ---- CHALICE C3c-2l Phase A: nt_build_teb only ever registers ONE
     // self-entry (the exe) in PEB.Ldr -- ntdll itself (mapped directly by
     // this file's own C code above, bypassing the guest's own
@@ -395,6 +430,33 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     wr16(params + PARAMS_COMMANDLINE_OFF + US_LENGTH_OFF, (u16b)(namelen * 2));
     wr16(params + PARAMS_COMMANDLINE_OFF + US_MAXLENGTH_OFF, (u16b)(namelen * 2));
     wr64(params + PARAMS_COMMANDLINE_OFF + US_BUFFER_OFF, (u64b)wname);
+
+    // ---- CHALICE C4-6: ImagePathName needs a REAL DOS path (drive letter
+    // + backslashes), wow64_mode only -- build_wow64_main_module (donor
+    // loader.c ~4310) calls RtlDosPathNameToNtPathName_U_WithStatus on this
+    // exact buffer; a bare relative name falls through to the
+    // current-directory-relative branch (path.c RtlGetFullPathName_U),
+    // which reads params->CurrentDirectory -- a field this floor never
+    // populates (stays zeroed). An absolute "C:\..." path takes the
+    // already-absolute branch instead (path.c: RtlGetFullPathName_U's own
+    // early exit once a drive letter is present), never touching
+    // CurrentDirectory -- same convention this file's own C4-4/C4-5
+    // selftests already use for NtOpenFile ("\??\C:\windows\...").
+    // CommandLine (just above) is left byte-identical -- pe8_gate.py
+    // asserts its exact bare-name content, and nothing wow64-side reads
+    // CommandLine this early. ----
+    if (wow64_mode) {
+        static const char dos_prefix[] = "C:\\windows\\";
+        u64b prefixlen = strlen_local(dos_prefix);
+        u64b fulllen = prefixlen + namelen;
+        u16b *wfull = (u16b *)MAlloc((fulllen + 1) * 2);
+        if (!wfull) return boot_err("wow64 ImagePathName alloc failed");
+        widen_ascii(dos_prefix, wfull, prefixlen);
+        widen_ascii(exe_name, wfull + prefixlen, namelen);
+        wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_LENGTH_OFF, (u16b)(fulllen * 2));
+        wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_MAXLENGTH_OFF, (u16b)(fulllen * 2));
+        wr64(params + PARAMS_IMAGEPATHNAME_OFF + US_BUFFER_OFF, (u64b)wfull);
+    }
 
     // ---- CHALICE C3c-2h: PEB.ApiSetMap, stock=1 only (Atom 3B's
     // fake-ntdll.c dress rehearsal never reads this field). Must land

@@ -1059,8 +1059,48 @@ long NtCreateKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttr
     return STATUS_SUCCESS;
 }
 
+// CHALICE C4-6: exact wide-string match of an ObjectAttributes' own
+// ObjectName against an ASCII literal (case-insensitive, exact length --
+// no prefix/substring match) -- same UNICODE_STRING decode NtOpenFile
+// (above) already does, reused here so ONE registry key (the WOW64
+// CPU-backend selector, see ntids.h NT_REGISTRY_WOW64CPU_KEY_HANDLE) can
+// be special-cased without disturbing the "no hive, everything else
+// NOT_FOUND" contract for every other key.
+static int nt_oa_name_matches_ascii(const void *oa, const char *ascii) {
+    if (!oa) return 0;
+    const u8 *p = (const u8 *)oa;
+    const u8 *us = *(u8 **)(p + OA_OBJECTNAME_OFF);
+    if (!us) return 0;
+    u16b wlen_bytes = *(const u16b *)(us + US_LENGTH_OFF);
+    const u16b *wbuf = *(const u16b **)(us + US_BUFFER_OFF);
+    if (!wbuf) return 0;
+    u32b nchars = wlen_bytes / 2;
+    u32b i = 0;
+    for (; ascii[i]; i++) {
+        if (i >= nchars) return 0;
+        char wc = (char)wbuf[i];
+        char ac = ascii[i];
+        if (wc >= 'A' && wc <= 'Z') wc += 'a' - 'A';
+        if (ac >= 'A' && ac <= 'Z') ac += 'a' - 'A';
+        if (wc != ac) return 0;
+    }
+    return i == nchars;
+}
+
 long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes) {
     (void)DesiredAccess;
+    // CHALICE C4-6: the ONE registry key wow64.dll's get_cpu_dll_name()
+    // (donor dlls/wow64/syscall.c:919-936) opens to pick a non-Microsoft
+    // CPU-backend replacement -- see ntids.h receipt. Everything else
+    // below is the pre-existing "no hive" NOT_FOUND floor, unchanged.
+    if (nt_oa_name_matches_ascii(ObjectAttributes, "\\Registry\\Machine\\Software\\Microsoft\\Wow64\\x86")) {
+        if (KeyHandle) *KeyHandle = (void *)NT_REGISTRY_WOW64CPU_KEY_HANDLE;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
+            puts(" -> wow64-cpu-backend dummy handle\n");
+        }
+        return STATUS_SUCCESS;
+    }
     // No key exists to open (no hive) -- NOT_FOUND lets RegOpenKeyExW-style
     // callers take their own "key absent" fallback. If a future trace shows
     // a boot path that needs NtOpenKey to succeed, switch this one call
@@ -1075,13 +1115,39 @@ long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttrib
 
 long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInformationClass,
                       void *KeyValueInformation, unsigned long Length, unsigned long *ResultLength) {
+    (void)KeyValueInformationClass;
+    // CHALICE C4-6: the wow64-cpu-backend key's DEFAULT value (get_cpu_dll_
+    // name queries with an empty ValueName, i.e. the key's default value) --
+    // answer with our chosen backend name as a REG_SZ, KEY_VALUE_PARTIAL_
+    // INFORMATION-shaped (TitleIndex(4)+Type(4)+DataLength(4)+Data[], donor
+    // wine/include/winternl.h) so get_cpu_dll_name's own
+    // `info->Type == REG_SZ` + `(WCHAR*)info->Data` reads land on real data.
+    if (KeyHandle == (void *)NT_REGISTRY_WOW64CPU_KEY_HANDLE) {
+        static const char backend_name[] = NT_WOW64_CPU_BACKEND_NAME;
+        u32b nchars = (u32b)(sizeof(backend_name) - 1);
+        u32b data_bytes = nchars * 2;
+        u32b need = 12 + data_bytes;
+        if (ResultLength) *ResultLength = need;
+        if (KeyValueInformation && Length >= need) {
+            u8 *out = (u8 *)KeyValueInformation;
+            wr32(out + 0, 0);            // TitleIndex
+            wr32(out + 4, 1);             // REG_SZ
+            wr32(out + 8, data_bytes);    // DataLength
+            u16b *wdata = (u16b *)(out + 12);
+            for (u32b i = 0; i < nchars; i++) wdata[i] = (u16b)backend_name[i];
+        }
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtQueryValueKey wow64-cpu-backend -> "); puts(backend_name); puts("\n");
+        }
+        return STATUS_SUCCESS;
+    }
     // Load-bearing return: STATUS_OBJECT_NAME_NOT_FOUND (not
     // STATUS_NOT_IMPLEMENTED). RegQueryValueExW maps this NTSTATUS to a
     // clean "value absent" Win32 failure, so kernelbase's
     // `if (!RegQueryValueExW(...))` is false and it SKIPS reading its
     // (uninitialized) output buffer -- the wcslen-on-garbage fault's root
     // cause. Never write KeyValueInformation/ResultLength on this path.
-    (void)KeyHandle; (void)KeyValueInformationClass; (void)KeyValueInformation; (void)Length;
+    (void)KeyHandle; (void)KeyValueInformation; (void)Length;
     if (ResultLength) *ResultLength = 0;
     if (nt_dispatch_log_enabled) {
         puts("CHALICE: NtQueryValueKey name="); nt_log_unicode_string(ValueName);
