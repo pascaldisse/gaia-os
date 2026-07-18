@@ -13,6 +13,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -130,24 +131,47 @@ def connect_serial(path):
     fail(f"serial socket never accepted: {path}")
 
 
-def drain(serial, transcript, seconds):
-    end = time.time() + seconds
-    while time.time() < end:
-        try:
-            data = serial.recv(65536)
-            if not data:
-                break
-            transcript.extend(data)
-        except socket.timeout:
-            pass
+class SerialCapture:
+    # The exception loop is serial-noisy.  Keep draining while RSP waits for a
+    # breakpoint; otherwise UART back-pressure can freeze the vCPU before it
+    # reaches a breakpoint and manufacture a false no-hit result.
+    def __init__(self, serial, transcript):
+        self.serial, self.transcript = serial, transcript
+        self.lock = threading.Lock()
+        self.live = True
+        self.thread = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self.thread.start()
+
+    def _run(self):
+        while self.live:
+            try:
+                data = self.serial.recv(65536)
+                if not data:
+                    return
+                with self.lock:
+                    self.transcript.extend(data)
+            except socket.timeout:
+                pass
+            except OSError:
+                return
+
+    def text(self):
+        with self.lock:
+            return bytes(self.transcript).decode("utf-8", "replace")
+
+    def close(self):
+        self.live = False
+        self.thread.join(timeout=1)
 
 
-def wait_for(serial, transcript, predicate, seconds):
+def wait_for(capture, predicate, seconds):
     end = time.time() + seconds
     while time.time() < end:
-        drain(serial, transcript, .2)
-        if predicate(transcript.decode("utf-8", "replace")):
+        if predicate(capture.text()):
             return
+        time.sleep(.05)
     fail("serial receipt timed out")
 
 
@@ -233,7 +257,7 @@ def main():
                 "GAIA_SERIAL": f"unix:{args.serial_socket},server=on,wait=off",
                 "GAIA_DISPLAY": "none"})
     transcript = bytearray()
-    proc = serial = rsp = None
+    proc = serial = rsp = capture = None
     lines = []
     try:
         print("TRACE start build rig")
@@ -245,10 +269,12 @@ def main():
         print(f"RSP qSupported={rsp.command('qSupported:multiprocess+')}" )
         print(f"RSP initial-stop={rsp.command('?')}")
         serial = connect_serial(args.serial_socket)
+        capture = SerialCapture(serial, transcript)
+        capture.start()
         rsp.continue_()
-        drain(serial, transcript, 6)
+        time.sleep(6)
         serial.sendall(b"pe10 fex\r")
-        wait_for(serial, transcript,
+        wait_for(capture,
                  lambda t: "CHALICE EXCEPTION:" in t and
                  "CHALICE IMAGE: name=wow64.dll" in t and
                  "CHALICE IMAGE: name=libwow64fex.dll" in t,
@@ -258,7 +284,7 @@ def main():
         rsp.interrupt()
         frozen = rsp.stop()
         print(f"RSP frozen-stop={frozen} pc=0x{pc_from_stop(rsp, frozen):x}")
-        text = transcript.decode("utf-8", "replace")
+        text = capture.text()
         bases = module_bases(text)
         hlt = args.hlt
         if hlt is None:
@@ -299,8 +325,10 @@ def main():
                 if delivery_context is not None:
                     print("TRACE CONTEXT DIFF delivery-vs-restore=" +
                           ranges(delivery_context, restore_context))
-        drain(serial, transcript, 1)
+        time.sleep(1)
     finally:
+        if capture:
+            capture.close()
         if serial:
             serial.close()
         if rsp:
