@@ -63,3 +63,41 @@ wow64.dll → BTCpuProcessInit
 - source identity → FEX `Dispatcher.cpp:379-385`: `SignalHandlerReturnAddress`; `hlt(0)` signal-return dance; Windows path → `BTCpuResetToConsistentState` (`WOW64/Module.cpp:871-955`) + `NtContinue`; GAIA missing synchronous Windows exception dispatch; distinct from demand commit
 - furthest → FEX `LookupCache::FindBlock` reached; its sparse-arena first touch committed + resumed; halted at dispatcher SEH trampoline; no hello8 marker yet
 - regression → pe8 `ret=78`; pe9 wowbox64 + FEX; ramfb → PASS
+
+## C4-18 synchronous exception contract — measured / implementation
+
+### Native ARM64 ntdll dispatcher
+
+- tool → `/opt/homebrew/opt/llvm@20/bin/llvm-objdump`; stock `ntdll.dll`; ImageBase `0x180000000`; export RVA `0x66c40`
+- measured entry:
+
+```text
+180066c40 <KiUserExceptionDispatcher>:
+  adrp x16, ...; ldr x16, [x16,#0xf98]; cbz x16, +0x18
+  add x0, sp, #0x3b0
+  mov x1, sp
+  blr x16
++0x18:
+  add x0, sp, #0x3b0
+  mov x1, sp
+  bl dispatch_exception
+  brk #1
+```
+
+- entry contract → `sp+0x000` ARM64 `CONTEXT` `0x390`; `sp+0x390` `CONTEXT_EX` `0x20`; `sp+0x3b0` `EXCEPTION_RECORD64` `0x98`; `x0=record`; `x1=context`; dispatcher → `dispatch_exception` → internal `RtlDispatchException`/continue-or-raise path
+- Wine donor → `dlls/ntdll/unix/signal_arm64.c:140-150` `exc_stack_layout`; `:221-235` `context_init_empty_xstate`; `:753-779` trap setup; `:834-850` syscall setup; exact size `0x460`; stack = `(context->Sp & ~15) - 0x460`; redzone `[+0x450,+0x460)`
+- status citations → `wine/include/winnt.h:630` `STATUS_BREAKPOINT=0x80000003`; `:634` `STATUS_ACCESS_VIOLATION=0xc0000005`; `:638` `STATUS_ILLEGAL_INSTRUCTION=0xc000001d`; record shape `:2416-2446`; ARM64 context offsets `:1735-1742`, `:1851-1918`
+
+### FEX / WOW64 expected round-trip
+
+- `wine/dlls/wow64/syscall.c:1497-1553` → `Wow64PrepareForException(rec,context)` → `pBTCpuResetToConsistentState(&{rec,context})`; then `Wow64PassExceptionToGuest`
+- FEX `Source/Windows/WOW64/Module.cpp:871-949` → AV fast paths: CallRetStack / OvercommitTracker / JIT guard; otherwise reconstruct WOW64 context + guest record; host context replaced with `TLS.EntryContext`; `:952-958` invokes `NtContinue(context,FALSE)` when handled
+- success signature → C4-17 `hlt #0` at JIT dispatcher becomes `CHALICE EXCEPTION code=C000001D`; stock ntdll enters WOW64/FEX; FEX either `NtContinue`s a handled host-side condition or progresses through `BTCpuSimulate` / 32→64 thunk
+
+### Floor design / source
+
+- `boot.S` → sync frame widened `0x100` GPR + `0x200` q0-q31; order: raw FEX advisory SVC → arena demand-commit → guest exception → forensic fatal; dispatch preserves guest `x18`, switches `sp`, `eret`s to measured ntdll entry
+- `kmain.c` → guest-only classifier: kernel image range remains fatal; known PE image / VM / arena accepted; EC `0x24/0x25` → AV `{WnR, FAR}`; EC `0x3c` BRK → breakpoint; EC `0x00` HLT → illegal instruction; builds `CONTEXT`, `CONTEXT_EX`, `EXCEPTION_RECORD64`; logs `CHALICE EXCEPTION`
+- `ntdisp.S!NtContinue` → `eret` restore: `x0-x30` incl. x16/x17; `sp`; `pc`; `spsr`; q0-q31; FPCR/FPSR; no former partial-context loss
+- `NtRaiseException` → retains diagnostic line; redirects via same native dispatcher stack, no terminate path
+- build → `GAIA_NO_RUN=1 bash build.sh` PASS; boot gates pending checkpoint commit

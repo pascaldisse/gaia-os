@@ -34,6 +34,9 @@ void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
 // Context->Pc). Implemented in asm (ntdisp.S) since it must restore x0-x30
 // as raw registers, not something a C function signature can express.
 void NtContinue(void) __attribute__((noreturn));
+// C4-18 hardware/NtRaise common handoff: build Wine's native exception
+// stack then enter stock ntdll!KiUserExceptionDispatcher.
+void nt_raise_guest_exception(void *record, void *context) __attribute__((noreturn));
 
 // NtTerminateProcess unwind channel (PeRun sets jmpbuf before pe_enter;
 // NtTerminateProcess sets exit_code then longjmps — see ntsvc.c receipt).

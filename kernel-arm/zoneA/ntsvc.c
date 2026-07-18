@@ -127,7 +127,7 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
 // (SLICE2-SPEC A3 mechanism, reused verbatim) -- turns an unrecoverable
 // kernel crash into a one-line diagnosis + clean return to the shell.
 long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance) {
-    (void)Context; (void)FirstChance;
+    (void)FirstChance;
     u8 *er = (u8 *)ExceptionRecord;
     u32b code = 0;
     u64b addr = 0;
@@ -142,9 +142,9 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
         puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
     }
     puts("\n");
-    nt_exit_code = (long)(0xC0000000UL | (code & 0xFFFF));
-    if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
-    return STATUS_SUCCESS;   // unreachable
+    // C4-18: same KiUserExceptionDispatcher route as a hardware trap.
+    // This does not return unless dispatcher policy itself eventually exits.
+    nt_raise_guest_exception(ExceptionRecord, Context);
 }
 
 // CHALICE C3c-2k p1: NtRaiseHardError -- same clean-terminate treatment as

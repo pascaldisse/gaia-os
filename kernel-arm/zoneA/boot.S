@@ -81,16 +81,11 @@ hang:
     add     sp, sp, #176
 .endm
 
-// CHALICE C3c-2f p1: sync_entry-only full-GPR frame (x0-x30, 256B incl.
-// 8B pad for 16-alignment) -- the plain SAVEALL above omits x19-x28
-// (fine for IRQ, which only needs x0-x18/x29/x30 for the PC-sampling
-// profiler), but a fault dump needs every register a live caller might
-// have been using, and sync_entry never RESTOREALLs/erets back (the
-// handler loops forever), so no matching RESTORE is needed here. Word
-// index i (8B slots from [sp,#0]) maps directly to xN for N<=29, word 30
-// (offset 240) = x30 -- simpler than the old x0-x18,x29,x30 mapping.
+// CHALICE C4-18: sync frame = x0-x30 (0x100) + q0-q31 (0x200), 16-aligned.
+// A guest exception must round-trip the COMPLETE ARM64 CONTEXT; q values are
+// captured before C can touch caller-saved SIMD state.  q0 begins at +0x100.
 .macro SAVEALL_SYNC
-    sub     sp, sp, #256
+    sub     sp, sp, #768
     stp     x0, x1,   [sp, #0]
     stp     x2, x3,   [sp, #16]
     stp     x4, x5,   [sp, #32]
@@ -107,11 +102,41 @@ hang:
     stp     x26, x27, [sp, #208]
     stp     x28, x29, [sp, #224]
     str     x30,      [sp, #240]
+    stp     q0, q1,   [sp, #256]
+    stp     q2, q3,   [sp, #288]
+    stp     q4, q5,   [sp, #320]
+    stp     q6, q7,   [sp, #352]
+    stp     q8, q9,   [sp, #384]
+    stp     q10,q11,  [sp, #416]
+    stp     q12,q13,  [sp, #448]
+    stp     q14,q15,  [sp, #480]
+    stp     q16,q17,  [sp, #512]
+    stp     q18,q19,  [sp, #544]
+    stp     q20,q21,  [sp, #576]
+    stp     q22,q23,  [sp, #608]
+    stp     q24,q25,  [sp, #640]
+    stp     q26,q27,  [sp, #672]
+    stp     q28,q29,  [sp, #704]
+    stp     q30,q31,  [sp, #736]
 .endm
 
-// CHALICE C4-15: matching restore now needed for the narrowly recoverable
-// FEX raw-Linux advisory SVC path; all ordinary sync faults remain fatal.
 .macro RESTOREALL_SYNC
+    ldp     q0, q1,   [sp, #256]
+    ldp     q2, q3,   [sp, #288]
+    ldp     q4, q5,   [sp, #320]
+    ldp     q6, q7,   [sp, #352]
+    ldp     q8, q9,   [sp, #384]
+    ldp     q10,q11,  [sp, #416]
+    ldp     q12,q13,  [sp, #448]
+    ldp     q14,q15,  [sp, #480]
+    ldp     q16,q17,  [sp, #512]
+    ldp     q18,q19,  [sp, #544]
+    ldp     q20,q21,  [sp, #576]
+    ldp     q22,q23,  [sp, #608]
+    ldp     q24,q25,  [sp, #640]
+    ldp     q26,q27,  [sp, #672]
+    ldp     q28,q29,  [sp, #704]
+    ldp     q30,q31,  [sp, #736]
     ldp     x0, x1,   [sp, #0]
     ldp     x2, x3,   [sp, #16]
     ldp     x4, x5,   [sp, #32]
@@ -128,7 +153,7 @@ hang:
     ldp     x26, x27, [sp, #208]
     ldp     x28, x29, [sp, #224]
     ldr     x30,      [sp, #240]
-    add     sp, sp, #256
+    add     sp, sp, #768
 .endm
 
 irq_entry:
@@ -149,24 +174,31 @@ sync_entry:
     // stack switch here -- curEL SPx group, same stack throughout -- so
     // orig-sp is simply current sp + frame size). x4 = pointer to the
     // frame itself, for full x0-x30 readback.
-    // CHALICE C3c-2f p1: SAVEALL_SYNC (full x0-x30, 256B) replaces the
-    // plain 176B SAVEALL here -- sync_entry never RESTOREALLs/erets back
-    // (handler loops forever), so widening this frame is free.
     SAVEALL_SYNC
-    // FEX allocator's two source-receipted raw Linux advisory SVCs are the
-    // only recoverable synchronous exceptions. C may update saved x0; the
-    // architecture already put the post-SVC PC in ELR_EL1.
+    // Advisory SVC -> demand-commit are transparent, ordered before NT SEH.
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mov     x2, sp
     bl      sync_try_fex_linux_hint
     cbnz    x0, 2f
-    // Reserved-arena data abort -> demand-back + retry same ELR.
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
     bl      sync_try_arena_demand_commit
+    cbnz    x0, 2f
+
+    // Guest-owned non-arena fault -> stack {CONTEXT, CONTEXT_EX, RECORD,
+    // redzone}, ELR=KiUserExceptionDispatcher. x0 returns its new guest SP.
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    mrs     x2, far_el1
+    add     x3, sp, #768
+    mov     x4, sp
+    bl      sync_try_guest_exception
     cbz     x0, 1f
+    ldr     x18, [sp, #144]     // dispatcher needs the interrupted TEB
+    mov     sp, x0
+    eret
 2:
     RESTOREALL_SYNC
     eret
@@ -174,9 +206,9 @@ sync_entry:
     mrs     x0, esr_el1
     mrs     x1, elr_el1
     mrs     x2, far_el1
-    add     x3, sp, #256
+    add     x3, sp, #768
     mov     x4, sp
-    bl      sync_handler        // does not return
+    bl      sync_handler        // kernel fault / unknown guest syndrome: fatal
 
 // ---- vector table: 16 slots, 0x80 apart ----
 .align 11

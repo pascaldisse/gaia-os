@@ -137,6 +137,7 @@ int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
 int nt_image_base_by_name(const char *name, u64 *base_out, u64 *size_out);
 int nt_arena_contains(unsigned long addr);
 int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);
+int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out);
 int nt_arena_commit(unsigned long base, unsigned long size);
 void nt_fault_region(const char *label, unsigned long addr);
 int nt_fault_read32(unsigned long addr, unsigned int *word_out);
@@ -266,6 +267,139 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
     faults++;
     puts("CHALICE ARENA: fired count="); puthex(faults); puts("; retry\n");
     return 1;
+}
+
+// CHALICE C4-18 — native ARM64 user-exception stack.
+// Measured stock ntdll!KiUserExceptionDispatcher (RVA 0x66c40):
+//   add x0, sp, #0x3b0 ; mov x1, sp ; bl dispatch_exception
+// Thus sp+0x000=CONTEXT (0x390), +0x390=CONTEXT_EX (0x20),
+// +0x3b0=EXCEPTION_RECORD64 (0x98), then Wine's 0x08 align + 0x10
+// redzone -> total 0x460.  Receipt: wine/dlls/ntdll/unix/signal_arm64.c
+// :140-150, :221-235, :753-779, :834-850; stock disasm in FEX-MAP.md.
+#define ARM64_CONTEXT_SIZE       0x390
+#define ARM64_CONTEXT_EX_OFF     0x390
+#define ARM64_EXCEPTION_REC_OFF  0x3b0
+#define ARM64_EXCEPTION_STACK    0x460
+#define ARM64_CONTEXT_X_OFF      0x008
+#define ARM64_CONTEXT_SP_OFF     0x100
+#define ARM64_CONTEXT_PC_OFF     0x108
+#define ARM64_CONTEXT_V_OFF      0x110
+#define ARM64_CONTEXT_FPCR_OFF   0x310
+#define ARM64_CONTEXT_FPSR_OFF   0x314
+#define ARM64_CONTEXT_ALL        0x0040001fU
+#define STATUS_ACCESS_VIOLATION  0xc0000005U  // wine/include/winnt.h:634
+#define STATUS_BREAKPOINT        0x80000003U  // wine/include/winnt.h:630
+#define STATUS_ILLEGAL_INSTRUCTION 0xc000001dU // wine/include/winnt.h:638
+#define NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA 0x66c40U
+
+extern char _load_base[], _kernel_end[];
+extern unsigned long *nt_exit_jmpbuf;
+extern long nt_exit_code;
+void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
+void nt_exception_enter(void *stack, void *dispatcher) __attribute__((noreturn));
+
+static void move_bytes(void *dst_void, const void *src_void, u64 n) {
+    unsigned char *dst = (unsigned char *)dst_void;
+    const unsigned char *src = (const unsigned char *)src_void;
+    if (dst < src) for (u64 i = 0; i < n; i++) dst[i] = src[i];
+    else if (dst > src) for (u64 i = n; i; i--) dst[i - 1] = src[i - 1];
+}
+
+static u64 guest_exception_stack(u64 interrupted_sp, const void *context_src,
+                                 const void *record_src) {
+    // Wine aligns down then reserves exactly struct exc_stack_layout (0x460).
+    u64 stack = (interrupted_sp & ~15ULL) - ARM64_EXCEPTION_STACK;
+    if (interrupted_sp < NT_RAM_BASE + ARM64_EXCEPTION_STACK ||
+        interrupted_sp > NT_RAM_TOP || stack < NT_RAM_BASE) return 0;
+    unsigned char *out = (unsigned char *)stack;
+    for (u64 i = 0; i < ARM64_EXCEPTION_STACK; i += 8) *(u64 *)(out + i) = 0;
+    if (context_src) move_bytes(out, context_src, ARM64_CONTEXT_SIZE);
+    if (record_src) move_bytes(out + ARM64_EXCEPTION_REC_OFF, record_src, 0x98);
+
+    // CONTEXT_EX: Wine context_init_empty_xstate(): all/legacy point back to
+    // this CONTEXT; empty xstate points at the two-word redzone (+0x450).
+    unsigned char *xctx = out + ARM64_CONTEXT_EX_OFF;
+    *(u32 *)(xctx + 0x00) = (u32)-ARM64_CONTEXT_SIZE;
+    *(u32 *)(xctx + 0x04) = 0x450;
+    *(u32 *)(xctx + 0x08) = (u32)-ARM64_CONTEXT_SIZE;
+    *(u32 *)(xctx + 0x0c) = ARM64_CONTEXT_SIZE;
+    *(u32 *)(xctx + 0x10) = 0xc0;
+    *(u32 *)(xctx + 0x14) = 0;
+    return stack;
+}
+
+static u64 ki_user_exception_dispatcher(void) {
+    u64 base = 0, size = 0;
+    if (!nt_image_base_by_name("ntdll.dll", &base, &size) ||
+        size <= NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA) return 0;
+    return base + NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA;
+}
+
+// Return a dispatcher stack pointer, zero for kernel/unknown faults.  boot.S
+// keeps demand-commit ahead of this function, so an arena first-touch retries
+// transparently; a COMMITTED JIT HLT reaches the guest here.
+u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
+    u64 ec = (esr >> 26) & 0x3f, status = 0, params = 0, dispatcher, stack;
+    u32 insn = 0;
+    int known_guest = nt_image_resolve(elr, (char[1]){0}, 1, &(u64){0}) ||
+                      nt_arena_contains(elr) || nt_vm_region_query(elr, 0, 0);
+    if (elr >= (u64)_load_base && elr < (u64)_kernel_end) return 0;
+    if (!known_guest) return 0;
+
+    if (ec == 0x24 || ec == 0x25) {                 // data abort, lower/current EL
+        status = STATUS_ACCESS_VIOLATION;
+        params = 2;
+    } else if (ec == 0x3c && nt_fault_read32(elr, &insn) &&
+               (insn & 0xffe0001fU) == 0xd4200000U) {
+        status = STATUS_BREAKPOINT;
+    } else if (ec == 0x00 && nt_fault_read32(elr, &insn) &&
+               (insn & 0xffe0001fU) == 0xd4400000U) {
+        status = STATUS_ILLEGAL_INSTRUCTION;
+    } else return 0;
+
+    dispatcher = ki_user_exception_dispatcher();
+    if (!dispatcher) return 0;
+    stack = guest_exception_stack(sp_orig, 0, 0);
+    if (!stack) return 0;
+    unsigned char *ctx = (unsigned char *)stack;
+    unsigned char *rec = ctx + ARM64_EXCEPTION_REC_OFF;
+    *(u32 *)(ctx + 0x00) = ARM64_CONTEXT_ALL;
+    u64 spsr, fpcr, fpsr;
+    asm volatile("mrs %0, spsr_el1\n mrs %1, fpcr\n mrs %2, fpsr"
+                 : "=r"(spsr), "=r"(fpcr), "=r"(fpsr));
+    *(u32 *)(ctx + 0x04) = (u32)spsr;
+    for (u64 i = 0; i < 31; i++) *(u64 *)(ctx + ARM64_CONTEXT_X_OFF + i * 8) = regs[i];
+    *(u64 *)(ctx + ARM64_CONTEXT_SP_OFF) = sp_orig;
+    *(u64 *)(ctx + ARM64_CONTEXT_PC_OFF) = elr;
+    move_bytes(ctx + ARM64_CONTEXT_V_OFF, (unsigned char *)regs + 0x100, 0x200);
+    *(u32 *)(ctx + ARM64_CONTEXT_FPCR_OFF) = (u32)fpcr;
+    *(u32 *)(ctx + ARM64_CONTEXT_FPSR_OFF) = (u32)fpsr;
+
+    *(u32 *)(rec + 0x00) = (u32)status;
+    *(u64 *)(rec + 0x10) = elr;
+    *(u32 *)(rec + 0x18) = (u32)params;
+    if (params) {
+        *(u64 *)(rec + 0x20) = (esr >> 6) & 1;     // ESR.ISS.WnR
+        *(u64 *)(rec + 0x28) = far;
+    }
+    puts("CHALICE EXCEPTION: code="); puthex(status);
+    puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
+    asm volatile("msr elr_el1, %0" :: "r"(dispatcher));
+    return stack;
+}
+
+// NtRaiseException already supplies a complete ARM64 CONTEXT + RECORD.  Use
+// the identical dispatcher stack contract rather than ending the process.
+void nt_raise_guest_exception(void *record, void *context) {
+    u64 dispatcher = ki_user_exception_dispatcher();
+    u64 stack = context ? guest_exception_stack(*(u64 *)((unsigned char *)context + ARM64_CONTEXT_SP_OFF), context, record) : 0;
+    if (!dispatcher || !stack) {
+        puts("CHALICE: NtRaiseException dispatch setup failed\n");
+        nt_exit_code = STATUS_ILLEGAL_INSTRUCTION;
+        if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
+        for (;;) asm volatile("wfe");
+    }
+    nt_exception_enter((void *)stack, (void *)dispatcher);
 }
 
 // CHALICE C3c Atom 3C-2a: sync_entry (boot.S) now hands over esr/elr/far/

@@ -308,58 +308,63 @@ nt_longjmp:
 // Bcr[8]@0x318, Bvr[8]@0x338, Wcr[2]@0x378, Wvr[2]@0x380 (size 0x390 --
 // matches the well-known public Win64 CONTEXT size for ARM64).
 //
-// DEVIATION (Atom B minimal, noted per HANDOFF style): only the integer
-// GPRs (X0-X28,Fp,Lr), Sp and Pc are restored -- NEON/FP (V/Fpcr/Fpsr) and
-// debug regs (Bcr/Bvr/Wcr/Wvr) are NOT, matching the actual scope of the
-// hello3 probe ("CONTEXT{pc=part2, sp, x0=cookie}"); a fuller restore is
-// straightforward to add here (same pattern) if a later slice needs it.
-// Cpsr/NZCV also not restored -- no code here depends on condition flags
-// across the leap.
-//
-// Register-choice deviation: X16/X17 (IP0/IP1, AAPCS64 intra-procedure
-// scratch -- see file header, never trusted to survive a call/blr, and
-// specifically not meaningful to preserve across an arbitrary control
-// transfer like this) are used as the jump-target/new-sp scratch instead of
-// being restored to their literal Context->X16/X17 values -- the only two
-// GPRs where exact restore fidelity is sacrificed, and only because they're
-// the two registers the ARM64 ABI itself says no caller may rely on anyway.
+// C4-18: the dispatcher can return a FEX JIT CONTEXT, so NtContinue is a
+// literal ARM64 CONTEXT restore: x0-x30 (including x16/x17), SP, PC, PSTATE,
+// q0-q31, FPCR and FPSR.  ERET, rather than BR x16, lets x16/x17 be restored
+// too; ELR/SPSR are written before the last scratch registers disappear.
 .global NtContinue
 NtContinue:
-    str  xzr, [x18, #0x378]          // one-shot: clear syscall_frame slot
-                                      // (mirrors dispatch_return's cleanup,
-                                      // bypassed here since we never reach
-                                      // dispatch_return -- we jump straight
-                                      // to Context->Pc instead). x18 is
-                                      // still the pre-restore TEB at this
-                                      // point (nt_dispatch hasn't touched it
-                                      // yet -- see its x22 stash/blr/restore
-                                      // sequence, which happens around US).
-    mov  x9, x0                      // x9 = ContextRecord ptr
-    ldr  x16, [x9, #0x108]           // scratch: target Pc (Context->Pc)
-    ldr  x17, [x9, #0x100]           // scratch: target Sp (Context->Sp)
-    ldp  x0,  x1,  [x9, #0x08]       // Context->X0,X1
-    ldp  x2,  x3,  [x9, #0x18]       // Context->X2,X3
-    ldp  x4,  x5,  [x9, #0x28]       // Context->X4,X5
-    ldp  x6,  x7,  [x9, #0x38]       // Context->X6,X7
-    ldr  x8,       [x9, #0x48]       // Context->X8
-    // X9 deliberately skipped here (x9 IS the ContextRecord pointer we're
-    // still reading through) -- its real value is loaded LAST, below.
-    ldp  x10, x11, [x9, #0x58]       // Context->X10,X11
-    ldp  x12, x13, [x9, #0x68]       // Context->X12,X13
-    ldp  x14, x15, [x9, #0x78]       // Context->X14,X15
-    // X16,X17 deliberately skipped (see deviation note above).
-    ldr  x18,      [x9, #0x98]       // Context->X18 -- TEB continuity: the
-                                      // caller (hello3.c) sets this to its
-                                      // own current x18 so PE code at
-                                      // Context->Pc can keep calling NT
-                                      // services (they dereference TEB+0x380)
-    ldp  x19, x20, [x9, #0xa0]       // Context->X19,X20
-    ldp  x21, x22, [x9, #0xb0]       // Context->X21,X22
-    ldp  x23, x24, [x9, #0xc0]       // Context->X23,X24
-    ldp  x25, x26, [x9, #0xd0]       // Context->X25,X26
-    ldp  x27, x28, [x9, #0xe0]       // Context->X27,X28
-    ldp  x29, x30, [x9, #0xf0]       // Context->Fp(X29),Lr(X30)
-    ldr  x9,       [x9, #0x50]       // Context->X9 -- last use of x9 as the
-                                      // pointer, must be the final load
-    mov  sp, x17                     // switch to Context->Sp
-    br   x16                         // leap to Context->Pc -- never returns
+    str  xzr, [x18, #0x378]          // clear syscall-frame while old TEB lives
+    mov  x9, x0                      // ContextRecord; retained until final load
+    ldr  x16, [x9, #0x108]
+    msr  elr_el1, x16
+    ldr  w16, [x9, #0x04]
+    msr  spsr_el1, x16
+    ldr  w16, [x9, #0x310]
+    msr  fpcr, x16
+    ldr  w16, [x9, #0x314]
+    msr  fpsr, x16
+    ldp  q0,  q1,  [x9, #0x110]
+    ldp  q2,  q3,  [x9, #0x130]
+    ldp  q4,  q5,  [x9, #0x150]
+    ldp  q6,  q7,  [x9, #0x170]
+    ldp  q8,  q9,  [x9, #0x190]
+    ldp  q10, q11, [x9, #0x1b0]
+    ldp  q12, q13, [x9, #0x1d0]
+    ldp  q14, q15, [x9, #0x1f0]
+    ldp  q16, q17, [x9, #0x210]
+    ldp  q18, q19, [x9, #0x230]
+    ldp  q20, q21, [x9, #0x250]
+    ldp  q22, q23, [x9, #0x270]
+    ldp  q24, q25, [x9, #0x290]
+    ldp  q26, q27, [x9, #0x2b0]
+    ldp  q28, q29, [x9, #0x2d0]
+    ldp  q30, q31, [x9, #0x2f0]
+    ldp  x0,  x1,  [x9, #0x08]
+    ldp  x2,  x3,  [x9, #0x18]
+    ldp  x4,  x5,  [x9, #0x28]
+    ldp  x6,  x7,  [x9, #0x38]
+    ldr  x8,       [x9, #0x48]
+    ldp  x10, x11, [x9, #0x58]
+    ldp  x12, x13, [x9, #0x68]
+    ldp  x14, x15, [x9, #0x78]
+    ldr  x18,      [x9, #0x98]
+    ldp  x19, x20, [x9, #0xa0]
+    ldp  x21, x22, [x9, #0xb0]
+    ldp  x23, x24, [x9, #0xc0]
+    ldp  x25, x26, [x9, #0xd0]
+    ldp  x27, x28, [x9, #0xe0]
+    ldp  x29, x30, [x9, #0xf0]
+    ldr  x17,      [x9, #0x100]
+    mov  sp, x17
+    ldr  x16,      [x9, #0x88]
+    ldr  x17,      [x9, #0x90]
+    ldr  x9,       [x9, #0x50]
+    eret
+
+// Enter a measured KiUserExceptionDispatcher stack from NtRaiseException.
+// x18 remains the guest TEB; dispatcher owns all other incoming registers.
+.global nt_exception_enter
+nt_exception_enter:
+    mov  sp, x0
+    br   x1
