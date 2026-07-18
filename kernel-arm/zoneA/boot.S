@@ -198,6 +198,12 @@ sync_entry:
     cbz     x0, 1f
     ldr     x18, [sp, #144]     // dispatcher needs the interrupted TEB
     mov     sp, x0
+    // C4-19: ELR is exception state, not an ordinary C return value.  Set it
+    // at the final assembly boundary immediately before ERET; prior C-side
+    // MSR was observed to re-enter the same HLT without reaching its bridge.
+    adrp    x16, nt_exception_dispatch_trace
+    add     x16, x16, :lo12:nt_exception_dispatch_trace
+    msr     elr_el1, x16
     eret
 2:
     RESTOREALL_SYNC
