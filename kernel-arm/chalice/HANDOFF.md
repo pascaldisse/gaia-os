@@ -590,6 +590,170 @@ global/table base register live at the fault) before assuming a specific
 fix. `pe10` (isolated, opt-in) remains the harness -- never wire into
 `pe9_gate.py` until it stops crash-faulting.
 
+## CHALICE C4 state refresh (2026-07-18, leg 12 -- HEAD `<fill after final commit>`)
+
+**Null opcode-table-region fault (leg-11's furthest point) survived all 4
+ordered hypotheses -- cheap ones DEAD/RECORDED, source grounding narrowed
+the fault to Box64's own JIT code-cache region (not a static dispatch
+table), binary RE confirmed the region's nature. No fix landed this leg --
+two new REUSABLE seams did (backend A/B override, GAIA_QEMU_CPU), both
+verified zero-regression. Genuinely blocked past hypotheses 1-4 per
+HANDOFF's own stopping doctrine.**
+
+1. **QEMU_CPU (DEAD, proven, not guessed):** `build.sh` `-cpu cortex-a72`
+   parameterized to `GAIA_QEMU_CPU` (default unchanged). `pe10` run with
+   `GAIA_QEMU_CPU=max`: banner (`[BOX64] Dynarec for ARM64, with extension:
+   ASIMD`) and the FULL fault register dump (`elr=0x0 far=0x0`, every
+   general register) came back **byte-identical** to the `cortex-a72`
+   baseline -- `-cpu max` changes nothing Box64 observes. Root cause found
+   in hypothesis 3 (below): Box64-for-WOW64 never reads ID registers or
+   `getauxval` directly at all -- `-cpu`'s effect on those is moot for this
+   codepath.
+2. **BACKEND A/B (RECORDED, not chased):** new reusable seam --
+   `nt_wow64_set_backend_override`/`nt_wow64_is_active`-style per-boot flag
+   (`ntfile.c`/`ntfile.h`) redirects the real boot path's own literal
+   `NtOpenFile("wowbox64.dll")` (wow64.dll's hardcoded default backend
+   name -- the REAL boot path, unlike `nt_boot_wow64_probe`, never took a
+   backend parameter before this) to any other on-disk name. Wired to
+   `pe10 fex` (2nd shell token) -> `libwow64fex.dll`; default `pe10` (no
+   token) unchanged/verified identical. **libwow64fex.dll produces a
+   COMPLETELY DIFFERENT fault**, not the wowbox64 null-region pattern: two
+   `CHALICE: svc id=107 UNIMPLEMENTED` lines (`NtAllocateVirtualMemoryEx`,
+   `wine-arm64-syscalls.txt:103`, this floor has never wired the `Ex`
+   variant -- only plain `NtAllocateVirtualMemory`) immediately followed by
+   a genuine Data Abort (`esr=0x96000021`/`ec=0x25`, NOT ec=0) **inside
+   ntdll.dll itself** (`elr=ntdll.dll+0x2818C`, `far=0x7`, backtrace through
+   `wow64.dll+0x40000`/`libwow64fex.dll+0x31831A`) -- FEX's own heap-growth
+   path calls the `Ex` allocator variant where Box64 called the plain one,
+   and crashes inside ntdll's OWN heap code on the small-int deref, not
+   inside the backend DLL. Real, useful floor-vs-backend intelligence
+   (confirms the two backends exercise genuinely different NT surface) --
+   per this leg's own instruction, NOT chased into a fix (would mean
+   implementing `NtAllocateVirtualMemoryEx` + auditing ntdll's alternate
+   heap-growth path for a backend this leg isn't targeting).
+3. **SOURCE GROUNDING (real progress, no clean single-line fix found):**
+   cloned `github.com/ptitSeb/box64` as a new gitignored donor quarry
+   (`box64/`, `.gitignore` += `box64/`, same convention as `wine/`/
+   `reactos/`/`proton/`) -- **checked out the EXACT matching tag `v0.4.2`**
+   (our binary's own banner: `WowBox64 arm64 v0.4.2`; repo `git ls-remote
+   --tags` confirmed `v0.4.2` exists, fetched depth-1 by tag, not guessed
+   from HEAD/main which is already `v0.4.3`).
+   - **`DetectHostCpuFeatures` ground truth** (`src/os/hostext_wine.c:8`,
+     the WOW64/Windows-build variant, distinct from the Linux one): sets
+     `cpuext.asimd=1` unconditionally, then ONLY gates
+     aes/sha/pmull/crc32/atomics via `IsProcessorFeaturePresent` (a real
+     Windows API that reads `KUSER_SHARED_DATA.ProcessorFeatures[]`, a
+     fixed-offset array this floor's `nt_kuser_init` never populates --
+     stays zero, all false) and flagm/frintts/rndr/afp/uscat via
+     `RegQueryValueExA(HKLM\HARDWARE\DESCRIPTION\System\CentralProcessor\0,
+     "CP 4030"/"CP 4039"/"CP 403A")` -- literal raw
+     ID_AA64ISAR0_EL1/MMFR1_EL1/MMFR2_EL1 dumps Windows-on-ARM64 exposes as
+     registry values, which this floor's registry stub
+     (`NtOpenKey`->`STATUS_OBJECT_NAME_NOT_FOUND`) can never answer. **This
+     is WHY `-cpu max` is definitively a dead end**: nothing in this path
+     reads CNTFRQ/ID-registers/getauxval directly -- it's 100% mediated
+     through two NT-level answers (KUSER_SHARED_DATA + registry) this
+     floor doesn't supply, independent of the underlying QEMU vCPU's real
+     capabilities. (Not fixed this leg -- would need KUSER_SHARED_DATA.
+     ProcessorFeatures population + real registry CP-xxxx value floor,
+     both nontrivial, deferred, not required for the goal below anyway
+     since the fault isn't feature-gated, see next bullet.)
+   - **Opcode dispatch is NOT table-indexed** (ruled out the leading
+     theory): `dynarec64_00`'s `case 0x89` (`src/dynarec/arm64/
+     dynarec_arm64_00.c:1577`, `MOV Ed,Gd`, exactly the 2nd instruction of
+     `hello8_x86.exe` -- `llvm-objdump --triple=i386 hello8_x86.exe`:
+     `401000: 55 pushl %ebp` / `401001: 89 e5 movl %esp,%ebp`, MODREG path,
+     no feature-gated memory/SIMD codegen at all) is reached via a plain
+     direct function CALL from `native_pass` (`src/dynarec/
+     dynarec_native_pass.c:268`, `dynarec64_00(dyn, addr, ip, ninst, rex,
+     &ok, &need_epilog)`), selected by prefix flags (`rex.isf0`/`is66`),
+     never through an indirect/table branch. `native_pass0`
+     (`STEP==0`, `dynarec_arm64_pass0.h`) additionally reduces `EMIT`/etc
+     to pure bookkeeping (`dyn->native_size+=4`) -- pass0 doesn't even emit
+     or branch through generated code, it's a size-counting dry run.
+   - **The one real indirect-dispatch table found, `box64_jmptbl4/3/48/
+     default2/default1/default0`** (`src/custommem.c:3046`
+     `init_custommem_helper`, called from `BTCpuProcessInit`
+     (`wine/wow64/wowbox64.c:274`) which we've already proven executes for
+     real): a multi-level jump table used for INDIRECT branch target
+     resolution INSIDE already-JIT-compiled code (`native_next` trampoline
+     default), gated `if(BOX64ENV(dynarec))`. Traced the flag: `box64env.
+     dynarec` is set once by `LoadEnvVariables`/`ApplyEnvFileEntry` early
+     in `BTCpuProcessInit`, never modified before `init_custommem_helper`
+     OR before `BTCpuSimulate`'s own `if(box64env.dynarec) DynaRun(emu)`
+     check -- same flag, same value, no intervening writes -- so if
+     `DynaRun`/`native_pass0` genuinely ran (proven, leg-11), this table
+     WAS populated too. Ruled out as this fault's cause. (Also confirmed
+     the `[BOX64] Dynarec for ARM64...` banner does NOT itself prove
+     `box64env.dynarec==1` -- `PrintHostCpuFeatures`, `src/os/
+     hostext_common.c:7`, prints unconditionally whenever
+     `DetectHostCpuFeatures()` succeeds, independent of the dynarec-enable
+     flag; the REAL proof `dynarec==1` is `native_pass0` executing at all,
+     independently already established leg-11.)
+4. **BINARY RE (last resort, as instructed):** real `ImageBase=0x4c0000`
+   (`llvm-objdump -p`), RVA `0x805D38` computed and looked up against
+   `llvm-objdump -h`'s section table (`.text` RVA `0x1000`-`0x43b4a4`,
+   `.rdata` `0x43c000`-`0x45f234`, `.buildid`/`.data` to `0x461600`,
+   `.pdata` starting `0x150c000`, `SizeOfImage=0x1510000`). **RVA 0x805D38
+   falls in a ~17.6MB gap between `.data`'s end (`0x461600`) and `.pdata`'s
+   start (`0x150c000`) -- reserved by `SizeOfImage` but backed by NO PE
+   section** (`llvm-objdump -d` on that address range returns empty, not
+   disassemblable code). This is NOT a static function-pointer table in
+   `.rdata`/`.data` -- **it's Box64's own JIT CODE-CACHE pool**, carved out
+   of the DLL's own declared (but file-unbacked) image span specifically
+   so PC-relative/short ARM64 branches from `.text` can reach compiled
+   dynablocks without going out of range (a standard box64/JIT technique).
+   **Revised fault characterization vs leg-11's own framing**: not a
+   "null table slot", but Box64 branching into its OWN not-yet-JIT-compiled
+   code-cache slot -- i.e. either the dynablock compile (pass1-3 emission)
+   for this address never actually ran before the jump, or the allocator
+   picked/returned the wrong slot address. Register evidence supports a
+   `ret`-shaped fault, not a `br`-through-null-pointer one: `elr=0x0 AND
+   lr(x30)=0x0` simultaneously -- a `br` to a null pointer loaded from
+   memory would leave `lr` at whatever it held before (unrelated, usually
+   nonzero); both being zero together is the signature of `ret` (PC :=
+   x30) executing with x30 itself never set/corrupted to 0, OR of the CPU
+   landing on the very first zero-filled word of the unbacked region via
+   a computed/table branch whose own source register was itself read as 0.
+   Genuinely ambiguous without a labeled/symbolized disassembly of the
+   dynablock allocator's own compiled code (no debug info in the shipped
+   DLL) -- would need either (a) building box64 v0.4.2's WOW64 target
+   OURSELVES from the now-available donor source to get a symbol-mapped
+   binary to diff against, or (b) much deeper blind ARM64 RE of the
+   allocator/dispatcher code paths in `.text` that reference this region.
+   Both are real, bounded next steps but neither is a same-leg-budget
+   binary-RE-only task per HANDOFF's own doctrine ("document findings,
+   stop").
+
+**Two reusable seams landed this leg (source-only, both default-unchanged,
+zero regression):**
+- `build.sh`: `GAIA_QEMU_CPU` (default `cortex-a72`).
+- `ntfile.c`/`ntfile.h`: `nt_wow64_set_backend_override(name)` -- real
+  boot-path CPU-backend A/B seam, wired to `pe10 fex`.
+- `box64/` donor quarry cloned+gitignored (checked out `v0.4.2` to match
+  the shipped binary exactly) -- available for the next leg's grounding
+  without a re-clone.
+
+**No-regression:** `pe9_gate.py` (both backends, all required lines) +
+`pe8_gate.py` standalone + `scratch/ramfb_gate.py` all verified PASS live
+at HEAD. qemu leak-checked (pgrep+kill) before/after every boot this leg,
+never run naked, GAIA_NO_RUN=1 for every build-only check.
+
+**Exact next step:** the null-region fault needs either (a) a
+self-built, symbol-mapped box64 v0.4.2 WOW64 target (now trivial to attempt
+-- donor source + exact tag are in-tree at `box64/`, CMake option `WOW64
+AND ARM_DYNAREC`, `CMakeLists.txt:1610`) to get a labeled disassembly of
+the allocator/dispatcher code around the code-cache region for a byte-exact
+diff against the shipped `wowbox64.dll`, or (b) continued blind ARM64 RE of
+`.text` code paths that compute addresses into the `0x461600`-`0x150c000`
+gap (search for ADRP/ADD sequences targeting that RVA range, find the
+CALLER of the fault site, not just the fault site itself -- leg-11/12 never
+located the caller). Both bounded, neither attempted this leg (source
+grounding + binary RE-of-fault-site only, per doctrine's stated order) --
+genuinely blocked past all 4 hypotheses this leg's own instructions gave,
+stopping per HANDOFF's "blocked >2 cycles" rule with the analysis
+documented above rather than guessing a kernel-side patch.
+
 ## Immediate next step for a fresh session
 
 Same fork point as leg-8 (superseded by leg-9-11's WOW64/dynarec work,

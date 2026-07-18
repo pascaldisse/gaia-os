@@ -56,7 +56,7 @@ def send(line):
     s.sendall((line + "\r").encode())
 
 drain(6)
-send("pe10")
+send("pe10" + ((" " + sys.argv[1]) if len(sys.argv) > 1 else ""))
 drain(45)
 
 s.close()
