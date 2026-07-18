@@ -139,7 +139,7 @@ PY
 )
   if [[ -n "$qualified" ]]; then
     source_hit=$(rg -n --glob '*.{c,cc,cpp,cxx}' \
-      "${qualified}[[:space:]]*\\(" "$fex_source" 2>/dev/null | tail -n 1 || true)
+      "^[^=]*${qualified}[[:space:]]*\\(" "$fex_source" 2>/dev/null | head -n 1 || true)
   fi
   if [[ -z "$source_hit" && -n "$token" && "$token" != unresolved ]]; then
     source_hit=$(rg -n --glob '*.{c,cc,cpp,cxx}' \
