@@ -18,10 +18,10 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 - C4-18 source → measured native `ntdll!KiUserExceptionDispatcher`: `sp`=`CONTEXT[0x390] + CONTEXT_EX[0x20] + EXCEPTION_RECORD64@+0x3b0 + align/redzone`; order → FEX raw-SVC → arena demand commit → guest SEH → kernel forensic fatal; full GPR/FPSIMD frame; exact `NtContinue` `eret`; `NtRaiseException` same SEH route. § `FEX-MAP.md` C4-18.
 - commits → `15a1e43` dispatch + full context; `1705f51` EL1h normalization for legacy zero-Cpsr CONTEXT; `39a7d1f` continuation trace.
 - build/gates → `GAIA_NO_RUN=1 bash build.sh` PASS; `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS.
-- pe10 fex → former HLT delivered: `CHALICE EXCEPTION code=C000001D elr=0x2681B02F0 dispatch=0x47086C40`; no process-killing kernel fault. FEX repeats same HLT (20,816); no hello8 marker; continuation trace zero → ntdll/WOW64 dispatcher returns before floor NtContinue. § `FEX-MAP.md` live outcome.
+- pe10 fex → former HLT delivered: `CHALICE EXCEPTION code=C000001D elr=0x2681B02F0 dispatch=0x47086C40`; no process-killing kernel fault. C4-19 autopsy → 20,811 cycles / 30s; zero `nt_dispatch` services between cycle #1→#2, zero `NtRaiseException`, zero `NtContinue`; second-chance loop falsified. ntdll hook slot live → `0x47172f98=wow64.dll+0x1da18`; wow64 reset slot live → `0x4a700330=libwow64fex+0x13423c`; init chain intact. Dynamic post-floor target never executes; source probes reverted. § `FEX-MAP.md` C4-19.
 - wowbox64 → parked fallback; prior `elr=0/far=0` JIT-cache fault.
 
-Next → measure stock ntdll `dispatch_exception` / WOW64 handler registration + return disposition at this delivered HLT; determine why `BTCpuResetToConsistentState` does not reach `NtContinue`; then `BTCpuSimulate` → hello8 WriteFile.
+Next → model QEMU ARM HLT synchronous-return semantics; prove one post-vector target instruction executes, then re-enter ntdll/WOW64 hook. Do not alter `NtRaiseException` chance behavior: no raise occurred. Then FEX reset disposition / `NtContinue` → `BTCpuSimulate` → hello8 WriteFile.
 
 ---
 

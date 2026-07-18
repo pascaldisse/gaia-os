@@ -109,3 +109,12 @@ wow64.dll → BTCpuProcessInit
 - FEX outcome → **not handled / not progressed**; 20,816 repeated deliveries of same arena `hlt #0`; no `hello8_x86` / WriteFile marker
 - `NtContinue` first-12 handoff trace → zero lines during loop; stock dispatch did not invoke floor `NtContinue`; loop precedes the floor continuation restore → next frontier = WOW64/ntdll dispatcher-handler registration / return disposition, not a new FEX DLL-relative fault
 - mapping law → no new DLL-relative ELR; `map-fex-offsets.sh` not applicable; existing HLT identity remains `FEXCore Dispatcher.cpp:379-385`
+
+## C4-19 exception-cycle autopsy — UNRESOLVED; source probes reverted
+
+- measurement commit → `c855240`; live `pe10 fex` → 20,811 cycles / 30s; cycle #1→#2 service trace = **zero** `nt_dispatch` entries; `NtRaiseException=0`; `NtContinue=0` → C4-18 second-chance suspect falsified; no service re-dispatch
+- ntdll hook → stock disasm `adrp x16, ntdll+0x152000; ldr x16,[x16,#0xf98]` → slot RVA `0x152f98`; live → `ntdll=0x47020000`, slot=`0x47172f98`, ptr=`0x4a6dda18` = `wow64.dll+0x1da18` (`Wow64PrepareForException`) → loader `init_wow64` + `RtlFindExportedRoutineByName` link live
+- next link → `wow64.dll!Wow64PrepareForException`: `adrp x8,wow64+0x40000; ldr x8,[x8,#0x330]; blr x8`; live slot=`0x4a700330`, target=`0x4b7f423c` (libwow64fex mapped range) → `pBTCpuResetToConsistentState` link initialized; no silent init failure
+- donor → Wine `loader.c:4327,4346-4357`; `signal_arm64.c:323-331`; `wow64/syscall.c:1535-1540`; FEX `Module.cpp:921-954`; FEX only calls `NtContinue` when reset impl returns true; normal JIT exception path reconstructs + returns false for ntdll guest dispatch
+- failed diagnostic bridges → `4ef9109`/`e4b8bef`/`a288150`/`0c1f254`/`02f4828`; target bridge + direct wow64-hook probe never observed after floor stack setup; source reverted by `f15272e` chain → do not retain speculative control-transfer fix
+- frontier → hardware HLT post-handler resume/control-transfer; floor builds stack + logs delivery but dynamic target never executes; establish minimal same-EL transfer model against QEMU ARM HLT semantics before touching FEX CONTEXT/flags; `NtRaiseException` chance semantics unchanged because its path did not occur
