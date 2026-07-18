@@ -160,7 +160,13 @@ sync_entry:
     mrs     x1, elr_el1
     mov     x2, sp
     bl      sync_try_fex_linux_hint
+    cbnz    x0, 2f
+    // Reserved-arena data abort -> demand-back + retry same ELR.
+    mrs     x0, esr_el1
+    mrs     x1, far_el1
+    bl      sync_try_arena_demand_commit
     cbz     x0, 1f
+2:
     RESTOREALL_SYNC
     eret
 1:

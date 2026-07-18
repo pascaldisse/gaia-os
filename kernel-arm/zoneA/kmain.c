@@ -135,6 +135,8 @@ static void timer_start(void) {
 // can call it.
 int nt_image_resolve(u64 addr, char *name_out, u64 namelen, u64 *off_out);
 int nt_image_base_by_name(const char *name, u64 *base_out, u64 *size_out);
+int nt_arena_contains(unsigned long addr);
+int nt_arena_commit(unsigned long base, unsigned long size);
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -217,6 +219,27 @@ int sync_try_fex_linux_hint(u64 esr, u64 elr, u64 *regs) {
             puts("CHALICE: FEX raw madvise THP hint -> no-op; resumed\n");
             logged_madvise = 1;
         }
+    }
+    return 1;
+}
+
+// CHALICE C4-15: demand-commit a reserved arena window on first data access.
+// FEX intentionally reserves LookupCache's full sparse range, marks it for
+// overcommit, then commits from its access-violation path (pinned donor
+// FEXCore/Source/Interface/Core/LookupCache.cpp:27-49 and Source/Windows/
+// Common/OvercommitTracker.h:31-53). GAIA doesn't yet deliver ARM64 data
+// aborts as Windows user exceptions, so perform the same floor operation
+// directly: back the containing arena window, retry the faulting instruction.
+int sync_try_arena_demand_commit(u64 esr, u64 far) {
+    u64 ec = (esr >> 26) & 0x3f;
+    if (ec != 0x24 && ec != 0x25) return 0; // Data Abort, lower/current EL
+    if (!nt_arena_contains(far)) return 0;
+    if (!nt_arena_commit(far & ~0xfffULL, 0x1000)) return 0;
+    static unsigned long faults;
+    faults++;
+    if (faults <= 8) {
+        puts("CHALICE: arena demand-commit fault="); puthex(far);
+        puts(" count="); puthex(faults); puts("; retry\n");
     }
     return 1;
 }
