@@ -100,4 +100,12 @@ wow64.dll → BTCpuProcessInit
 - `kmain.c` → guest-only classifier: kernel image range remains fatal; known PE image / VM / arena accepted; EC `0x24/0x25` → AV `{WnR, FAR}`; EC `0x3c` BRK → breakpoint; EC `0x00` HLT → illegal instruction; builds `CONTEXT`, `CONTEXT_EX`, `EXCEPTION_RECORD64`; logs `CHALICE EXCEPTION`
 - `ntdisp.S!NtContinue` → `eret` restore: `x0-x30` incl. x16/x17; `sp`; `pc`; `spsr`; q0-q31; FPCR/FPSR; no former partial-context loss
 - `NtRaiseException` → retains diagnostic line; redirects via same native dispatcher stack, no terminate path
-- build → `GAIA_NO_RUN=1 bash build.sh` PASS; boot gates pending checkpoint commit
+- build → `GAIA_NO_RUN=1 bash build.sh` PASS
+
+### Live outcome — `39a7d1f`, 2026-07-18
+
+- required-green → `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS
+- `pe10 fex` → former frontier delivered: `CHALICE EXCEPTION: code=0xC000001D elr=0x2681B02F0 dispatch=0x47086C40`; no kernel forensic termination at first HLT
+- FEX outcome → **not handled / not progressed**; 20,816 repeated deliveries of same arena `hlt #0`; no `hello8_x86` / WriteFile marker
+- `NtContinue` first-12 handoff trace → zero lines during loop; stock dispatch did not invoke floor `NtContinue`; loop precedes the floor continuation restore → next frontier = WOW64/ntdll dispatcher-handler registration / return disposition, not a new FEX DLL-relative fault
+- mapping law → no new DLL-relative ELR; `map-fex-offsets.sh` not applicable; existing HLT identity remains `FEXCore Dispatcher.cpp:379-385`

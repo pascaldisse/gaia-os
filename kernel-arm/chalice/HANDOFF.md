@@ -10,17 +10,18 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — CURRENT: C4-18 synchronous exception delivery. Source checkpoint pending; build PASS; boot gates pending 2026-07-18.
+## STATE — CURRENT: C4-18 synchronous exception delivered; dispatcher disposition frontier. Runtime `39a7d1f`; live 2026-07-18.
 
 - raw data abort → `ESR_EL1=0x96000006`; EC=`0x25`; ISS=`0x6`; ELR=`libwow64fex.dll+0x148A0` → `FEXCore::LookupCache::FindBlock`; FAR=`0x2909C0008` → reserve-commit arena, reservation `[0x2881C0000, +0x9800000)`, initially RESERVED.
 - demand commit → seen; fired; 2MB backing + retry; proof → FAR class COMMITTED on later fault. C4-15 gate correct; no EC decoder defect.
 - C4-17 frontier → ESR=`0x02000000`; EC=`0`; ISS=`0`; ELR=`0x2681B02F0`; instruction=`0xD4400000` (`hlt #0`); JIT dispatcher allocation `[0x2681B000,+0x4000)` COMMITTED; FAR stale prior abort.
 - C4-18 source → measured native `ntdll!KiUserExceptionDispatcher`: `sp`=`CONTEXT[0x390] + CONTEXT_EX[0x20] + EXCEPTION_RECORD64@+0x3b0 + align/redzone`; order → FEX raw-SVC → arena demand commit → guest SEH → kernel forensic fatal; full GPR/FPSIMD frame; exact `NtContinue` `eret`; `NtRaiseException` same SEH route. § `FEX-MAP.md` C4-18.
-- build → `cd zoneA && GAIA_NO_RUN=1 bash build.sh` PASS; checkpoint commit + live gates / pe10 pending.
-- regressions → C4-17 baseline `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS; rerun required C4-18.
+- commits → `15a1e43` dispatch + full context; `1705f51` EL1h normalization for legacy zero-Cpsr CONTEXT; `39a7d1f` continuation trace.
+- build/gates → `GAIA_NO_RUN=1 bash build.sh` PASS; `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS.
+- pe10 fex → former HLT delivered: `CHALICE EXCEPTION code=C000001D elr=0x2681B02F0 dispatch=0x47086C40`; no process-killing kernel fault. FEX repeats same HLT (20,816); no hello8 marker; continuation trace zero → ntdll/WOW64 dispatcher returns before floor NtContinue. § `FEX-MAP.md` live outcome.
 - wowbox64 → parked fallback; prior `elr=0/far=0` JIT-cache fault.
 
-Next → checkpoint commit → socket gates pe8/pe9/ramfb → pe10 fex; expected former HLT becomes `CHALICE EXCEPTION`, then FEX `BTCpuResetToConsistentState` / `NtContinue` outcome.
+Next → measure stock ntdll `dispatch_exception` / WOW64 handler registration + return disposition at this delivered HLT; determine why `BTCpuResetToConsistentState` does not reach `NtContinue`; then `BTCpuSimulate` → hello8 WriteFile.
 
 ---
 
