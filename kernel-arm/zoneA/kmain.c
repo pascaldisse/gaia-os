@@ -354,7 +354,6 @@ static u64 ki_user_exception_dispatcher(void) {
 // Assembly trace bridge: preserves the Windows x18 TEB across kernel C,
 // then calls this resolved wow64.dll data-slot target verbatim.
 u64 nt_btcpu_reset_target;
-u64 nt_exception_hook_target;
 u64 nt_exception_dispatch_target;
 void nt_btcpu_reset_trace(void);
 void nt_exception_dispatch_trace(void);
@@ -396,7 +395,6 @@ static void audit_exception_delivery(void) {
         size >= NTDLL_WOW64_EXCEPTION_HOOK_RVA + 8) {
         u64 slot = base + NTDLL_WOW64_EXCEPTION_HOOK_RVA;
         hook = *(u64 *)(u64)slot;
-        nt_exception_hook_target = hook;
         puts(" ntdll="); puthex(base); puts(" hook_slot="); puthex(slot);
         puts(" hook="); puthex(hook);
         if (hook) {

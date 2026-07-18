@@ -198,19 +198,11 @@ sync_entry:
     cbz     x0, 1f
     ldr     x18, [sp, #144]     // dispatcher needs the interrupted TEB
     mov     sp, x0
-    // C4-19: QEMU keeps the HLT pending across ERET/BR from this EL1 vector;
-    // invoke the already-audited native ntdll WOW64 hook directly on the
-    // measured {record,context} stack.  This is KiUserExceptionDispatcher's
-    // first branch verbatim; a handled FEX case NtContinue's nonlocal ERET.
-    add     x0, sp, #0x3b0
-    mov     x1, sp
-    adrp    x16, nt_exception_hook_target
-    ldr     x16, [x16, :lo12:nt_exception_hook_target]
-    blr     x16
-    // Unhandled: resume stock dispatcher at its post-hook fallback block.
-    adrp    x16, nt_exception_dispatch_target
-    ldr     x16, [x16, :lo12:nt_exception_dispatch_target]
-    add     x16, x16, #0x18
+    // C4-19: this is a same-EL flat floor, not a real exception return to a
+    // lower privilege.  ERET retained the synchronous fault PC under QEMU;
+    // a direct branch is the required control transfer into ntdll.
+    adrp    x16, nt_exception_dispatch_trace
+    add     x16, x16, :lo12:nt_exception_dispatch_trace
     br      x16
 2:
     RESTOREALL_SYNC
