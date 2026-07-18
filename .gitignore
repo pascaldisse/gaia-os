@@ -5,6 +5,8 @@ proton/
 reactos/
 wine/
 box64/
+hangover/
+FEX/
 .gaia/
 *.o
 *.elf
