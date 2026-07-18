@@ -463,6 +463,14 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     nt_exit_jmpbuf = 0;
 
     nt_territory_release_since(nt_territory_boot_mark);
+    // CHALICE C-hello7 (continuation #3): drop this boot's OWN VM-arena
+    // tracking-table slots too (ntsvc.c receipt) -- a separate fixed-size
+    // bookkeeping array from the territory bump pointer that the bump reset
+    // above does NOT touch; left unreset it fills up (64 slots) across a
+    // few stock boots in one QEMU session even with hundreds of MB of raw
+    // territory still free, since nt_vm_alloc fails on a full TRACKING
+    // TABLE, not a full territory.
+    nt_vm_regions_release_since((unsigned long)nt_territory_boot_mark);
     nt_territory_debug_stats(label);
     puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;

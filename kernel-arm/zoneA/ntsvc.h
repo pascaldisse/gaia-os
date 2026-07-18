@@ -40,6 +40,13 @@ void NtContinue(void) __attribute__((noreturn));
 extern unsigned long *nt_exit_jmpbuf;
 extern long nt_exit_code;
 
+// CHALICE C-hello7 (continuation #3): companion to ntfile.c's
+// nt_territory_mark/_release_since -- drops this boot's own VM-arena
+// tracking-table slots (nt_vm_regions, ntsvc.c) by high-water-mark address,
+// same reasoning/receipt as the territory bump reset. Called from
+// ntboot.c's nt_boot_process right alongside nt_territory_release_since.
+void nt_vm_regions_release_since(unsigned long mark);
+
 // A4: allocate + populate TEB/PEB/RTL_USER_PROCESS_PARAMETERS/PEB_LDR_DATA/
 // LDR_DATA_TABLE_ENTRY for one PE image, wire the 4 trapdoor pointers +
 // dispatch slots. Returns the TEB pointer (what x18 must hold).

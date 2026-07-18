@@ -196,16 +196,45 @@ static int nt_vm_free(void *aligned, u64b *out_size) {
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (!nt_vm_regions[i].used || nt_vm_regions[i].aligned != aligned) continue;
         if (out_size) *out_size = nt_vm_regions[i].size;
-        // CHALICE C3c-2r: hand the released territory back to
-        // nt_territory_alloc's free-list pool (ntfile.c) -- pre-fix this
-        // only freed the tracking-slot *handle*, leaving the underlying bump
-        // space permanently unreachable (root cause of the pe6+pe7(+pe8)
-        // cumulative territory exhaustion, see ntfile.c receipt).
+        // CHALICE C-hello7 (continuation #3): nt_territory_free is now a
+        // no-op accounting stub (ntfile.c receipt -- the free-list pool
+        // this call used to feed was reverted per monad ruling). Kept as an
+        // API-surface call for symmetry/documentation; the real reclaim for
+        // this tracking slot is nt_vm_regions_release_since below.
         nt_territory_free((unsigned char *)nt_vm_regions[i].aligned, (unsigned long)nt_vm_regions[i].size);
         nt_vm_regions[i].used = 0;
         return 1;
     }
     return 0;
+}
+
+// CHALICE C-hello7 (continuation #3): process-epoch reclaim for the VM-arena
+// tracking table, companion to ntfile.c's nt_territory_mark/
+// _release_since. Root cause of a live pe8 in-single-boot exhaustion found
+// AFTER the territory bump-pointer reset already landed: this table is a
+// SEPARATE fixed-size (NT_VM_MAX_REGIONS=64) bookkeeping array from the
+// territory bump pointer, and nothing was ever resetting IT across
+// nt_boot_process calls -- every stock boot's own kernelbase heap-init
+// negotiates many top-level VirtualAlloc reservations (observed: 15-20+
+// live 0xFD0000 heaps kept per boot, matching real Wine/Windows kernelbase
+// startup creating several genuinely-not-freed process heaps) and NONE of
+// them are ever released by a real NtFreeVirtualMemory during this floor's
+// single-process-at-a-time model, so their tracking slots stayed "used"
+// forever, permanently consuming the 64-slot table across pe6+pe7+pe8 in
+// one QEMU session -- nt_vm_alloc started failing (STATUS_NO_MEMORY) with
+// HUNDREDS of MB of raw territory still free, because the search for a
+// free TRACKING SLOT (not territory space) came up empty. Same fix shape
+// as the territory bump reset: since a shell verb is a complete,
+// non-overlapping process lifetime (SLICE3-SPEC), nothing after it returns
+// needs its own heap regions to stay tracked -- so nt_boot_process drops
+// every tracking slot this boot created (by high-water-mark address
+// comparison, mirroring nt_territory_release_since's own mark test)
+// alongside the bump-pointer reset it already does.
+void nt_vm_regions_release_since(unsigned long mark) {
+    for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
+        if (nt_vm_regions[i].used && (u64b)nt_vm_regions[i].aligned >= mark)
+            nt_vm_regions[i].used = 0;
+    }
 }
 
 // CHALICE C3c-2e p1: heap-init alloc I/O trace, gated on the same
