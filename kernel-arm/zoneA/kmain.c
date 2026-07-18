@@ -354,15 +354,7 @@ static u64 ki_user_exception_dispatcher(void) {
 // Assembly trace bridge: preserves the Windows x18 TEB across kernel C,
 // then calls this resolved wow64.dll data-slot target verbatim.
 u64 nt_btcpu_reset_target;
-u64 nt_exception_dispatch_target;
 void nt_btcpu_reset_trace(void);
-void nt_exception_dispatch_trace(void);
-
-void nt_exception_dispatch_trace_enter(void) {
-    static u64 enters;
-    if (enters++ >= 4) return;
-    puts("CHALICE DISPATCH bridge entered target="); puthex(nt_exception_dispatch_target); puts("\n");
-}
 
 void nt_btcpu_reset_trace_enter(void *ptrs) {
     static u64 calls;
@@ -469,8 +461,7 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     audit_exception_delivery();
     puts("CHALICE EXCEPTION: code="); puthex(status);
     puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
-    nt_exception_dispatch_target = dispatcher;
-    asm volatile("msr elr_el1, %0" :: "r"((u64)nt_exception_dispatch_trace));
+    asm volatile("msr elr_el1, %0" :: "r"(dispatcher));
     return stack;
 }
 

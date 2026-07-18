@@ -372,17 +372,6 @@ NtContinue:
     ldr  x9,       [x9, #0x50]
     eret
 
-// C4-19 trace bridge for the ELR redirect.  Proves the floor reaches this
-// branch before tail-branching to stock KiUserExceptionDispatcher.
-.global nt_exception_dispatch_trace
-nt_exception_dispatch_trace:
-    stp  x18, x30, [sp, #-16]!
-    bl   nt_exception_dispatch_trace_enter
-    ldp  x18, x30, [sp], #16
-    adrp x16, nt_exception_dispatch_target
-    ldr  x16, [x16, :lo12:nt_exception_dispatch_target]
-    br   x16
-
 // C4-19 trace bridge for wow64.dll's pBTCpuResetToConsistentState.  This
 // pointer is normally a direct FEX call; retain the guest TEB while kernel C
 // logs the call/return, then invoke the measured original target.  NtContinue
