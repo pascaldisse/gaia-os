@@ -160,6 +160,20 @@ static long nt_unix_call_shim(void *handle, unsigned int code, void *args) {
 #define PEB_APISETMAP_OFF          0x68
 #define PARAMS_STANDARDINPUT_OFF   0x20
 #define PARAMS_STANDARDERROR_OFF   0x30
+// CHALICE C4-28 gate-salvage fix: CURDIR CurrentDirectory@0x38 (UNICODE_
+// STRING DosPath 0x10 + HANDLE Handle 0x8, ends 0x50, matches this file's
+// own long-standing comment above "CurrentDirectory(CURDIR: UNICODE_
+// STRING+Handle)@0x38..0x50" -- field was named but never written until
+// now). Root cause, live-caught under the new null-page guard (address 0
+// finally faults instead of silently reading garbage device memory):
+// stock ntdll's internal get_full_path_helper (embedded-symbol resolved,
+// map-fex-offsets.sh) unconditionally dereferences params->CurrentDirectory.
+// DosPath.Buffer[1] (checking for a "X:" drive-letter pattern) whenever an
+// ImagePathName lacks a resolvable absolute prefix -- true for pe6/pe7/pe8
+// (native ARM64, non-wow64, deliberately bare exe_name per this file's own
+// C4-6 comment below) -- Buffer was NULL, DosPath[1] read faulted at
+// address 0x2 once the guard made address 0 genuinely unmapped.
+#define PARAMS_CURRENTDIRECTORY_OFF 0x38
 #define PARAMS_IMAGEPATHNAME_OFF   0x60
 #define PARAMS_COMMANDLINE_OFF     0x70
 // CHALICE C4-14: Environment ptr, RTL_USER_PROCESS_PARAMETERS+0x80 (this
@@ -502,6 +516,24 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     u8 *params = (u8 *)(u64b)rd64(peb + PEB_PROCESSPARAMETERS_OFF);
     wr64(params + PARAMS_STANDARDINPUT_OFF, NT_STDOUT_HANDLE);
     wr64(params + PARAMS_STANDARDERROR_OFF, NT_STDOUT_HANDLE);
+
+    // CHALICE C4-28 gate-salvage fix: CurrentDirectory.DosPath, real non-
+    // NULL UNICODE_STRING ("C:\\" -- same drive-root convention this file's
+    // own wow64_mode ImagePathName block below already uses), unconditional
+    // (all processes, not just wow64_mode -- the crashing get_full_path_
+    // helper path is native-ARM64-side ntdll code, hit by pe6/pe7/pe8, none
+    // of which are wow64_mode). See PARAMS_CURRENTDIRECTORY_OFF comment
+    // above for the full live fault receipt this fixes.
+    {
+        static const char curdir_path[] = "C:\\";
+        u64b curdir_len = strlen_local(curdir_path);
+        u16b *wcurdir = (u16b *)MAlloc((curdir_len + 1) * 2);
+        if (!wcurdir) return boot_err("CurrentDirectory alloc failed");
+        widen_ascii(curdir_path, wcurdir, curdir_len);
+        wr16(params + PARAMS_CURRENTDIRECTORY_OFF + US_LENGTH_OFF, (u16b)(curdir_len * 2));
+        wr16(params + PARAMS_CURRENTDIRECTORY_OFF + US_MAXLENGTH_OFF, (u16b)((curdir_len + 1) * 2));
+        wr64(params + PARAMS_CURRENTDIRECTORY_OFF + US_BUFFER_OFF, (u64b)wcurdir);
+    }
 
     // CHALICE C4-14: real double-NUL-terminated UTF-16LE Environment block
     // (see PARAMS_ENVIRONMENT_OFF comment above for the full donor-grounded

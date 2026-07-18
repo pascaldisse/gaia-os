@@ -4,6 +4,13 @@ set -e
 cd "$(dirname "$0")"
 
 CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
+# CHALICE C4-28 fix note: tried -mstrict-align here to stop the compiler
+# fusing adjacent l1_table/l2_dev_table stores into unaligned-relative-to-
+# device-memory stp pairs (see kmain.c mmu_on comments) -- REVERTED, it
+# makes clang lower ordinary struct-width memcpy-shaped code (fs.c FsWrite)
+# to a libcall `memcpy` this freestanding/-nostdlib kernel doesn't provide
+# (link fails: "undefined reference to `memcpy'"). Fixed at the two
+# call sites instead (kmain.c: `volatile` on l1_table/l2_dev_table).
 
 # CHALICE C1 slice 1 — build the PE-ARM64 test artifacts and embed them as
 # byte arrays (mirrors the zcaot_bin embed step in zcmod.c, but generated

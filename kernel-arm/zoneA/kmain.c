@@ -37,7 +37,16 @@ static void putdec(u64 v) {
 #define NT_RAM_BASE   0x40000000ULL
 #define NT_RAM_BLOCKS 4ULL                                   // 4 * 1GB = 4GB (GAIA_QEMU_MEM default)
 #define NT_RAM_TOP    (NT_RAM_BASE + NT_RAM_BLOCKS * 0x40000000ULL)
-static u64 l1_table[512] __attribute__((aligned(4096)));
+// CHALICE C4-28 fix: volatile -- stops the compiler fusing adjacent
+// element stores into a single stp when source layout leaves an odd
+// (8-byte-only-aligned) starting offset into this 16B-aligned array; see
+// mmu_on() below for the full live-caught fault story (Device-memory-
+// alignment vs MMU-off boot state). Plain compiler barriers around the
+// call sites reduced but did not fully suppress it once the compiler
+// re-introduced the same fusion inside a loop's own unrolling; volatile
+// is the actual C-semantics guarantee (no store/load may be elided,
+// reordered across, or fused with another volatile access).
+static volatile u64 l1_table[512] __attribute__((aligned(4096)));
 // CHALICE C4-28 -- guard page(s) for [0x0,0x200000): mmu_on used to block-map
 // the WHOLE first 1GB (incl. address 0) as valid device nGnRnE, so a guest
 // null-pointer dereference silently read real device memory instead of
@@ -55,19 +64,46 @@ static u64 l1_table[512] __attribute__((aligned(4096)));
 // invalid; entries[1..511] keep the identical device-nGnRnE 2MB block
 // attributes the removed 1GB block used, so GICD(0x08000000)/GICR(0x080A0000)
 // /UART(0x09000000)/VIRTIO(0x0a000000) -- all >= 2MB -- are unaffected.
-static u64 l2_dev_table[512] __attribute__((aligned(4096)));
+static volatile u64 l2_dev_table[512] __attribute__((aligned(4096)));
 
 static void mmu_on(void) {
-    l2_dev_table[0] = 0;                                                          // [0x0,0x200000) unmapped -- guard page
-    for (u64 i = 1; i < 512; i++) {
+    // CHALICE C4-28 fix (gate salvage): looping i=1..511 (skipping index 0)
+    // left the compiler free to pair adjacent stores (stp) starting at an
+    // 8-byte-only-aligned offset (l2_dev_table+8) straddling a 16B boundary.
+    // With the MMU still off at this point in boot, EVERY access defaults to
+    // Device-nGnRnE (SCTLR_EL1.M=0 forces the whole space Device, ARM ARM),
+    // and Device memory requires natural alignment even for a plain stp ->
+    // ESR ec=0x25 DFSC=0x21 (Alignment fault) at l2_dev_table[1], crashing
+    // boot before "MMU: on" ever printed (live-caught this pass). Fix: loop
+    // uniformly over the WHOLE array from i=0 (naturally 16B-pair-aligned,
+    // same shape the working pre-guard single-block code had), THEN
+    // overwrite index 0 as one isolated scalar store after the loop -- a
+    // lone `str` only needs its own 8-byte natural alignment, always true
+    // at the array's 4096-aligned base+0.
+    for (u64 i = 0; i < 512; i++) {
         u64 addr = i * 0x200000ULL;
         l2_dev_table[i] = addr | (0ULL << 2) | (1ULL << 10) | 1ULL;              // device nGnRnE, L2 block
     }
-    l1_table[0] = (u64)l2_dev_table | 0b11ULL;                                   // L1 table entry -> l2_dev_table
+    // Source-order alone did NOT stop the compiler re-pairing this isolated
+    // store with the loop's own stores (no data dependency forces ordering,
+    // and with no MMU on yet, the compiler has no reason to know Device
+    // memory requires natural stp alignment here) -- live-reproduced TWICE
+    // (l2_dev_table+8, then l1_table+8 below) even after reordering to
+    // "loop first, odd store last". A real compiler barrier is required,
+    // not just source-code sequencing.
+    asm volatile("" ::: "memory");
+    l2_dev_table[0] = 0;                                                          // [0x0,0x200000) unmapped -- guard page (isolated store, after the loop)
+    asm volatile("" ::: "memory");
+    // CHALICE C4-28 fix, part 2: identical hazard hit l1_table (the
+    // l1_table[0] singular write, even moved after the RAM loop in source
+    // order, still got compiler-paired with l1_table[1] absent a barrier).
     for (u64 i = 0; i < NT_RAM_BLOCKS; i++) {
         u64 base = NT_RAM_BASE + i * 0x40000000ULL;
         l1_table[1 + i] = base | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL;  // normal WBWA ISH
     }
+    asm volatile("" ::: "memory");
+    l1_table[0] = (u64)l2_dev_table | 0b11ULL;                                   // L1 table entry -> l2_dev_table (isolated store, after the loop)
+    asm volatile("" ::: "memory");
 
     // CHALICE C4-8: T0SZ 32->25 -- T0SZ=32 gave only a 32-bit (4GB) TTBR0
     // VA range (0x0-0xFFFFFFFF), so `l1_table` slots beyond index 3 (any

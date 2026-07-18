@@ -1611,6 +1611,23 @@ void nt_service_tables_init(void) {
 #define TEB_STATICUNICODESTRING_OFF 0x1258
 #define TEB_STATICUNICODEBUFFER_OFF 0x1268
 #define TEB_STATICUNICODEBUFFER_LEN 0x2C0   // bytes; ballpark of real Windows' capacity, plenty for any single module/path name
+// CHALICE C4-28 gate-salvage fix: TEB.ActivationContextStackPointer,
+// well-known public Win64 TEB offset 0x2c8 (winternl.h _STRUCT64 TEB,
+// matches every published TEB layout reference). Left zeroed (this
+// floor's prior state), stock ntdll's RtlFindActivationContextSectionString
+// (embedded-symbol resolved, map-fex-offsets.sh) unconditionally does
+// `ldr x8,[x18,#0x2c8]; ldr x8,[x8]` -- dereferences TEB->
+// ActivationContextStackPointer->ActiveFrame with NO null check on the
+// stack-pointer itself (only checks the result), so a NULL
+// ActivationContextStackPointer faults immediately (live-caught this pass,
+// address 0x0 -> now genuinely unmapped by the C4-28 guard). Real Windows
+// always wires this at thread creation (RtlInitializeActivationContextStack)
+// so it is never NULL; fix: point it at a small zeroed
+// ACTIVATION_CONTEXT_STACK (only the leading ActiveFrame pointer -- offset
+// 0 -- is read on this path; zeroed satisfies the `cbz` fast-empty-stack
+// branch immediately after).
+#define TEB_ACTIVATIONCONTEXTSTACKPOINTER_OFF 0x2c8
+#define ACTIVATION_CONTEXT_STACK_SIZE 0x40   // generous; only offset 0 (ActiveFrame) is load-bearing on this path
 // CHALICE C4-3: TEB_SIZE 0x1600->0x3000 -- our TEB layout tracks the REAL
 // TEB64 (winternl.h _STRUCT64 TEB, C_ASSERT sizeof==0x1838: TlsSlots@0x1480,
 // WowTebOffset@0x180c) closely enough that 0x1600 didn't even reach
@@ -1764,12 +1781,17 @@ void *nt_build_teb(void *image_base, void *entry, unsigned long image_size) {
     u8 *ldr    = (u8 *)nt_zalloc(LDR_SIZE);
     u8 *mod    = (u8 *)nt_zalloc(MOD_SIZE);
     u8 *heap   = (u8 *)nt_zalloc(4096);   // dummy ProcessHeap
-    if (!teb || !peb || !params || !ldr || !mod || !heap) return 0;
+    u8 *actctx = (u8 *)nt_zalloc(ACTIVATION_CONTEXT_STACK_SIZE);
+    if (!teb || !peb || !params || !ldr || !mod || !heap || !actctx) return 0;
 
     // ---- trapdoor #1: TEB.NtTib.Self ----
     wr64(teb + TEB_NTTIB_SELF_OFF, (u64b)teb);
     // ---- trapdoor #2: TEB.ProcessEnvironmentBlock ----
     wr64(teb + TEB_PEB_OFF, (u64b)peb);
+    // ---- CHALICE C4-28 gate-salvage fix: TEB.ActivationContextStackPointer
+    // (see offset comment above) -- zeroed ACTIVATION_CONTEXT_STACK, never
+    // NULL. ----
+    wr64(teb + TEB_ACTIVATIONCONTEXTSTACKPOINTER_OFF, (u64b)actctx);
     // ---- A1 dispatch slots ----
     wr64(teb + NT_TEB_SERVICE_TABLE_OFF, (u64b)nt_service_tables);
     wr64(teb + NT_TEB_SYSCALL_FRAME_OFF, 0);
