@@ -54,6 +54,7 @@
 #define NT_SVC_NTQUERYDEFAULTLOCALE        21  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt:12, 0x15)
 #define NT_SVC_NTQUERYINFORMATIONTHREAD    37  // REAL, CHALICE C4-9 (wine-arm64-syscalls.txt:29, 0x25) -- ThreadWow64Context(29) only, see ntsvc.c receipt
 #define NT_SVC_NTSETINFORMATIONTHREAD      13  // REAL, CHALICE C4-11 (wine-arm64-syscalls.txt:210, 0xd) -- instrument-first stub, see ntsvc.c receipt
+#define NT_SVC_NTALLOCATEVIRTUALMEMORYEX  107  // REAL, CHALICE C4-13 (wine-arm64-syscalls.txt:103, 0x6b)
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via
@@ -164,6 +165,20 @@
 // (HANDOFF NEXT) still open, swap this one literal to libwow64fex.dll if
 // he calls it the other way, nothing else in the chain depends on which.
 #define NT_WOW64_CPU_BACKEND_NAME "wowbox64.dll"
+
+// ---- CHALICE C4-13: distinct pseudo-handle for the
+// "\Registry\Machine\Hardware\Description\System\CentralProcessor\0" key --
+// box64-for-WOW64's DetectHostCpuFeatures (box64/src/os/hostext_wine.c:8,
+// v0.4.2 donor, gitignored quarry) RegQueryValueExA's "CP 4030"/"CP 4039"/
+// "CP 403A" (raw ID_AA64ISAR0_EL1/ID_AA64MMFR1_EL1/ID_AA64MMFR2_EL1 QWORD
+// dumps, real Windows-on-ARM64 HAL convention -- donor-grounded identically
+// in wine/dlls/ntdll/unix/system.c get_core_id_regs_arm64's own READ_ID_REG
+// numbering, 0x4030/0x4039/0x403a) under this one key. Same free-pseudo-
+// handle idiom as NT_REGISTRY_WOW64CPU_KEY_HANDLE/NT_REGISTRY_KEY_HANDLE.
+#define NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE 0x8CUL
+// REG_QWORD (winnt.h RegistryValueType) -- Type field for the CP-4030/4039/
+// 403A KEY_VALUE_PARTIAL_INFORMATION answers (ntfile.c NtQueryValueKey).
+#define REG_QWORD 11UL
 
 // ---- Atom B: syscall_frame extension. Donor's __wine_syscall_dispatcher
 // (wine/dlls/ntdll/unix/signal_arm64.c:1630-1785) stashes the PE stub's own

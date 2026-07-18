@@ -115,6 +115,12 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
                               unsigned long Protect);
 long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
                           unsigned long FreeType);
+// CHALICE C4-13: NtAllocateVirtualMemoryEx -- see ntsvc.c for the donor
+// (virtual.c) receipt. Parameters/ParameterCount are the guest's own
+// MEM_EXTENDED_PARAMETER array/count (opaque here -- parsed inside).
+long NtAllocateVirtualMemoryEx(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
+                                unsigned long AllocationType, unsigned long Protect,
+                                void *Parameters, unsigned long ParameterCount);
 long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
                                 void *ProcessInformation, unsigned long ProcessInformationLength,
                                 unsigned long *ReturnLength);
@@ -130,6 +136,15 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 // physical address, identity-mapped normal memory per kmain.c's mmu_on).
 // Idempotent-by-caller: invoked once from nt_service_tables_init().
 void nt_kuser_init(void);
+// CHALICE C4-13: real ARM64 ID-register reads (mrs, direct -- this kernel
+// runs at EL1 with no hypervisor trapping ID-register access, ARM ARM
+// D17.2). Feed both nt_kuser_init's KUSER_SHARED_DATA.ProcessorFeatures
+// population (this file) AND ntfile.c's CentralProcessor\0 registry-value
+// floor (NtQueryValueKey "CP 4030"/"CP 4039"/"CP 403A") -- ONE real mrs
+// read per register, no hand-picked feature-bit list (IRON law).
+unsigned long nt_read_id_aa64isar0(void);
+unsigned long nt_read_id_aa64mmfr1(void);
+unsigned long nt_read_id_aa64mmfr2(void);
 
 // CHALICE C3c Atom 3C-1: dispatcher call-log. Cheap, removable-later debug
 // aid -- serial line per incoming service id for the first

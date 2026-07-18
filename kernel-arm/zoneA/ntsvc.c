@@ -534,6 +534,137 @@ long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long 
 }
 
 // =====================================================================
+// CHALICE C4-13: NtAllocateVirtualMemoryEx (svc 107, wine-arm64-syscalls.txt
+// :103) -- the Ex form FEX's own heap-growth path calls where Box64 calls
+// the plain NtAllocateVirtualMemory (measured live, leg-12: two "svc
+// id=107 UNIMPLEMENTED" lines immediately before a genuine Data Abort
+// INSIDE ntdll.dll's own heap code, far=0x7 -- a small-int deref off an
+// uninitialized *ret/*size_ptr the real syscall never got to fill in).
+// Donor-grounded (wine/dlls/ntdll/unix/virtual.c:5324 get_extended_params +
+// :5384 NtAllocateVirtualMemoryEx, fetched this leg -- no local wine/
+// donor clone present this session, HANDOFF's "main working copy has it"
+// not true this leg either, same as leg-11 -- fetched the specific files
+// needed via curl instead, same grounding standard): same core allocator
+// as plain NtAllocateVirtualMemory (donor's allocate_virtual_memory), fed
+// by a MEM_EXTENDED_PARAMETER array instead of a ZeroBits scalar -- this
+// floor mirrors that by parsing MemExtendedParameterAddressRequirements
+// (winnt.h _MEM_ADDRESS_REQUIREMENTS: LowestStartingAddress@0/
+// HighestEndingAddress@8/Alignment@16, 24B; MEM_EXTENDED_PARAMETER itself:
+// Type:8-bitfield QWORD@0 + union QWORD@8, 16B total, DECLSPEC_ALIGN(8))
+// into the same LOW-vs-arena pool choice NtAllocateVirtualMemory's
+// ZeroBits==0-vs-!=0 branch already makes: a HighestEndingAddress below
+// the HIGH pool's own floor (4GB -- "keep me under 4GB", exactly what a
+// WOW64-adjacent 32-bit-visible allocation needs, FEX's own likely use
+// case per this leg's task) routes to the LOW pool; no constraint (no
+// param, or a param with everything zero) is genuinely unconstrained,
+// same as ZeroBits==0. MemExtendedParameterAttributeFlags/ImageMachine are
+// parsed+logged only (no ARM64EC support on this floor, so their real
+// donor-side effect -- commit_arm64ec_map/set_arm64ec_range, virtual.c
+// :5218-5221 -- never applies here); MemExtendedParameterNumaNode/
+// PartitionHandle/UserPhysicalHandle are logged+IGNORED, matching donor's
+// own FIXME+continue exactly (get_extended_params never rejects these, so
+// neither do we); any other/out-of-range Type -> STATUS_INVALID_PARAMETER,
+// matching donor's own default case (donor is the ground truth here,
+// followed exactly rather than inventing a distinct STATUS_NOT_SUPPORTED
+// this floor's task text speculated about).
+// =====================================================================
+#define MEM_EXTENDED_PARAMETER_ADDRESSREQUIREMENTS 1UL
+#define MEM_EXTENDED_PARAMETER_NUMANODE             2UL
+#define MEM_EXTENDED_PARAMETER_PARTITIONHANDLE       3UL
+#define MEM_EXTENDED_PARAMETER_USERPHYSICALHANDLE    4UL
+#define MEM_EXTENDED_PARAMETER_ATTRIBUTEFLAGS        5UL
+#define MEM_EXTENDED_PARAMETER_IMAGEMACHINE          6UL
+// == ntfile.c's own NT_HIGH_TERRITORY_BASE (private #define there, no
+// header exposes it -- duplicated value, not meaning, same convention
+// ntids.h's NT_FRAME_STUB_LR_OFF receipt documents for this exact
+// situation).
+#define NT_C413_HIGH_POOL_FLOOR 0x100000000ULL
+
+long NtAllocateVirtualMemoryEx(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
+                                unsigned long AllocationType, unsigned long Protect,
+                                void *Parameters, unsigned long ParameterCount) {
+    (void)ProcessHandle;
+
+    void *in_base = BaseAddress ? *BaseAddress : 0;
+    u64b  in_size = RegionSize ? *RegionSize : 0;
+    nt_avm_log("EXIN ", in_base, in_size, AllocationType, Protect, 0);
+
+    if (!BaseAddress || !RegionSize) {
+        nt_avm_log("EXOUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+    if (ParameterCount && !Parameters) {
+        nt_avm_log("EXOUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    u64b limit_high = 0;      // 0 == unconstrained (donor's own default)
+    int  have_addr_req = 0;
+
+    const u8 *params = (const u8 *)Parameters;
+    for (unsigned long i = 0; i < ParameterCount; i++) {
+        const u8 *p = params + i * 16;   // MEM_EXTENDED_PARAMETER is 16B
+        u64b type_field = rd64(p + 0);
+        u32b type = (u32b)(type_field & 0xFFUL);   // Type:8 bits, LSB of the first QWORD
+        u64b value = rd64(p + 8);
+
+        if (type == MEM_EXTENDED_PARAMETER_ADDRESSREQUIREMENTS) {
+            const u8 *req = (const u8 *)(u64b)value;   // Pointer -- MEM_ADDRESS_REQUIREMENTS*
+            have_addr_req = 1;
+            if (req) {
+                u64b highest = rd64(req + 8);   // HighestEndingAddress
+                if (highest != 0) limit_high = highest;
+            }
+        } else if (type == MEM_EXTENDED_PARAMETER_ATTRIBUTEFLAGS ||
+                   type == MEM_EXTENDED_PARAMETER_IMAGEMACHINE) {
+            // logged only, no ARM64EC support on this floor -- see receipt above.
+        } else if (type == MEM_EXTENDED_PARAMETER_NUMANODE ||
+                   type == MEM_EXTENDED_PARAMETER_PARTITIONHANDLE ||
+                   type == MEM_EXTENDED_PARAMETER_USERPHYSICALHANDLE) {
+            // donor FIXME+continue -- ignored, not rejected (get_extended_params ground truth).
+        } else {
+            if (nt_dispatch_log_enabled) {
+                puts("CHALICE: NtAllocateVirtualMemoryEx invalid param type="); puthex(type); puts("\n");
+            }
+            nt_avm_log("EXOUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+            return STATUS_INVALID_PARAMETER;
+        }
+    }
+
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtAllocateVirtualMemoryEx count="); puthex(ParameterCount);
+        puts(" have_addr_req="); puthex((u64b)have_addr_req);
+        puts(" limit_high="); puthex(limit_high); puts("\n");
+    }
+
+    // Donor: *ret set (growth-at-base) + any address-requirement param ->
+    // STATUS_INVALID_PARAMETER (virtual.c:5384 "if (*ret && (align ||
+    // limit_low || limit_high)) return STATUS_INVALID_PARAMETER", align/
+    // limit_low not modeled separately here since this floor's flat arena
+    // never honors a caller base hint anyway -- the have_addr_req flag
+    // alone already captures "a requirements param was present").
+    if (in_base != 0 && have_addr_req) {
+        nt_avm_log("EXOUT", in_base, in_size, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+        return STATUS_INVALID_PARAMETER;
+    }
+
+    // Route: a HighestEndingAddress under the HIGH pool's own floor (4GB,
+    // NT_C413_HIGH_POOL_FLOOR above) means "keep me under 4GB" -- exactly
+    // this floor's existing LOW-pool contract (ZeroBits!=0's own routing,
+    // NtAllocateVirtualMemory below) -- reuse it verbatim by delegating
+    // with an equivalent nonzero ZeroBits value (any nonzero value routes
+    // LOW-only there, same as any real WOW64 ZeroBits!=0 caller already
+    // does -- the exact numeric value is never inspected past nonzero).
+    unsigned long effective_zero_bits =
+        (in_base == 0 && have_addr_req && limit_high != 0 && limit_high < NT_C413_HIGH_POOL_FLOOR) ? 1UL : 0UL;
+
+    long status = NtAllocateVirtualMemory(ProcessHandle, BaseAddress, effective_zero_bits,
+                                           RegionSize, AllocationType, Protect);
+    nt_avm_log("EXOUT", *BaseAddress, *RegionSize, AllocationType, Protect, status);
+    return status;
+}
+
+// =====================================================================
 // Atom B — NtQueryInformationProcess / NtQuerySystemInformation. Only the
 // two classes SLICE2-SPEC calls out; everything else STATUS_NOT_IMPLEMENTED.
 // =====================================================================
@@ -824,6 +955,35 @@ long NtQuerySystemInformationEx(unsigned long SystemInformationClass, void *Quer
 }
 
 // =====================================================================
+// CHALICE C4-13: real ARM64 ID-register reads. This kernel runs at EL1
+// (kmain.c mmu_on) -- ID_AA64* register reads are unconditionally legal
+// there (ARM ARM D17.2: EL1 access is trapped to EL2 only if a hypervisor
+// sets HCR_EL2.TID3, and this floor never installs an EL2 -- we ARE the
+// only privilege level below EL1's own guest, same "we ARE the unix side"
+// framing nt_kuser_init already uses). Direct mrs, not the Linux-side
+// trap+emulate dance donor wine/dlls/ntdll/unix/system.c's
+// get_core_id_regs_arm64 needs (that code reads via getauxval(HWCAP_CPUID)
+// + an emulated mrs trap because IT runs at EL0 under a real Linux kernel;
+// we have no such intermediary to trap through, so we skip that whole
+// mechanism and read the real hardware register directly).
+// =====================================================================
+unsigned long nt_read_id_aa64isar0(void) {
+    unsigned long v;
+    __asm__ volatile("mrs %0, id_aa64isar0_el1" : "=r"(v));
+    return v;
+}
+unsigned long nt_read_id_aa64mmfr1(void) {
+    unsigned long v;
+    __asm__ volatile("mrs %0, id_aa64mmfr1_el1" : "=r"(v));
+    return v;
+}
+unsigned long nt_read_id_aa64mmfr2(void) {
+    unsigned long v;
+    __asm__ volatile("mrs %0, id_aa64mmfr2_el1" : "=r"(v));
+    return v;
+}
+
+// =====================================================================
 // Atom B — KUSER_SHARED_DATA @ NT_KUSER_SHARED_DATA_ADDR (fixed physical
 // address, we populate directly — HANDOFF: "we ARE the unix side").
 // =====================================================================
@@ -840,14 +1000,36 @@ void nt_kuser_init(void) {
     wr32(k + NT_KUSER_NTMINORVERSION_OFF, 0);
     wr32(k + NT_KUSER_NUMBEROFPHYSICALPAGES_OFF, NT_KUSER_NUM_PHYS_PAGES);
 
-    // ProcessorFeatures[]: sane subset a real cortex-a72 (our -cpu, build.sh)
-    // genuinely has, indices per reactos/sdk/include/xdk/ketypes.h PF_* --
-    // not an exhaustive/authoritative CPUID probe (none exists here), just
-    // "sane" per SLICE2-SPEC Atom B, rest of the array left zero (=absent).
+    // ProcessorFeatures[]: two tiers, per donor dlls/ntdll/unix/system.c
+    // init_shared_data_cpuinfo (fetched this leg, non-__arm__/aarch64
+    // branch) --
+    // (1) unconditional-TRUE-on-any-AArch64-host facts (NOT host-specific,
+    //     so no mrs read backs these -- matches donor exactly, every
+    //     AArch64 CPU real Windows-on-ARM64 ever ran on has them):
     k[NT_KUSER_PROCESSORFEATURES_OFF + 18] = 1;   // PF_ARM_VFP_32_REGISTERS_AVAILABLE
     k[NT_KUSER_PROCESSORFEATURES_OFF + 19] = 1;   // PF_ARM_NEON_INSTRUCTIONS_AVAILABLE
     k[NT_KUSER_PROCESSORFEATURES_OFF + 25] = 1;   // PF_ARM_64BIT_LOADSTORE_ATOMIC
     k[NT_KUSER_PROCESSORFEATURES_OFF + 29] = 1;   // PF_ARM_V8_INSTRUCTIONS_AVAILABLE
+
+    // (2) host-SPECIFIC facts -- CHALICE C4-13: derived from a real
+    // ID_AA64ISAR0_EL1 mrs read (nt_read_id_aa64isar0 above), IRON law "no
+    // hardcoded feature lists, parameterize nothing by hand" -- mapping
+    // table is the ARM ARM's ID_AA64ISAR0_EL1 field layout (also exactly
+    // the 3 PF_* box64-for-WOW64's DetectHostCpuFeatures actually queries
+    // via IsProcessorFeaturePresent, box64/src/os/hostext_wine.c:8, v0.4.2
+    // donor in-tree gitignored quarry -- SHA1/SHA2/PMULL/RDM/SHA3/SM3/SM4/
+    // DP/FHM/TS/TLB/RNDR fields exist in the same register but box64 never
+    // asks their PF_* counterparts, so this floor doesn't derive them
+    // either -- exactly the surface consumed, no more, no less):
+    //   AES    bits[7:4]   nonzero -> PF_ARM_V8_CRYPTO_INSTRUCTIONS_AVAILABLE(30)
+    //   CRC32  bits[19:16] nonzero -> PF_ARM_V8_CRC32_INSTRUCTIONS_AVAILABLE(31)
+    //   Atomic bits[23:20] nonzero -> PF_ARM_V81_ATOMIC_INSTRUCTIONS_AVAILABLE(34)
+    {
+        u64b isar0 = nt_read_id_aa64isar0();
+        if (((isar0 >> 4)  & 0xFUL) != 0) k[NT_KUSER_PROCESSORFEATURES_OFF + 30] = 1; // AES
+        if (((isar0 >> 16) & 0xFUL) != 0) k[NT_KUSER_PROCESSORFEATURES_OFF + 31] = 1; // CRC32
+        if (((isar0 >> 20) & 0xFUL) != 0) k[NT_KUSER_PROCESSORFEATURES_OFF + 34] = 1; // Atomic/LSE
+    }
 }
 
 // =====================================================================
@@ -865,6 +1047,7 @@ static u64b nt_dispatch_log_count;
 static const char *nt_svc_name(u64b id) {
     switch (id) {
     case NT_SVC_NTALLOCATEVIRTUALMEMORY:    return "NtAllocateVirtualMemory";
+    case NT_SVC_NTALLOCATEVIRTUALMEMORYEX:  return "NtAllocateVirtualMemoryEx";
     case NT_SVC_NTFREEVIRTUALMEMORY:        return "NtFreeVirtualMemory";
     case NT_SVC_NTPROTECTVIRTUALMEMORY:     return "NtProtectVirtualMemory";
     case NT_SVC_NTCREATESECTION:            return "NtCreateSection";
@@ -948,6 +1131,10 @@ void nt_service_tables_init(void) {
     // ---- Atom B real handlers ----
     nt_svc_table0[NT_SVC_NTALLOCATEVIRTUALMEMORY] = (void *)NtAllocateVirtualMemory;
     nt_svc_argtable0[NT_SVC_NTALLOCATEVIRTUALMEMORY] = 6 * 8;
+    // CHALICE C4-13: NtAllocateVirtualMemoryEx(ProcessHandle, BaseAddress,
+    // RegionSize, AllocationType, Protect, Parameters, ParameterCount) -- 7 args.
+    nt_svc_table0[NT_SVC_NTALLOCATEVIRTUALMEMORYEX] = (void *)NtAllocateVirtualMemoryEx;
+    nt_svc_argtable0[NT_SVC_NTALLOCATEVIRTUALMEMORYEX] = 7 * 8;
     nt_svc_table0[NT_SVC_NTFREEVIRTUALMEMORY] = (void *)NtFreeVirtualMemory;
     nt_svc_argtable0[NT_SVC_NTFREEVIRTUALMEMORY] = 4 * 8;
     nt_svc_table0[NT_SVC_NTQUERYINFORMATIONTHREAD] = (void *)NtQueryInformationThread;

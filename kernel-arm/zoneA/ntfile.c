@@ -1433,6 +1433,26 @@ static int nt_oa_name_matches_ascii(const void *oa, const char *ascii) {
     return i == nchars;
 }
 
+// CHALICE C4-13: match a UNICODE_STRING* (ValueName -- NOT an ObjectAttributes
+// wrapper, unlike nt_oa_name_matches_ascii above) case-SENSITIVE, exact
+// length -- box64's RegQueryValueExA always passes a literal ASCII value
+// name ("CP 4030"/"CP 4039"/"CP 403A", exact casing including the space
+// and uppercase hex letter), so no case-fold is needed or wanted here.
+static int nt_us_name_matches_ascii(const void *us, const char *ascii) {
+    if (!us) return 0;
+    const u8 *p = (const u8 *)us;
+    u16b wlen_bytes = *(const u16b *)(p + US_LENGTH_OFF);
+    const u16b *wbuf = *(const u16b **)(p + US_BUFFER_OFF);
+    if (!wbuf) return 0;
+    u32b nchars = wlen_bytes / 2;
+    u32b i = 0;
+    for (; ascii[i]; i++) {
+        if (i >= nchars) return 0;
+        if ((char)wbuf[i] != ascii[i]) return 0;
+    }
+    return i == nchars;
+}
+
 long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttributes) {
     (void)DesiredAccess;
     // CHALICE C4-6: the ONE registry key wow64.dll's get_cpu_dll_name()
@@ -1444,6 +1464,17 @@ long NtOpenKey(void **KeyHandle, unsigned long DesiredAccess, void *ObjectAttrib
         if (nt_dispatch_log_enabled) {
             puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
             puts(" -> wow64-cpu-backend dummy handle\n");
+        }
+        return STATUS_SUCCESS;
+    }
+    // CHALICE C4-13: the CentralProcessor\0 key -- box64-for-WOW64's
+    // DetectHostCpuFeatures (hostext_wine.c) RegOpenKeyExA's this key then
+    // reads CP 4030/4039/403A off it (NtQueryValueKey branch below).
+    if (nt_oa_name_matches_ascii(ObjectAttributes, "\\Registry\\Machine\\Hardware\\Description\\System\\CentralProcessor\\0")) {
+        if (KeyHandle) *KeyHandle = (void *)NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtOpenKey name="); nt_log_object_attributes_name(ObjectAttributes);
+            puts(" -> centralprocessor dummy handle\n");
         }
         return STATUS_SUCCESS;
     }
@@ -1484,6 +1515,43 @@ long NtQueryValueKey(void *KeyHandle, void *ValueName, unsigned long KeyValueInf
         }
         if (nt_dispatch_log_enabled) {
             puts("CHALICE: NtQueryValueKey wow64-cpu-backend -> "); puts(backend_name); puts("\n");
+        }
+        return STATUS_SUCCESS;
+    }
+    // CHALICE C4-13: the CentralProcessor\0 key's 3 real ID-register values
+    // -- "CP 4030"/"CP 4039"/"CP 403A" (box64 hostext_wine.c ground truth,
+    // ntids.h receipt), each a REG_QWORD raw mrs dump (nt_read_id_aa64isar0/
+    // _mmfr1/_mmfr2, ntsvc.c, real EL1 register reads -- not hand-picked).
+    // Any OTHER value name under this key (real Windows-on-ARM64 answers
+    // several more CP-xxxx entries box64 never reads) -> NOT_FOUND, same
+    // "no hive beyond what's needed" contract as every other key here.
+    if (KeyHandle == (void *)NT_REGISTRY_CENTRALPROCESSOR_KEY_HANDLE) {
+        u64b value = 0;
+        int found = 1;
+        if (nt_us_name_matches_ascii(ValueName, "CP 4030"))      value = nt_read_id_aa64isar0();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 4039")) value = nt_read_id_aa64mmfr1();
+        else if (nt_us_name_matches_ascii(ValueName, "CP 403A")) value = nt_read_id_aa64mmfr2();
+        else found = 0;
+        if (!found) {
+            if (ResultLength) *ResultLength = 0;
+            if (nt_dispatch_log_enabled) {
+                puts("CHALICE: NtQueryValueKey centralprocessor name="); nt_log_unicode_string(ValueName);
+                puts(" -> NOT_FOUND\n");
+            }
+            return STATUS_OBJECT_NAME_NOT_FOUND;
+        }
+        u32b need = 12 + 8;   // TitleIndex(4)+Type(4)+DataLength(4)+QWORD data(8)
+        if (ResultLength) *ResultLength = need;
+        if (KeyValueInformation && Length >= need) {
+            u8 *out = (u8 *)KeyValueInformation;
+            wr32(out + 0, 0);          // TitleIndex
+            wr32(out + 4, (u32b)REG_QWORD);
+            wr32(out + 8, 8);          // DataLength
+            wr64(out + 12, value);
+        }
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtQueryValueKey centralprocessor name="); nt_log_unicode_string(ValueName);
+            puts(" -> "); puthex(value); puts("\n");
         }
         return STATUS_SUCCESS;
     }
