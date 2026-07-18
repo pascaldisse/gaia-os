@@ -186,10 +186,16 @@ QEMU_SERIAL="${GAIA_SERIAL:-mon:stdio}"
 # via build.sh, so widening it here needs no gate-script edits ("fix the
 # gate's invocation, not the checks").
 QEMU_MEM="${GAIA_QEMU_MEM:-4G}"
+# CHALICE C4-12 leg-12: GAIA_QEMU_CPU (default cortex-a72, unchanged behavior)
+# -- lets isolated probes try -cpu max to test whether Box64's dynarec
+# opcode-table gating (leg-11's null-slot fault) is a host-CPU-feature gap.
+# Canonical gates never set this (inherit the default), same convention as
+# GAIA_QEMU_MEM/GAIA_SERIAL/GAIA_DISPLAY above.
+QEMU_CPU="${GAIA_QEMU_CPU:-cortex-a72}"
 # GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
 # harness that attaches QEMU to stdio; gate scripts run build.sh themselves).
 [ -n "${GAIA_NO_RUN:-}" ] && { echo "build ok (GAIA_NO_RUN set, skipping QEMU)"; exit 0; }
-exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m "$QEMU_MEM" \
+exec qemu-system-aarch64 -M virt,gic-version=3 -cpu "$QEMU_CPU" -m "$QEMU_MEM" \
     -global virtio-mmio.force-legacy=false \
     -drive if=none,file=disk.img,format=raw,id=hd \
     -device virtio-blk-device,drive=hd \
