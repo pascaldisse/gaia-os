@@ -371,7 +371,7 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     // that same stack slot on the next delivery before overwriting it.
     static unsigned char prior_context[ARM64_CONTEXT_SIZE];
     static u64 prior_context_addr;
-    static int prior_context_valid;
+    static int prior_context_valid, context_return_logged;
     u64 ec = (esr >> 26) & 0x3f, status = 0, params = 0, dispatcher, stack;
     u32 insn = 0;
     int known_guest = nt_image_resolve(elr, (char[1]){0}, 1, &(u64){0}) ||
@@ -394,9 +394,9 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     if (!dispatcher) return 0;
     // The prior dispatcher stack is still live at this point.  This is the
     // exact CONTEXT bytes RtlRestoreContext was handed in the prior pass.
-    u64 prior_slot = (sp_orig & ~15ULL) - ARM64_EXCEPTION_STACK;
-    if (prior_context_valid && prior_slot == prior_context_addr) {
-        unsigned char *after = (unsigned char *)prior_slot;
+    if (prior_context_valid && !context_return_logged) {
+        unsigned char *after = (unsigned char *)prior_context_addr;
+        context_return_logged = 1;
         puts("CHALICE CONTEXT RETURN: flags "); puthex(*(u32 *)(prior_context + 0));
         puts("->"); puthex(*(u32 *)(after + 0));
         puts(" pc "); puthex(*(u64 *)(prior_context + ARM64_CONTEXT_PC_OFF));
