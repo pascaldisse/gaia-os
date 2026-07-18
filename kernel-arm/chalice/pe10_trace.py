@@ -101,9 +101,16 @@ class RSP:
         return bytes.fromhex(text)
 
     def breakpoint(self, address):
+        # Z1 avoids patching a JIT page whose writable/executable treatment is
+        # part of the experiment.  Fall back to Z0 on a stub without hardware
+        # breakpoints; both packets are standard RSP and neither needs gdb.
+        reply = self.command(f"Z1,{address:x},4")
+        if reply == "OK":
+            return "Z1"
         reply = self.command(f"Z0,{address:x},4")
         if reply != "OK":
-            fail(f"Z0 {address:#x}: {reply!r}")
+            fail(f"Z1/Z0 {address:#x}: {reply!r}")
+        return "Z0"
 
     def close(self):
         self.sock.close()
@@ -300,8 +307,8 @@ def main():
         }
         print("TRACE BASES " + " ".join(f"{k}=0x{v:x}" for k, v in bases.items()))
         print("TRACE BREAKPOINTS " + " ".join(f"{k}=0x{v:x}" for k, v in points.items()))
-        for address in points.values():
-            rsp.breakpoint(address)
+        for name, address in points.items():
+            print(f"TRACE BREAKPOINT {name} method={rsp.breakpoint(address)}")
 
         delivery_context = None
         restore_context = None
