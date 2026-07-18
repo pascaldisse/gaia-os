@@ -10,15 +10,16 @@ and run. Donors cloned as read-only quarry (gitignored): `wine/`, `reactos/`,
 
 ---
 
-## STATE — CURRENT: C4-16 CPU registry floor. Runtime `01dfce9`; live 2026-07-18.
+## STATE — CURRENT: C4-17 JIT frontier classified. Runtime `3c38eea`; live 2026-07-18.
 
-- C4-16 → `NtOpenKeyEx` HKLM/root-relative CentralProcessor\0 → success; \1 → `STATUS_OBJECT_NAME_NOT_FOUND`; `NtQueryValueKey(KeyValuePartialInformation)` → all 11 FEX CP REG_QWORD values, raw EL1 `mrs`; CP packing receipt → `FEX-MAP.md`.
-- proof → `pe10 fex`: `starting FEX`; opens CentralProcessor\0; reads CP 4030/4020/4021/4031/4038/403A/4024/4039/4032/5801/4000; enumeration opens \1 → NOT_FOUND; **past FetchHostFeatures / ForcedAssert**.
-- new frontier → generated JIT code: `ec=0`, `elr=lr=0x2681B02F0`, unmapped; `far=0x2909C0008`; mapper candidate `libwow64fex.dll+0x1B94C8` → embedded `sprintf` (`External/tiny-json/tiny-json.c:640`), not fault PC. § `FEX-MAP.md`
+- raw data abort → `ESR_EL1=0x96000006`; EC=`0x25`; ISS=`0x6`; ELR=`libwow64fex.dll+0x148A0` → `FEXCore::LookupCache::FindBlock`; FAR=`0x2909C0008` → reserve-commit arena, reservation `[0x2881C0000, +0x9800000)`, initially RESERVED.
+- demand commit → seen; fired; 2MB backing + retry; proof → FAR class COMMITTED on later fault. C4-15 gate correct; no EC decoder defect.
+- next frontier → ESR=`0x02000000`; EC=`0`; ISS=`0`; ELR=`0x2681B02F0`; instruction=`0xD4400000` (`hlt #0`); JIT dispatcher allocation `[0x2681B000,+0x4000)` COMMITTED; FAR stale prior abort. FEX `Dispatcher.cpp:379-385` signal-return HLT → Windows SEH/`BTCpuResetToConsistentState` delivery absent; not demand-commit.
+- C4-17 fix → fault forensic contract: raw ESR/EC/ISS/SPSR/instruction; reusable allocator classifier; demand decision trace. commits `09628c7`, `acfcf85`, `3c38eea`.
 - regressions → `pe8_gate` PASS (`ret=78`); `pe9_gate` PASS (wowbox64 + FEX); `ramfb_gate` PASS; leak check → none.
 - wowbox64 → parked fallback; prior `elr=0/far=0` JIT-cache fault.
 
-Next → instrument generated-code entry/context; resolve new floor gap; then `hello8_x86` WriteFile via 32→64 thunk.
+Next → Windows synchronous-exception delivery → FEX `BTCpuResetToConsistentState`; then `BTCpuSimulate` → hello8 x86 bytes → WriteFile 32→64 thunk.
 
 ---
 
