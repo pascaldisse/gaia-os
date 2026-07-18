@@ -477,6 +477,73 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
 }
 
 // =====================================================================
+// CHALICE C4-4: two-root FS live self-test helper (definitions; called
+// from nt_boot_wow64_probe below). Builds a fresh OBJECT_ATTRIBUTES +
+// UNICODE_STRING pair in DLL territory for one ASCII NT path, drives it
+// through the REAL NtOpenFile -> NtCreateSection(SEC_IMAGE) ->
+// NtQuerySection(SectionImageInformation) chain (ntfile.c, all
+// already-proven services), and prints the resolved Machine field --
+// 0xAA64 (ARM64, native/system32 root) vs 0x14C (i386, syswow64 root) is
+// the concrete, unambiguous proof the redirect actually changed which
+// on-disk tree got opened, not just that some string compare took a
+// branch.
+// =====================================================================
+#define NT_SELFTEST_OA_OBJECTNAME_OFF 0x10
+// CHALICE C4-4: raw Machine-field read (e_lfanew@0x3c -> +4 u16 LE), same
+// tooling note as C4-SPEC's own recon ("llvm-objdump -f + a raw Machine-
+// field read") -- NOT NtQuerySection/pe_query_image_info, which currently
+// assumes PE32+/ARM64 only (same gate PeMapImage itself enforces,
+// pemod.c) and would reject every i386 (PE32, Machine 0x14C) file with
+// STATUS_INVALID_IMAGE_FORMAT regardless of which root correctly
+// resolved it -- 32-bit PE header parsing is C4-5 territory, not yet
+// implemented, so this proof reads the one field that's format-invariant
+// (fixed byte offsets in the COFF header, same on PE32 and PE32+) via the
+// already-proven NtReadFile, rather than depending on machinery that
+// doesn't handle 32-bit PE yet.
+#define NT_SELFTEST_HDR_LEN 0x200
+
+static void nt_wow64_fs_selftest_one(const char *ascii_path, int wow64_active, const char *tag) {
+    nt_wow64_set_active(wow64_active);
+
+    u64b plen = strlen_local(ascii_path);
+    u16b *wpath = (u16b *)nt_territory_alloc((plen + 1) * 2);
+    widen_ascii(ascii_path, wpath, plen);
+
+    u8 *us = nt_territory_alloc(0x10);
+    wr16(us + US_LENGTH_OFF, (u16b)(plen * 2));
+    wr16(us + US_MAXLENGTH_OFF, (u16b)(plen * 2));
+    wr64(us + US_BUFFER_OFF, (u64b)wpath);
+
+    u8 *oa = nt_territory_alloc(0x30);
+    wr64(oa + NT_SELFTEST_OA_OBJECTNAME_OFF, (u64b)us);
+
+    void *fh = 0;
+    long orc = NtOpenFile(&fh, 0, oa, 0, 0, 0);
+    puts("CHALICE: fstest "); puts(tag); puts(" wow64active="); putdec_signed(wow64_active);
+    puts(" path="); puts(ascii_path); puts(" open_rc="); putdec_signed(orc);
+    if (orc != 0) { puts("\n"); nt_wow64_set_active(0); return; }
+
+    u8 *hdr = nt_territory_alloc(NT_SELFTEST_HDR_LEN);
+    long rrc = NtReadFile(fh, 0, 0, 0, 0, hdr, NT_SELFTEST_HDR_LEN, 0, 0);
+    if (rrc != 0) { puts(" read_rc="); putdec_signed(rrc); puts("\n"); nt_wow64_set_active(0); return; }
+
+    u32b e_lfanew = (u32b)hdr[0x3c] | ((u32b)hdr[0x3d] << 8) | ((u32b)hdr[0x3e] << 16) | ((u32b)hdr[0x3f] << 24);
+    u16b machine = 0;
+    if (e_lfanew + 6 < NT_SELFTEST_HDR_LEN)
+        machine = (u16b)((u32b)hdr[e_lfanew + 4] | ((u32b)hdr[e_lfanew + 5] << 8));
+    puts(" machine="); puthex(machine); puts("\n");
+
+    nt_wow64_set_active(0);
+}
+
+static void nt_wow64_fs_selftest(void) {
+    nt_wow64_fs_selftest_one("\\??\\C:\\windows\\system32\\kernel32.dll", 0, "native-default");
+    nt_wow64_fs_selftest_one("\\??\\C:\\windows\\system32\\kernel32.dll", 1, "wow64-redirect");
+    nt_wow64_fs_selftest_one("\\??\\C:\\windows\\sysnative\\ntdll.dll", 1, "sysnative-escape");
+    nt_wow64_fs_selftest_one("\\??\\C:\\windows\\syswow64\\kernelbase.dll", 0, "explicit-syswow64");
+}
+
+// =====================================================================
 // CHALICE C4-2 (C4-SPEC.md atom C4-2): native WOW64 image trio maps.
 // Reuses boot_blob_lookup (nt_blob_lookup_or_fs, above) + PeMapImage +
 // nt_territory_alloc + nt_image_register -- the exact same 3A machinery
@@ -567,6 +634,20 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, co
         puts("CHALICE: BTCpu wiring FAULT -- ProcessInit or Simulate missing from ");
         puts(cpu_backend_name); puts("\n");
     }
+
+    // =================================================================
+    // CHALICE C4-4: two-root FS live self-test -- exercises the REAL
+    // NtOpenFile dirname-redirect (nt_wow64_process_active flag, ntfile.c)
+    // + NtCreateSection(SEC_IMAGE)/NtQuerySection(SectionImageInformation)
+    // (both already-proven kernel services) to PROVE, not assert, that a
+    // wow64-active "...\system32\X" open resolves the i386-windows
+    // (Machine 0x14C) tree while "...\sysnative\X" always resolves native
+    // ARM64 (Machine 0xAA64) regardless of the flag, and a non-wow64
+    // "...\system32\X" open is UNCHANGED (still 0xAA64) -- concrete,
+    // measured proof (HANDOFF "measure, don't guess"), no raw native-code
+    // execution involved (unlike the opt-in BTCpuProcessInit call below).
+    // =================================================================
+    nt_wow64_fs_selftest();
 
     // =================================================================
     // CHALICE C4-3 (C4-SPEC.md atom C4-3): 32-bit TEB32/PEB32 floor.

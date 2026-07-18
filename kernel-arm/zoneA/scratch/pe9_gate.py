@@ -104,6 +104,18 @@ required = [
     # ---- pe9/C4-4 (first slice) -- BTCpu export resolution, default backend ----
     "CHALICE: BTCpu export scan name=wowbox64.dll",
     "CHALICE: BTCpu wired",
+    # ---- pe9/C4-4 (this slice) -- two-root FS live self-test: real
+    # NtOpenFile dirname-redirect + raw Machine-field read (NtReadFile,
+    # format-invariant -- NtQuerySection/pe_query_image_info can't parse
+    # 32-bit PE yet, C4-5 territory). All 4 must show the CORRECT arch
+    # resolved, not just "open succeeded" (default/non-wow64 %system32%
+    # stays 0xAA64 unchanged; wow64-active %system32% redirects to 0x14C;
+    # sysnative always escapes to 0xAA64 even wow64-active; explicit
+    # syswow64 always resolves 0x14C).
+    "CHALICE: fstest native-default wow64active=0 path=\\??\\C:\\windows\\system32\\kernel32.dll open_rc=0 machine=0x000000000000AA64",
+    "CHALICE: fstest wow64-redirect wow64active=1 path=\\??\\C:\\windows\\system32\\kernel32.dll open_rc=0 machine=0x000000000000014C",
+    "CHALICE: fstest sysnative-escape wow64active=1 path=\\??\\C:\\windows\\sysnative\\ntdll.dll open_rc=0 machine=0x000000000000AA64",
+    "CHALICE: fstest explicit-syswow64 wow64active=0 path=\\??\\C:\\windows\\syswow64\\kernelbase.dll open_rc=0 machine=0x000000000000014C",
     # ---- pe9/C4-3 -- TEB32/PEB32 floor (structures built+wired, no guest
     # code runs yet) -- must appear before this invocation's own "pe9 ret=0".
     "CHALICE: WOW64 teb32/peb32 built",
