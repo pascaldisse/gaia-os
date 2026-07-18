@@ -34,6 +34,15 @@ static void *nt_zalloc(u64b size) {
 
 static long NtStub(void) { return STATUS_NOT_IMPLEMENTED; }
 
+// CHALICE C4-25: stashed by nt_wow64_cpureserved_set_context (below, ~line
+// 1520 this file) so NtRaiseException (defined earlier in the file, can't
+// forward-reference that function's own #defines) can dump the LIVE guest
+// x86 I386_CONTEXT (real Eip/Esp/etc, continuously updated in-place by
+// BTCpuSetContext with NO syscall round-trip -- C4-11 receipt) at the exact
+// moment of a RAISE#1 STATUS_ILLEGAL_INSTRUCTION -- the guest-content
+// frontier measurement C4-24 deferred.
+static u8 *nt_wow64_cpureserved_dbg;
+
 // IO_STATUS_BLOCK: union{NTSTATUS Status; PVOID Pointer;} (8B, PVOID-sized
 // on LP64) + ULONG_PTR Information (8B) = 16B total (HANDOFF/A3 receipt:
 // "IO_STATUS_BLOCK(Information=bytes), 16 B struct").
@@ -173,6 +182,54 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
             puts(" ctx=NULL");
         }
         puts("\n");
+        // CHALICE C4-25: RAISE#1 STATUS_ILLEGAL_INSTRUCTION guest-content
+        // frontier -- ctx.pc above is ALWAYS libwow64fex+0x34E4 (BTCpuSimulate
+        // +0x10, FEX's RtlCaptureContext-anchored native unwind target,
+        // Module.cpp:757-777) regardless of where the real x86 fault is; it
+        // carries zero guest information by FEX's own design (memcpy'd over
+        // the real native Context right before this syscall,
+        // Module.cpp:947). The REAL guest Eip lives in the WOW64_CPURESERVED
+        // block's embedded I386_CONTEXT (TEB64.TlsSlots[WOW64_TLS_
+        // CPURESERVED]) -- BTCpuResetToConsistentStateImpl (Module.cpp:momoized
+        // 871-946) reconstructs WowContext from the live FEXCore thread
+        // state then calls BTCpuSetContext(...) to write it back into THIS
+        // exact memory (Module.cpp:871-946), with NO NtSetInformationThread
+        // syscall round-trip (confirmed live: no id=13 SET call appears
+        // between the last BTCpuSimulate entry and this RAISE#1) -- read it
+        // directly.
+        if (code == 0xC000001DUL && nt_raise_trace_count == 1 && nt_wow64_cpureserved_dbg) {
+            // Offsets duplicated from I386_CONTEXT (winnt.h _CONTEXT, x86) --
+            // canonical CTX32_* #defines live later in this file (~line 918),
+            // can't forward-reference; same duplication convention this file
+            // already uses for WOW64_CPURESERVED_HDR_SIZE.
+            u8 *ictx = nt_wow64_cpureserved_dbg + 4; // +4 == WOW64_CPURESERVED_HDR_SIZE (Flags+Machine)
+            u32b g_edi = rd32(ictx + 0x9C), g_esi = rd32(ictx + 0xA0), g_ebx = rd32(ictx + 0xA4);
+            u32b g_edx = rd32(ictx + 0xA8), g_ecx = rd32(ictx + 0xAC), g_eax = rd32(ictx + 0xB0);
+            u32b g_ebp = rd32(ictx + 0xB4), g_eip = rd32(ictx + 0xB8), g_cs  = rd32(ictx + 0xBC);
+            u32b g_efl = rd32(ictx + 0xC0), g_esp = rd32(ictx + 0xC4), g_ss  = rd32(ictx + 0xC8);
+            puts("CHALICE C4-25 GUEST CTX: Eip="); puthex(g_eip);
+            char gname[64]; u64b goff = 0;
+            if (g_eip && nt_image_resolve((u64b)g_eip, gname, sizeof(gname), &goff)) {
+                puts(" ("); puts(gname); puts("+"); puthex(goff); puts(")");
+            }
+            puts(" Esp="); puthex(g_esp); puts(" Eax="); puthex(g_eax);
+            puts(" Ecx="); puthex(g_ecx); puts(" Edx="); puthex(g_edx);
+            puts(" Ebx="); puthex(g_ebx); puts(" Ebp="); puthex(g_ebp);
+            puts(" Esi="); puthex(g_esi); puts(" Edi="); puthex(g_edi);
+            puts(" Cs="); puthex(g_cs); puts(" Ss="); puthex(g_ss);
+            puts(" EFlags="); puthex(g_efl); puts("\n");
+            // Guest-memory hexdump [Eip-16, Eip+32) -- safe classified read
+            // only (nt_fault_read32, ntfile.c), 4B at a time, 12 words = 48B.
+            puts("CHALICE C4-25 GUEST BYTES @Eip-16..+32:");
+            for (long w = -16; w < 32; w += 4) {
+                u64b a = (u64b)(u32b)((long)g_eip + w);
+                u32b word;
+                puts(" ");
+                if (nt_fault_read32(a, &word)) puthex(word);
+                else puts("????????");
+            }
+            puts("\n");
+        }
     }
     // CHALICE C4-24 fix (STATUS_INVALID_DISPOSITION loop) -- donor-grounded
     // in wine/dlls/ntdll/exception.c:239-370 dispatch_exception(): the ONLY
@@ -956,6 +1013,7 @@ void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp) {
 void nt_wow64_cpureserved_set_context(void *cpureserved_v, unsigned long eip, unsigned long esp) {
     u8 *cr = (u8 *)cpureserved_v;
     if (!cr) return;
+    nt_wow64_cpureserved_dbg = cr;   // CHALICE C4-25: stash for NtRaiseException's RAISE#1 guest-Eip dump
     // literal 4 == WOW64_CPURESERVED_HDR_SIZE (Flags+Machine, defined later
     // in this file where nt_build_wow64_teb32 lives -- can't forward-
     // reference a #define, so the value is duplicated here, not the meaning).
