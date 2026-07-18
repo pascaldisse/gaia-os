@@ -101,15 +101,12 @@ class RSP:
         return bytes.fromhex(text)
 
     def breakpoint(self, address):
-        # Z1 avoids patching a JIT page whose writable/executable treatment is
-        # part of the experiment.  Fall back to Z0 on a stub without hardware
-        # breakpoints; both packets are standard RSP and neither needs gdb.
-        reply = self.command(f"Z1,{address:x},4")
-        if reply == "OK":
-            return "Z1"
+        # Z0 is QEMU's software-breakpoint packet.  Z1 is deliberately kept
+        # as a supported alternative for rigs with hardware BP support, but
+        # QEMU virt's remote stub acknowledges Z0 reliably for all five sites.
         reply = self.command(f"Z0,{address:x},4")
         if reply != "OK":
-            fail(f"Z1/Z0 {address:#x}: {reply!r}")
+            fail(f"Z0 {address:#x}: {reply!r}")
         return "Z0"
 
     def close(self):
@@ -308,7 +305,8 @@ def main():
         print("TRACE BASES " + " ".join(f"{k}=0x{v:x}" for k, v in bases.items()))
         print("TRACE BREAKPOINTS " + " ".join(f"{k}=0x{v:x}" for k, v in points.items()))
         for name, address in points.items():
-            print(f"TRACE BREAKPOINT {name} method={rsp.breakpoint(address)}")
+            method = rsp.breakpoint(address)
+            print(f"TRACE BREAKPOINT {name} method={method} memory={rsp.memory(address, 4).hex()}")
 
         delivery_context = None
         restore_context = None
