@@ -1,3 +1,75 @@
+## State refresh (2026-07-18, C3c-2q) -- double-relocation SOURCE PINNED + FIXED: NtMapViewOfSection was applying kernel-side DIR64 relocs on TOP of the stock Wine-built guest ntdll.dll's own unconditional self-relocation pass -- wcslen fault at ntdll+0x7857C CLEARED, boot now reaches `CHALICE: kernel32 speaks` + pe7 ret=77 (this atom's stated target)
+HEAD `3ba1926`. PEMAP instrument (pemod.c, gated on tag containing
+"kernel") + fs-open buffer-pointer log (ntfile.c, temporary, both since
+removed) proved kernelbase.dll's ENTRY COUNT into PeMapImage = exactly
+ONE this whole boot (fs-open buf=0x58630000, alloc=0x59640000,
+image_base=0x180000000, delta=0xFFFFFFFED9640000) and the map-time
+reloc application at RVA 0x11cc18 was CORRECT AND SINGLE:
+before=0x18011DA50 (pristine file value) -> after=0x5975DA50
+(=kb_base+0x11DA50, exactly file+delta, verified by direct arithmetic) --
+so (a) blob-cache-pre-relocated and (b) reloc-loop-double-applies-in-one-
+call (the two hypotheses this atom was framed around) are BOTH FALSIFIED
+by the map-time measurement. The corruption happens strictly AFTER
+NtMapViewOfSection returns: the C3c-2p fault dump's live re-read of the
+SAME address shows 0xFFFFFFFF32D9DA50 = exactly `old_after_value + delta`
+(same delta, verified by direct arithmetic) -- a SECOND, independent
+relocation pass applied post-map by something other than our own
+PeMapImage entry log (which never fires a second time). Read the wine/
+donor (present on disk, gitignored) directly: `dlls/ntdll/loader.c`
+`build_module` (~line 2281) calls `perform_relocations(*module, nt,
+map_size)` UNCONDITIONALLY for every mapped module (native or builtin),
+and `perform_relocations` (~line 2176) triggers on `if (module == base)
+return STATUS_SUCCESS;` -- i.e. it compares the ACTUAL mapped address
+against the image's own OptionalHeader.ImageBase, NOT our
+NtMapViewOfSection's return status. Cross-checked against
+`dlls/ntdll/unix/virtual.c`: `virtual_relocate_module` (real Wine's
+equivalent kernel-side reloc function) is called ONLY from two special
+self-bootstrap paths in `unix/loader.c` (`load_ntdll`/`load_apiset_dll`,
+guarded on `status == STATUS_IMAGE_NOT_AT_BASE`) -- NEVER from the normal
+DLL-load path every other module (kernelbase, kernel32, ...) takes. Real
+Wine's Unix-side NtMapViewOfSection therefore NEVER relocates SEC_IMAGE
+maps for ordinary DLLs; that is unconditionally the PE-side loader's own
+job. FIX (source-only, `kernel-arm/zoneA/{pemod.c,pemod.h,ntfile.c,
+ntboot.c}`): added an `apply_relocs` parameter to `PeMapImage` --
+`NtMapViewOfSection` (ntfile.c) now passes `apply_relocs=0` (matches real
+Wine: kernel never relocates ordinary SEC_IMAGE maps, guest's own
+`build_module`/`perform_relocations` does it once); `PeRun` (pemod.c,
+slice-1 standalone exes with no Wine loader present) and
+`nt_boot_process`'s own direct ntdll+exe Phase-0 maps (ntboot.c, mirrors
+`unix/loader.c`'s `load_ntdll` bootstrap-self-reloc precedent) keep
+`apply_relocs=1`. mini.dll (pe4 gate) verified unaffected by inspection
+(`chalice/hello4.c`'s `find_export` computes every address as
+`base+RVA` directly off the LIVE mapped base, never assumes
+kernel-applied relocation; `chalice/minidll.c`'s `MiniAdd` has no
+absolute-pointer data references) -- confirmed live, pe4 ret=60 still
+green. LIVE RESULT (pe7, HEAD `3ba1926`): wcslen fault at ntdll+0x7857C
+is GONE (zero `CHALICE FAULT` lines in the full serial capture). Boot
+walks: stock ntdll mapped -> ldr self-registration -> ApiSetMap wired ->
+stock thunk enters -> kernel32.dll opened/mapped -> kernelbase.dll
+opened/mapped -> hello6.exe(+.manifest) opened -> NtInitializeNlsFiles ->
+NtQueryDefaultLocale x2 -> NtGetNlsSectionPtr (l_intl.nls, sortdefault.nls)
+-> registry NtCreateKey x4 (`\Registry\Machine`, `...\Control\Nls`,
+`...\Time Zones`, `Codepage`) + NtSetValueKey x3 (ACP/OEMCP/MACCP, all
+SUCCESS) -> **`CHALICE: kernel32 speaks`** -> **`pe7 ret=77`** -- this
+atom's exact stated target, reached clean, no crash, no hang. This reloc
+fix is architecture-general (not kernelbase-specific) so it applies to
+EVERY DLL mapped via NtMapViewOfSection, matching the task's prediction
+("broader progress" beyond just kernelbase). No-regression gate green:
+`scratch/chalice_gate.py` (all 16 required-green lines OK, including
+`pe4 ret=60` -- shared NtMapViewOfSection path unaffected) +
+`scratch/ramfb_gate.py` (all 7 checks OK, screendump corner/bar pixels
+exact, shell answered same boot). No qemu leaks (pgrep clean
+before/after every drive). Squashed to one clean commit (`3ba1926`) --
+source-only (pemod.c/pemod.h/ntfile.c/ntboot.c); build artifacts left
+uncommitted per convention. NEXT ATOM: `pe7 ret=77` is a clean
+kernel32.dll-speaks milestone, not yet `T:/>` shell-survives-fully -- next
+frontier is whatever kernel32.dll or hello6.exe itself needs past this
+point (no fault currently blocks it; next gap, if any, needs a fresh pe7
+trace read past this atom's stopping point since this atom's target was
+explicitly "how far now", already reached).
+
+---
+
 ## State refresh (2026-07-18, C3c-2p) -- PURE DIAGNOSTIC: wcslen-fault register/backtrace dump pins cause to bucket (b), pemod/kernelbase-mapping data bug (NOT index math, NOT token/SID)
 HEAD `8ee2e0d`. Extended sync_handler (kmain.c, source-only, +ntfile.c/.h
 helper) with a real x29 fp-chain backtrace + targeted resolve_line calls
