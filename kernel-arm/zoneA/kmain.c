@@ -38,9 +38,32 @@ static void putdec(u64 v) {
 #define NT_RAM_BLOCKS 4ULL                                   // 4 * 1GB = 4GB (GAIA_QEMU_MEM default)
 #define NT_RAM_TOP    (NT_RAM_BASE + NT_RAM_BLOCKS * 0x40000000ULL)
 static u64 l1_table[512] __attribute__((aligned(4096)));
+// CHALICE C4-28 -- guard page(s) for [0x0,0x200000): mmu_on used to block-map
+// the WHOLE first 1GB (incl. address 0) as valid device nGnRnE, so a guest
+// null-pointer dereference silently read real device memory instead of
+// faulting. FEX's own GuestSignal_SIGSEGV dispatcher marker (FEXCore
+// Dispatcher.cpp:414-430, "Force a SIGSEGV by loading zero") depends on
+// address 0 being genuinely unmapped, exactly like real hardware/Windows;
+// on this floor it silently no-op'd, execution fell through into the
+// immediately-following (Linux-signal-only, never Windows-serviced)
+// ThreadPauseHandlerAddress/PauseReturnInstruction block, and THAT hlt is
+// what previously misreported as dispatcher+0x2F0/"SignalHandlerReturnAddress"
+// (see C4-28 HANDOFF/FEX-MAP receipt -- that identity was mis-pinned; the
+// real SignalHandlerReturnAddress/RT pair lives at dispatcher+0x218/+0x21C).
+// l1_table[0] now points at this L2 table instead of being a 1GB block
+// descriptor directly: entry[0] (covering [0x0,0x200000)) stays fully
+// invalid; entries[1..511] keep the identical device-nGnRnE 2MB block
+// attributes the removed 1GB block used, so GICD(0x08000000)/GICR(0x080A0000)
+// /UART(0x09000000)/VIRTIO(0x0a000000) -- all >= 2MB -- are unaffected.
+static u64 l2_dev_table[512] __attribute__((aligned(4096)));
 
 static void mmu_on(void) {
-    l1_table[0] = 0x00000000ULL | (0ULL << 2) | (1ULL << 10) | 1ULL;               // device nGnRnE
+    l2_dev_table[0] = 0;                                                          // [0x0,0x200000) unmapped -- guard page
+    for (u64 i = 1; i < 512; i++) {
+        u64 addr = i * 0x200000ULL;
+        l2_dev_table[i] = addr | (0ULL << 2) | (1ULL << 10) | 1ULL;              // device nGnRnE, L2 block
+    }
+    l1_table[0] = (u64)l2_dev_table | 0b11ULL;                                   // L1 table entry -> l2_dev_table
     for (u64 i = 0; i < NT_RAM_BLOCKS; i++) {
         u64 base = NT_RAM_BASE + i * 0x40000000ULL;
         l1_table[1 + i] = base | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL;  // normal WBWA ISH
