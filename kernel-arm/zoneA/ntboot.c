@@ -476,6 +476,41 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         puthex((u64b)(*(volatile u32b *)((u8 *)wow64_wire.peb32 + PEB32_IMAGEBASEADDRESS_OFF)));
         puts("\n");
 
+        // CHALICE C4-29 THE fix (MEASURE step 1 receipt: FEX's own
+        // BTCpuProcessInit, Source/Windows/WOW64/Module.cpp:550-551,
+        // unconditionally reads LdrSystemDllInitBlock->ntdll_handle and
+        // passes it straight into HandleImageMap->RtlImageNtHeader with
+        // NO null check -- live-caught this task, caller=libwow64fex.dll+
+        // 0x169B40, x0=0). Donor-grounded (wine dlls/ntdll/unix/loader.c:
+        // 1595-1633 load_ntdll_wow64_functions): on real Wine this struct
+        // is populated by the UNIX-SIDE process loader mapping the 32-bit
+        // ntdll.dll a SECOND time (after the native one) purely to walk
+        // its export table -- zero guest execution, pure floor/host-side
+        // step, exactly this function's own Phase-0 doctrine (native
+        // ntdll+exe already mapped this same C-direct way, above). C4-26
+        // wrote the populate logic (ntfile.c, reused verbatim below) but
+        // only wired it behind an NtMapViewOfSection hook -- C4-26 AND
+        // this task's own fresh measurement both confirm that syscall
+        // path never fires for a 32-bit ntdll on pe10's boot (no real
+        // 32-bit loader chain ever runs; the C-seeded WOW64 entry skips
+        // straight to BTCpuSimulate). Fix: do the Wine-equivalent
+        // unix-side mapping HERE, Phase-0, C-direct -- mirrors the native
+        // ntdll/exe maps above exactly, no syscall round-trip needed.
+        {
+            const unsigned char *ntdll32_bytes; u64b ntdll32_len;
+            u64b ntdll32_base = 0, ntdll32_size = 0, ntdll32_entry = 0;
+            if (boot_blob_lookup("syswow64/ntdll.dll", &ntdll32_bytes, &ntdll32_len) &&
+                PeMapImage(ntdll32_bytes, ntdll32_len, "pe10-ntdll32", nt_territory_alloc, 0, 1,
+                           &ntdll32_base, &ntdll32_size, &ntdll32_entry) == 0) {
+                nt_image_register("syswow64/ntdll.dll", ntdll32_base, ntdll32_size, ntdll32_entry, 1);
+                nt_wow64_populate_init_block_if_ntdll32("ntdll.dll", ntdll32_base, ntdll32_size);
+                puts("CHALICE C4-29: syswow64 ntdll32 mapped base="); puthex(ntdll32_base);
+                puts(" size="); puthex(ntdll32_size); puts("\n");
+            } else {
+                puts("CHALICE C4-29: syswow64 ntdll32 map FAILED -- LdrSystemDllInitBlock stays unpopulated\n");
+            }
+        }
+
         puts("CHALICE: WOW64 signal wired teb64="); puthex((u64b)teb);
         puts(" WowTebOffset="); puthex((u64b)rd64(teb + 0x180c /* TEB64_WOWTEBOFFSET_OFF, ntsvc.c */));
         puts(" teb32="); puthex((u64b)wow64_wire.teb32);

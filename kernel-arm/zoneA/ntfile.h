@@ -133,6 +133,9 @@ int nt_blob_lookup_or_fs(const char *basename, const unsigned char **out_bytes, 
                           const char **out_name);
 void nt_image_register(const char *name, unsigned long base, unsigned long size,
                         unsigned long entry, int is_dll);
+// CHALICE C4-29: exposed for ntboot.c's own direct Phase-0 call (see
+// ntfile.c definition for the full donor-grounded receipt).
+void nt_wow64_populate_init_block_if_ntdll32(const char *name, unsigned long base32, unsigned long size32);
 
 // CHALICE C3c Atom 3C-2a: image-relative resolve for the exception-vector
 // fault dump (kmain.c sync_handler). See ntfile.c for contract.

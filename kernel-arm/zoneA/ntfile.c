@@ -1042,7 +1042,15 @@ long NtCreateSection(void **SectionHandle, unsigned long DesiredAccess, void *Ob
 // pLdrSystemDllInitBlock@0x50(8) pRtlpFreezeTimeBias@0x58(8) -- total
 // 0x60 (96B).
 // =====================================================================
-static void nt_wow64_populate_init_block_if_ntdll32(const char *name, u64b base32, u64b size32) {
+// CHALICE C4-29: no longer static -- ntboot.c's nt_boot_process now calls
+// this directly (Phase-0, C-side, matching Wine's own unix-side
+// load_ntdll_wow64_functions timing) instead of relying solely on the
+// NtMapViewOfSection hook below, which C4-29's own fresh measurement
+// confirmed still never fires on pe10's boot path (no 32-bit ntdll is
+// ever guest-mapped via that syscall -- see FEX-MAP.md C4-29). Both call
+// sites coexist: whichever fires first wins, the other is a harmless
+// (Machine-gated, name-gated) no-op re-check.
+void nt_wow64_populate_init_block_if_ntdll32(const char *name, u64b base32, u64b size32) {
     if (!name || !nt_streq_ci(name, "ntdll.dll")) return;
 
     // Machine check straight off the just-mapped image header (base32 is a
