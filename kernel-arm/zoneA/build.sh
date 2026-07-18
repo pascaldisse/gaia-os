@@ -194,9 +194,10 @@ QEMU_MEM="${GAIA_QEMU_MEM:-4G}"
 QEMU_CPU="${GAIA_QEMU_CPU:-cortex-a72}"
 # C4-20: optional QEMU gdbstub for the trace harness.  Empty is the default
 # and adds no QEMU argument, preserving every normal gate's behavior.
-# A nonempty socket waits for the harness before CPUs start.
+# `-S` pauses vCPUs until the harness sends RSP `c`; wait=off keeps the
+# socket's protocol server responsive immediately after accept.
 if [ -n "${GAIA_GDB_SOCKET:-}" ]; then
-    set -- "$@" -gdb "unix:${GAIA_GDB_SOCKET},server=on,wait=on"
+    set -- "$@" -S -gdb "unix:${GAIA_GDB_SOCKET},server=on,wait=off"
 fi
 # GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
 # harness that attaches QEMU to stdio; gate scripts run build.sh themselves).
