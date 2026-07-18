@@ -460,6 +460,255 @@ unsigned char *nt_high_territory_alloc(unsigned long size_of_image) {
 }
 
 // =====================================================================
+// CHALICE C4-9: RESERVE/COMMIT split (monad ruling, HANDOFF leg-8 waste
+// analysis -> leg-9 fix). Root cause fixed here: the LOW/HIGH territory
+// pools above always bumped+zeroed the FULL requested size regardless of
+// AllocationType, so a MEM_RESERVE-only call (no physical touch intended,
+// ever) cost exactly as much real territory as a MEM_COMMIT -- ~20x waste
+// measured live last leg (114 x 13MB Wine default-heap RESERVEs backing
+// only ~7.5MB of actual MEM_COMMIT touches).
+//
+// Design (every value parameterized w/ default, per IRON law):
+//   - RESERVATION ARENA: pure VA carve, zero physical cost. Lives ABOVE all
+//     physical RAM (NT_RAM_TOP tops out at 5GB under the 4G default +
+//     NT_HIGH_TERRITORY_LIMIT 0x140000000) at the 8GB mark, well inside the
+//     T0SZ=25 512GB VA ceiling (kmain.c mmu_on, C4-8) -- room to grow the
+//     default without ever colliding with physical-backed pools.
+//   - COMMIT: maps 2MB L2 block windows (4KB-granule level-2 leaf size) on
+//     demand, backed by bump-allocated HIGH-pool physical pages (reuses
+//     nt_high_territory_alloc above -- "physical backing bump-allocated
+//     from HIGH pool", ruling #2) -- so HIGH pool now serves two roles:
+//     legacy direct HIGH-pool callers (unchanged) AND arena commit backing.
+//   - Only the arena's OWN 1GB L1 slots get new L2 table descriptors
+//     (kmain.c nt_l1_install_table) -- RAM/device 1GB block descriptors
+//     mmu_on already installed are never touched.
+//
+// Semantics grounded in donor (wine/dlls/ntdll/unix/virtual.c, receipted
+// per-callsite below):
+//   - MEM_RESERVE alone (virtual.c:5176 `if ((type & MEM_RESERVE) || !base)`
+//     branch, no MEM_COMMIT bit): carve VA, vprot has no VPROT_COMMITTED --
+//     zero physical cost here too (nt_arena_reserve, no window touched).
+//   - MEM_RESERVE|MEM_COMMIT together: same branch, `if (type & MEM_COMMIT)
+//     vprot |= VPROT_COMMITTED` -- reserve AND commit the whole range.
+//   - MEM_COMMIT alone at a *BaseAddress inside an existing reservation
+//     (virtual.c:5199 commit-only branch): `find_view` must succeed (else
+//     STATUS_NOT_MAPPED_VIEW) -- commits just the requested sub-range.
+//   - MEM_COMMIT on an address with NO covering reservation: donor's
+//     find_view fails -> STATUS_NOT_MAPPED_VIEW (virtual.c:5199).
+//   - Re-COMMIT of an already-committed window: idempotent SUCCESS (donor
+//     set_protection path, virtual.c:5203-5204, does not re-fault/re-map an
+//     already-committed range) -- nt_arena_commit_window checks the
+//     committed bitmap first and returns success without re-touching HIGH
+//     pool or the L2 entry.
+//   - NtFreeVirtualMemory MEM_RELEASE/MEM_DECOMMIT: accounting-only is fine
+//     per this floor's existing doctrine (LOW/HIGH pools already do this) --
+//     the real reclaim is the per-boot wholesale reset (nt_arena_release_
+//     since below), extended to cover the arena bump pointer, reservation
+//     table, and committed-window bitmap together, same one call site
+//     ntboot.c already uses for the other two pools.
+// =====================================================================
+#define NT_ARENA_BASE   0x200000000ULL           // 8GB mark (param)
+#define NT_ARENA_SIZE   0x200000000ULL           // 8GB default (param)
+#define NT_ARENA_LIMIT  (NT_ARENA_BASE + NT_ARENA_SIZE)
+#define NT_ARENA_WINDOW 0x200000ULL              // 2MB commit granularity (L2 block size)
+#define NT_ARENA_ALIGN  0x10000ULL               // Windows allocation granularity (same as LOW/HIGH pools)
+#define NT_ARENA_L1_COUNT (NT_ARENA_SIZE / 0x40000000ULL)      // one L2 table per 1GB arena slot
+#define NT_ARENA_WINDOWS  (NT_ARENA_SIZE / NT_ARENA_WINDOW)     // total 2MB windows across the arena
+
+// Lazily-allocated L2 table per 1GB arena slot -- NULL until this boot's
+// first commit inside that slot (kernel-lifetime pointer cache; the L2
+// table page itself lives in the LOW territory pool, ordinary identity-
+// mapped RAM, so no separate physical-tracking struct is needed for it).
+static u64b *nt_arena_l2[NT_ARENA_L1_COUNT];
+
+// Committed-window accounting: one bit per 2MB window across the WHOLE
+// arena (absolute VA-indexed, not per-reservation) -- 4096 windows @ 8GB
+// default = 512 bytes total, cheap, and stable across reservation-table
+// churn (a window's committed state doesn't move if reservation slots get
+// reused, since VA index is all that's ever looked up).
+static unsigned long nt_arena_committed_bitmap[(NT_ARENA_WINDOWS + 63) / 64];
+
+static int nt_arena_window_committed(u64b win_idx) {
+    return (int)((nt_arena_committed_bitmap[win_idx / 64] >> (win_idx % 64)) & 1UL);
+}
+static void nt_arena_window_mark_committed(u64b win_idx) {
+    nt_arena_committed_bitmap[win_idx / 64] |= (1UL << (win_idx % 64));
+}
+
+// Reservation table -- tracks each live [base,size) VA carve so COMMIT can
+// validate "address falls inside a reservation" (donor's find_view, ruling
+// #4) and NtQueryVirtualMemory can report State honestly (ruling #5).
+#define NT_ARENA_MAX_RESERVATIONS 128
+typedef struct { u64b base; u64b size; int used; } NtArenaRes;
+static NtArenaRes nt_arena_res[NT_ARENA_MAX_RESERVATIONS];
+static u64b nt_arena_next = NT_ARENA_BASE;
+
+static NtArenaRes *nt_arena_find_containing(u64b addr) {
+    for (int i = 0; i < NT_ARENA_MAX_RESERVATIONS; i++) {
+        if (!nt_arena_res[i].used) continue;
+        if (addr >= nt_arena_res[i].base && addr < nt_arena_res[i].base + nt_arena_res[i].size)
+            return &nt_arena_res[i];
+    }
+    return 0;
+}
+
+// Is `addr` inside the arena's VA range at all (reserved or not)? Lets
+// NtQueryVirtualMemory/NtAllocateVirtualMemory tell "unreserved arena VA"
+// (MEM_FREE, donor-consistent) apart from "outside the arena entirely"
+// (falls through to this floor's existing LOW/HIGH/image-registry answers).
+int nt_arena_contains(unsigned long addr) {
+    return addr >= NT_ARENA_BASE && addr < NT_ARENA_LIMIT;
+}
+
+// RESERVE: carve `size` bytes of VA from the arena -- bump-only, zero
+// physical cost (no window touched, no L2 entry written). NULL on arena
+// VA exhaustion (bump-only per-boot; wholesale reset below is the reclaim,
+// same doctrine as the LOW/HIGH pools).
+unsigned char *nt_arena_reserve(unsigned long size) {
+    u64b pages = (size + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    if (pages == 0) pages = NT_PAGE_SIZE;
+
+    nt_arena_next = (nt_arena_next + (NT_ARENA_ALIGN - 1)) & ~(NT_ARENA_ALIGN - 1);
+    if (nt_arena_next + pages > NT_ARENA_LIMIT) {
+        puts("CHALICE DEBUG: ARENA reserve EXHAUSTED next="); puthex(nt_arena_next);
+        puts(" want_pages="); puthex(pages); puts(" limit="); puthex(NT_ARENA_LIMIT);
+        puts("\n");
+        return 0;
+    }
+    u64b base = nt_arena_next;
+    nt_arena_next += pages;
+
+    for (int i = 0; i < NT_ARENA_MAX_RESERVATIONS; i++) {
+        if (nt_arena_res[i].used) continue;
+        nt_arena_res[i].base = base;
+        nt_arena_res[i].size = pages;
+        nt_arena_res[i].used = 1;
+        return (unsigned char *)base;
+    }
+    // No tracking slot left -- the VA bump already advanced; nothing to
+    // undo (same accepted-waste convention nt_vm_alloc_pool's own comment
+    // documents for its tracking table). A later COMMIT at this base would
+    // fail nt_arena_find_containing -> STATUS_NOT_MAPPED_VIEW, legible.
+    return 0;
+}
+
+// Commit exactly one 2MB window (win_base_va must already be window-
+// aligned). Idempotent: an already-committed window is a no-op SUCCESS
+// (donor: re-committing doesn't re-map, virtual.c:5203-5204). Returns 0
+// only on HIGH-pool-backing or L2-table-page exhaustion.
+static int nt_arena_commit_window(u64b win_base_va) {
+    u64b win_idx = (win_base_va - NT_ARENA_BASE) / NT_ARENA_WINDOW;
+    if (nt_arena_window_committed(win_idx)) return 1;
+
+    unsigned char *phys = nt_high_territory_alloc((unsigned long)NT_ARENA_WINDOW);
+    if (!phys) return 0;   // HIGH pool exhausted -- caller surfaces STATUS_NO_MEMORY
+
+    u64b slot   = (win_base_va - NT_ARENA_BASE) / 0x40000000ULL;   // which 1GB arena L1 entry
+    u64b l1_idx = (win_base_va >> 30) & 0x1FFULL;                   // absolute l1_table index
+    if (!nt_arena_l2[slot]) {
+        unsigned char *l2page = nt_territory_alloc(4096);   // LOW pool: identity-mapped, zeroed
+        if (!l2page) return 0;
+        nt_arena_l2[slot] = (u64b *)l2page;
+        nt_l1_install_table(l1_idx, (u64b)l2page);          // kmain.c -- table descriptor, this slot only
+    }
+    u64b l2_idx = (win_base_va >> 21) & 0x1FFULL;
+    // L2 block descriptor (4KB-granule level-2 leaf = 2MB block), same
+    // normal-memory WBWA/inner-shareable/AF attribute bits mmu_on's own L1
+    // RAM block descriptors use (kmain.c: `(1ULL<<2)|(3ULL<<8)|(1ULL<<10)`),
+    // bits[1:0]=0b01 (valid+block, vs 0b11 table) since this IS the leaf.
+    nt_arena_l2[slot][l2_idx] = (u64b)phys | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL;
+    nt_arena_window_mark_committed(win_idx);
+    nt_tlbi_vmalle1();   // kmain.c -- conservative vmalle1 per ruling #2
+    return 1;
+}
+
+// COMMIT: base/size must fall entirely within ONE live reservation (donor's
+// find_view, ruling #4) -- returns 0 if not (caller maps to STATUS_NOT_
+// MAPPED_VIEW), 1 on success (every covering window now committed).
+int nt_arena_commit(unsigned long base, unsigned long size) {
+    NtArenaRes *r = nt_arena_find_containing(base);
+    if (!r) return 0;
+    u64b end = base + size;
+    if (end > r->base + r->size) return 0;   // extends past the reservation -- reject
+
+    u64b win_start = base & ~(NT_ARENA_WINDOW - 1);
+    u64b win_end   = (end + NT_ARENA_WINDOW - 1) & ~(NT_ARENA_WINDOW - 1);
+    for (u64b w = win_start; w < win_end; w += NT_ARENA_WINDOW) {
+        if (!nt_arena_commit_window(w)) return 0;   // partial commit left in place -- no undo, matches this floor's existing convention elsewhere
+    }
+    return 1;
+}
+
+// Query support for NtQueryVirtualMemory (ruling #5: report State honestly
+// per accounting). Returns 0 if `addr` isn't inside the arena's VA range at
+// all (caller falls through to the pre-existing free-region answer).
+// On a hit: *base_out/*size_out are the covering reservation's [base,size)
+// (or, if no reservation covers it, a single page at `addr` -- MEM_FREE
+// inside the arena, same page-sized-unknown-region shape the existing
+// fallback branch already uses outside it); *committed_out is 1 if the
+// containing 2MB window is backed, 0 if reserved-but-uncommitted, or -1 as
+// a sentinel meaning "no reservation at all here" (MEM_FREE).
+int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out) {
+    if (!nt_arena_contains(addr)) return 0;
+    NtArenaRes *r = nt_arena_find_containing(addr);
+    if (!r) {
+        if (base_out) *base_out = addr & ~(NT_PAGE_SIZE - 1);
+        if (size_out) *size_out = NT_PAGE_SIZE;
+        if (committed_out) *committed_out = -1;
+        return 1;
+    }
+    u64b win_idx = (addr - NT_ARENA_BASE) / NT_ARENA_WINDOW;
+    if (base_out) *base_out = r->base;
+    if (size_out) *size_out = r->size;
+    if (committed_out) *committed_out = nt_arena_window_committed(win_idx);
+    return 1;
+}
+
+// MEM_RELEASE: `addr` must be an exact reservation base (real Windows rule
+// too -- VirtualFree(MEM_RELEASE) only accepts the original base). Fills
+// *size_out with the released reservation's size. Accounting-only (ruling:
+// "NtFreeVirtualMemory MEM_RELEASE/MEM_DECOMMIT = accounting-only OK") --
+// the committed-window bits for this range are left set until the next
+// wholesale per-boot reset; a real Windows re-VirtualAlloc at a DIFFERENT
+// base (this floor never reuses arena VA within one boot -- bump-only,
+// same doctrine as LOW/HIGH) never observes the stale bits, so this is
+// safe without extra bitmap-clearing work here.
+int nt_arena_release(unsigned long addr, unsigned long *size_out) {
+    for (int i = 0; i < NT_ARENA_MAX_RESERVATIONS; i++) {
+        if (!nt_arena_res[i].used || nt_arena_res[i].base != addr) continue;
+        if (size_out) *size_out = nt_arena_res[i].size;
+        nt_arena_res[i].used = 0;
+        return 1;
+    }
+    return 0;
+}
+
+// Per-boot wholesale reset (ntboot.c calls this alongside nt_territory_
+// release_since/nt_high_territory_release_since/nt_vm_regions_release_
+// since -- the arena's mark is captured/restored the same way). Clears the
+// reservation table, the committed-window bitmap from the mark's window
+// index onward, and the L2-table pointer cache (a NEW boot's first commit
+// into a given 1GB slot re-allocates a fresh L2 page from the freshly-
+// reset LOW pool and re-installs the L1 table entry -- any STALE L1 entry
+// left pointing at a since-reclaimed L2 page is simply never touched again
+// unless a NEW commit lands in that same slot, in which case it's
+// immediately overwritten by nt_l1_install_table before any translation
+// through it could occur -- same "wholesale reset, no reuse hazard" shape
+// the LOW/HIGH pools already rely on).
+unsigned long nt_arena_mark(void) { return nt_arena_next; }
+
+void nt_arena_release_since(unsigned long mark) {
+    if (nt_arena_next <= mark) return;
+    u64b win_mark = (mark - NT_ARENA_BASE) / NT_ARENA_WINDOW;
+    for (u64b w = win_mark; w < NT_ARENA_WINDOWS; w++)
+        nt_arena_committed_bitmap[w / 64] &= ~(1UL << (w % 64));
+    for (int i = 0; i < NT_ARENA_MAX_RESERVATIONS; i++)
+        if (nt_arena_res[i].used && nt_arena_res[i].base >= mark) nt_arena_res[i].used = 0;
+    for (u64b i = 0; i < NT_ARENA_L1_COUNT; i++) nt_arena_l2[i] = 0;
+    nt_arena_next = mark;
+}
+
+// =====================================================================
 // NtOpenFile / NtReadFile: name (UNICODE_STRING via OBJECT_ATTRIBUTES) ->
 // blob store handle; offset+length copy for reads.
 // OBJECT_ATTRIBUTES (winternl.h, LP64): Length(4,pad4)@0,
@@ -860,6 +1109,8 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
 
     u64b addr = (u64b)BaseAddress;
     NtImageEntry *img = nt_image_find_containing(addr);
+    u64b arena_base = 0, arena_size = 0; int arena_committed = -1;
+    int arena_hit = !img && nt_arena_query(addr, &arena_base, &arena_size, &arena_committed);
     if (img) {
         wr64(out + MBI_BASEADDRESS_OFF, img->base);
         wr64(out + MBI_ALLOCATIONBASE_OFF, img->base);
@@ -868,6 +1119,21 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
         wr32(out + MBI_STATE_OFF, MEM_COMMIT);
         wr32(out + MBI_PROTECT_OFF, PAGE_EXECUTE_READWRITE);
         wr32(out + MBI_TYPE_OFF, MEM_IMAGE);
+    } else if (arena_hit) {
+        // CHALICE C4-9 (monad ruling #5): report State honestly per
+        // accounting -- MEM_FREE (no reservation covers addr, sentinel -1),
+        // MEM_RESERVE (reservation exists, containing 2MB window not yet
+        // committed, 0), or MEM_COMMIT (window backed, 1). AllocationBase is
+        // the reservation's own base (0 for the MEM_FREE-inside-arena case,
+        // matching the pre-existing outside-arena free-region convention
+        // just below, which also uses AllocationBase=0).
+        wr64(out + MBI_BASEADDRESS_OFF, arena_base);
+        wr64(out + MBI_ALLOCATIONBASE_OFF, arena_committed == -1 ? 0 : arena_base);
+        wr32(out + MBI_ALLOCPROTECT_OFF, arena_committed == -1 ? 0 : PAGE_READWRITE);
+        wr64(out + MBI_REGIONSIZE_OFF, arena_size);
+        wr32(out + MBI_STATE_OFF, arena_committed == -1 ? MEM_FREE : (arena_committed ? MEM_COMMIT : MEM_RESERVE));
+        wr32(out + MBI_PROTECT_OFF, arena_committed == 1 ? PAGE_READWRITE : PAGE_NOACCESS);
+        wr32(out + MBI_TYPE_OFF, arena_committed == -1 ? 0 : MEM_PRIVATE);
     } else {
         u64b page = addr & ~(NT_PAGE_SIZE - 1);
         wr64(out + MBI_BASEADDRESS_OFF, page);

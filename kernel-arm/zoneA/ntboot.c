@@ -245,6 +245,9 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // CHALICE C4-8: HIGH pool gets the same per-boot wholesale-reset mark
     // (monad ruling #2 -- "per-boot wholesale reset covers BOTH pools").
     u64b nt_high_territory_boot_mark = nt_high_territory_mark();
+    // CHALICE C4-9: RESERVE/COMMIT arena gets its own mark too (separate
+    // VA space + tracking structures from LOW/HIGH -- ntfile.c receipt).
+    u64b nt_arena_boot_mark = nt_arena_mark();
 
     const unsigned char *ntdll_bytes, *exe_bytes;
     u64b ntdll_len, exe_len;
@@ -398,6 +401,24 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         puts(" teb32="); puthex((u64b)wow64_wire.teb32);
         puts(" wow64info="); puthex((u64b)wow64_wire.wow64info);
         puts("\n");
+
+        // CHALICE C4-9: x86 guest thread's initial Eip/Esp -- BTCpuGetContext
+        // (wowbox64.dll+0x20e0) tail-calls NtQueryInformationThread(class 29)
+        // for exactly this, inside wow64.dll's own thread_init (donor
+        // syscall.c:1069) -- see ntsvc.c NtQueryInformationThread receipt for
+        // the full fault analysis this fixes. A FRESH low-territory (<4GB,
+        // 32-bit-ESP-addressable) stack, separate from stack_base/stack_top
+        // above (that one is this boot's OWN ARM64 native thread stack,
+        // still live on the call chain making THIS very syscall) -- Esp set
+        // NT_BOOT_STACK_SIZE/4 below the block's top, generous headroom below
+        // it for thread_init's own ctx_ptr write (sizeof(I386_CONTEXT)=0x2CC)
+        // + 5 stack pushes (20 bytes), both far smaller than this margin.
+        u64b x86_stack_base = (u64b)nt_territory_alloc(NT_BOOT_STACK_SIZE);
+        if (!x86_stack_base) return boot_err("x86 guest stack alloc failed");
+        u64b x86_stack_esp = x86_stack_base + NT_BOOT_STACK_SIZE - (NT_BOOT_STACK_SIZE / 4);
+        nt_wow64_set_initial_context(exe_entry, x86_stack_esp);
+        puts("CHALICE: x86 guest initial context eip="); puthex(exe_entry);
+        puts(" esp="); puthex(x86_stack_esp); puts("\n");
     }
 
     // ---- CHALICE C3c-2l Phase A: nt_build_teb only ever registers ONE
@@ -538,6 +559,10 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // territory still free, since nt_vm_alloc fails on a full TRACKING
     // TABLE, not a full territory.
     nt_vm_regions_release_since((unsigned long)nt_territory_boot_mark);
+    // CHALICE C4-9: RESERVE/COMMIT arena wholesale reset (own bump pointer,
+    // reservation table, committed-window bitmap, L2-table pointer cache --
+    // ntfile.c nt_arena_release_since receipt).
+    nt_arena_release_since((unsigned long)nt_arena_boot_mark);
     nt_territory_debug_stats(label);
     puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
@@ -696,6 +721,7 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, co
     nt_blob_ensure_init();
     u64b mark = nt_territory_mark();
     u64b high_mark = nt_high_territory_mark();   // CHALICE C4-8: same wholesale reset, both pools
+    u64b arena_mark = nt_arena_mark();           // CHALICE C4-9: arena, same doctrine
 
     const unsigned char *wow64_bytes, *backend_bytes;
     u64b wow64_len, backend_len;
@@ -861,6 +887,7 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, co
     nt_territory_release_since(mark);
     nt_high_territory_release_since(high_mark);   // CHALICE C4-8
     nt_vm_regions_release_since((unsigned long)mark);
+    nt_arena_release_since((unsigned long)arena_mark);   // CHALICE C4-9
     puts(label); puts(" ret=0\n");
     return 0;
 }

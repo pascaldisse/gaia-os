@@ -81,6 +81,10 @@ long nt_build_wow64_teb32(void *teb64, unsigned short native_machine,
 // NtQueryInformationProcess(ProcessWow64Information) to answer -- see
 // ntsvc.c receipt above NtQueryInformationProcess.
 void nt_wow64_set_peb32(void *peb32);
+// CHALICE C4-9: x86 guest thread's initial Eip/Esp, for NtQueryInformation-
+// Thread(ThreadWow64Context) to answer -- see ntsvc.c receipt. Set once by
+// ntboot.c right after nt_build_wow64_teb32 succeeds, same convention.
+void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).

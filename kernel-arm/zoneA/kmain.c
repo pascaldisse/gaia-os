@@ -72,6 +72,33 @@ static void mmu_on(void) {
     asm volatile("msr sctlr_el1, %0\n isb" :: "r"(sctlr));
 }
 
+// CHALICE C4-9 (monad ruling #2): arena L1 table-descriptor installer --
+// lets ntfile.c's RESERVE/COMMIT arena add L1->L2 TABLE entries (bits[1:0]
+// = 0b11, ARM ARM D8.3) for the arena's own 1GB slots ONLY, without ever
+// touching the RAM/device 1GB BLOCK entries (bits[1:0]=0b01) mmu_on installs
+// above -- l1_table is otherwise private to this file, so this is the one
+// controlled seam. l2_phys is a 4KB-aligned physical (== virtual, identity-
+// mapped) base of a 512-entry L2 table page (ntfile.c allocates it from the
+// LOW territory pool, already zeroed). A fresh tlbi vmalle1 after the
+// install covers the conservative case (ruling #2: "tlbi vmalle1 acceptable");
+// callers doing many installs in a row may batch and invalidate once, but
+// this floor's commit rate (per-window, not per-instruction) makes that an
+// unneeded optimization for now.
+void nt_l1_install_table(u64 l1_idx, u64 l2_phys) {
+    l1_table[l1_idx] = l2_phys | 0b11ULL;
+    asm volatile("dsb ishst\n tlbi vmalle1\n dsb ish\n isb");
+}
+
+u64 nt_l1_read(u64 l1_idx) { return l1_table[l1_idx]; }
+
+// CHALICE C4-9: standalone TLB invalidate for ntfile.c's arena COMMIT path
+// (after writing a new L2 block descriptor for a just-backed 2MB window) --
+// same instruction sequence mmu_on itself already uses, factored out so the
+// arena code doesn't need its own inline asm.
+void nt_tlbi_vmalle1(void) {
+    asm volatile("dsb ishst\n tlbi vmalle1\n dsb ish\n isb");
+}
+
 // ---- GICv3 ----
 #define GICD 0x08000000UL
 #define GICR 0x080A0000UL

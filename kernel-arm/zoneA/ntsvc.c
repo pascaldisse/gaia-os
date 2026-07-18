@@ -352,6 +352,36 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
     // Atom 3A growth path below. hello3's probe always passes NULL
     // (system-chosen base), so this path isn't exercised by the Atom B gate.
     if (*BaseAddress != 0) {
+        // CHALICE C4-9 (monad ruling #3): commit-at-existing-base inside the
+        // RESERVE/COMMIT arena -- donor virtual.c:5199 commit-only branch
+        // (find_view must succeed, i.e. a live reservation must cover
+        // base/size, else STATUS_NOT_MAPPED_VIEW). Checked first: arena VA
+        // (>=8GB, ntfile.c NT_ARENA_BASE) never overlaps the LOW/HIGH pools'
+        // tracked ranges (<5GB) the nt_vm_region_contains path below covers,
+        // so this is an unambiguous routing split, not a priority guess.
+        if (nt_arena_contains((u64b)*BaseAddress)) {
+            if (!(AllocationType & MEM_COMMIT)) {
+                nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_INVALID_PARAMETER);
+                return STATUS_INVALID_PARAMETER;
+            }
+            if (!nt_arena_commit((u64b)*BaseAddress, pages)) {
+                // Donor: find_view fails (no covering reservation) ->
+                // STATUS_NOT_MAPPED_VIEW (virtual.c:5199) -- this floor's
+                // nt_arena_commit also returns 0 on HIGH-pool/L2-table-page
+                // exhaustion; both are legitimate "can't commit" outcomes,
+                // reported the same way (the wrong-base case is the common
+                // real one; loop-breaker below still catches sustained
+                // exhaustion-driven retries of THIS path via the caller's
+                // own retry loop hitting the *BaseAddress==0 branch instead
+                // in practice, per Wine's own heap-growth pattern).
+                nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_NOT_MAPPED_VIEW);
+                return STATUS_NOT_MAPPED_VIEW;
+            }
+            *RegionSize = pages;
+            nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_SUCCESS);
+            return STATUS_SUCCESS;
+        }
+
         // CHALICE C3a Atom 3A: RESERVE-then-COMMIT-at-given-base growth
         // (RtlCreateHeap prerequisite) -- *BaseAddress inside an
         // already-tracked region + MEM_COMMIT => bookkeeping no-op success
@@ -369,23 +399,50 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
         return STATUS_SUCCESS;
     }
 
-    // CHALICE C4-8 (monad ruling #2): ZeroBits==0 -> unconstrained ->
-    // HIGH pool first (falls back to LOW if HIGH is exhausted, inside
-    // nt_vm_alloc_pool). Donor-grounded, not guessed: wow64's own thunks
-    // ALWAYS pass a nonzero zero_bits (explicit or wow64's own
-    // default_zero_bits=0x7fffffff, wine/dlls/wow64/syscall.c:41) through
-    // get_zero_bits() (wine/dlls/wow64/wow64_private.h:94-97) into the real
-    // 64-bit NtAllocateVirtualMemory; ntdll's own get_zero_bits_limit()
-    // (wine/dlls/ntdll/unix/unix_private.h:569-586) turns a nonzero
-    // zero_bits into a concrete ceiling, while THIS function's own
-    // zero_bits==0 case hits `limit=0` == no ceiling (wine/dlls/ntdll/
-    // unix/virtual.c:5290-5297) -- i.e. genuinely unconstrained native-
-    // ARM64 callers (wowbox64.dll's own dynarec heap/code-cache growth,
-    // never a 32-bit guest's own VirtualAlloc, which always arrives here
-    // via the wow64 thunk with a nonzero zero_bits) are exactly the
-    // ZeroBits==0 case.
-    int high_first = (ZeroBits == 0);
-    void *mem = nt_vm_alloc_pool(pages, high_first);
+    // CHALICE C4-9 (monad ruling #1): ZeroBits==0 -> unconstrained ->
+    // RESERVATION ARENA now, not the HIGH pool directly (that was the C4-8
+    // interim design; superseded here -- HIGH pool still backs the arena's
+    // COMMIT windows underneath, just no longer bump-allocates whole
+    // regions up front regardless of RESERVE-vs-COMMIT). Donor-grounded
+    // ZeroBits routing unchanged from C4-8 (receipt kept, still true):
+    // wow64's own thunks ALWAYS pass a nonzero zero_bits (explicit or
+    // wow64's own default_zero_bits=0x7fffffff, wine/dlls/wow64/
+    // syscall.c:41) through get_zero_bits() (wine/dlls/wow64/
+    // wow64_private.h:94-97) into the real 64-bit NtAllocateVirtualMemory;
+    // ntdll's own get_zero_bits_limit() (wine/dlls/ntdll/unix/
+    // unix_private.h:569-586) turns a nonzero zero_bits into a concrete
+    // ceiling, while zero_bits==0 hits `limit=0` == no ceiling (wine/
+    // dlls/ntdll/unix/virtual.c:5290-5297) -- genuinely unconstrained
+    // native-ARM64 callers (wowbox64.dll's own dynarec heap/code-cache
+    // growth) are exactly the ZeroBits==0 case, a 32-bit guest's own
+    // VirtualAlloc never is.
+    if (ZeroBits == 0) {
+        unsigned char *base = nt_arena_reserve(pages);
+        if (!base) {
+            nt_avm_loopbreak_hit(pages);   // arena VA exhausted -- may terminate the process
+            nt_avm_log("OUT", 0, pages, AllocationType, Protect, STATUS_NO_MEMORY);
+            return STATUS_NO_MEMORY;
+        }
+        if (AllocationType & MEM_COMMIT) {
+            // MEM_RESERVE|MEM_COMMIT together (or MEM_COMMIT alone with
+            // base==0, same donor branch, virtual.c:5176-5180): commit the
+            // whole freshly-reserved range up front.
+            if (!nt_arena_commit((u64b)base, pages)) {
+                nt_avm_loopbreak_hit(pages);   // HIGH-pool backing exhausted -- same loop-breaker as before
+                nt_avm_log("OUT", base, pages, AllocationType, Protect, STATUS_NO_MEMORY);
+                return STATUS_NO_MEMORY;
+            }
+        }
+        nt_avm_loopbreak_reset();
+        *BaseAddress = base;
+        *RegionSize = pages;
+        nt_avm_log("OUT", base, pages, AllocationType, Protect, STATUS_SUCCESS);
+        return STATUS_SUCCESS;
+    }
+
+    // ZeroBits != 0: unchanged LOW-pool-only path (32-bit-ceiling requests
+    // never belong in the arena, ruling #1).
+    void *mem = nt_vm_alloc_pool(pages, 0);
     if (!mem) {
         nt_avm_loopbreak_hit(pages);   // CHALICE C4-8 ruling #3 -- may terminate the process
         nt_avm_log("OUT", 0, pages, AllocationType, Protect, STATUS_NO_MEMORY);
@@ -432,6 +489,28 @@ long NtFreeVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long 
     if (FreeType != MEM_RELEASE && FreeType != MEM_DECOMMIT) {
         nt_fvm_log("OUT", in_base, in_size, FreeType, 0, STATUS_INVALID_PARAMETER);
         return STATUS_INVALID_PARAMETER;
+    }
+
+    // CHALICE C4-9 (monad ruling): arena addresses use their own
+    // reservation table (nt_arena_release), not nt_vm_regions -- both
+    // MEM_RELEASE and MEM_DECOMMIT are accounting-only here too (ruling:
+    // "NtFreeVirtualMemory MEM_RELEASE/MEM_DECOMMIT = accounting-only OK"),
+    // real reclaim is the per-boot wholesale reset (ntboot.c).
+    if (nt_arena_contains((u64b)*BaseAddress)) {
+        if (FreeType == MEM_RELEASE) {
+            u64b freed = 0;
+            int found = nt_arena_release((u64b)*BaseAddress, &freed);
+            if (!found) {
+                nt_fvm_log("OUT", in_base, in_size, FreeType, 0, STATUS_INVALID_PARAMETER);
+                return STATUS_INVALID_PARAMETER;
+            }
+            if (RegionSize) *RegionSize = freed;
+            nt_fvm_log("OUT", in_base, freed, FreeType, 1, STATUS_SUCCESS);
+            return STATUS_SUCCESS;
+        }
+        if (RegionSize) *RegionSize = (*RegionSize + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+        nt_fvm_log("OUT", in_base, RegionSize ? *RegionSize : 0, FreeType, 1, STATUS_SUCCESS);
+        return STATUS_SUCCESS;
     }
 
     if (FreeType == MEM_RELEASE) {
@@ -516,6 +595,85 @@ long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInforma
     wr64(out + PBI_UNIQUEPROCESSID_OFF, 1);     // single-process kernel: PID is always 1
 
     if (ReturnLength) *ReturnLength = PBI_SIZE;
+    return STATUS_SUCCESS;
+}
+
+// =====================================================================
+// CHALICE C4-9: NtQueryInformationThread, ThreadWow64Context (class 29)
+// ONLY -- the exact next-required syscall pe10 measured this leg. Ground
+// truth (disassembly, not guessed): wowbox64.dll's OWN BTCpuGetContext
+// (stock/wow64-chain/wowbox64.dll+0x20e0) tail-calls straight into this
+// real syscall (x1=w1=0x1d=29, x2=ContextPtr, x3=w3=0x2cc=sizeof(I386_
+// CONTEXT), x4=xzr) -- confirmed live: our kernel's own "svc id=37
+// UNIMPLEMENTED" line fires at exactly this call site (pe10 probe), and
+// the caller (wine/dlls/wow64/syscall.c:1069 thread_init) then reads
+// ctx.Esp (I386_CONTEXT offset 0xc4, wine/include/winnt.h _I386_CONTEXT)
+// to compute `ctx_ptr = (I386_CONTEXT*)ctx.Esp - 1; *ctx_ptr = ctx;` --
+// an unanswered call leaves ctx.Esp=0 (thread_init's own local `ctx =
+// {CONTEXT_I386_FULL}` zero-initializer), so ctx_ptr underflows to
+// 0-sizeof(ctx) and the very next store faults (live-confirmed: elr=
+// ntdll.dll+0x68458, inside memcpy's own store loop, far=
+// 0xFFFFFFFFFFFFFD34 == -0x2CC == -sizeof(I386_CONTEXT), exactly this).
+// Fix: answer with the x86 guest thread's real initial Eip/Esp (stashed
+// by ntboot.c right after building the wow64 TEB32, same per-boot-state
+// pattern as nt_wow64_set_peb32 above) -- Esp points into a FRESH, LOW-
+// territory (<4GB, so a 32-bit ESP can address it), zeroed, writable
+// stack block just for this, distinct from the ARM64 boot thread's own
+// stack (still live/in-use on the native call chain making THIS very
+// syscall).
+// CTX32_SIZE mirrors the WOW64_CPURESERVED section's own I386_CONTEXT_SIZE
+// (0x2cc, defined later in this file) -- same value, distinct name here
+// since that other #define lives below this point in the file (C needs it
+// declared before use, and moving either section isn't worth the diff).
+#define CTX32_SIZE       0x2CC
+#define CTX32_EBP_OFF    0xB4
+#define CTX32_EIP_OFF    0xB8
+#define CTX32_SEGCS_OFF  0xBC
+#define CTX32_EFLAGS_OFF 0xC0
+#define CTX32_ESP_OFF    0xC4
+#define CTX32_SEGSS_OFF  0xC8
+// Real WOW64 flat usermode selectors (donor-known constants, x86 Windows
+// ABI -- CS=0x1B, SS=0x23 under the flat 32-bit code/data/stack segments
+// WOW64 sets up for every 32-bit thread); EFlags=0x202 (IF set + the
+// always-1 reserved bit 1) is the standard initial-thread default.
+#define WOW64_SEGCS 0x1BUL
+#define WOW64_SEGSS 0x23UL
+#define WOW64_EFLAGS 0x202UL
+
+static u64b nt_wow64_ctx_eip, nt_wow64_ctx_esp;
+static int  nt_wow64_ctx_valid;
+
+// Called by ntboot.c once per wow64 boot, right after nt_build_wow64_teb32
+// succeeds -- same call-site convention as nt_wow64_set_peb32 just above.
+void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp) {
+    nt_wow64_ctx_eip = eip;
+    nt_wow64_ctx_esp = esp;
+    nt_wow64_ctx_valid = 1;
+}
+
+long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformationClass,
+                               void *ThreadInformation, unsigned long ThreadInformationLength,
+                               unsigned long *ReturnLength) {
+    (void)ThreadHandle;
+    if (ThreadInformationClass != 29 /* ThreadWow64Context */) return STATUS_NOT_IMPLEMENTED;
+    if (!ThreadInformation) return STATUS_INVALID_PARAMETER;
+    if (ThreadInformationLength < CTX32_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+    if (!nt_wow64_ctx_valid) return STATUS_NOT_IMPLEMENTED;   // non-wow64 boot -- nothing to answer with
+
+    u8 *out = (u8 *)ThreadInformation;
+    for (unsigned long i = 0; i < CTX32_SIZE; i++) out[i] = 0;
+    wr32(out + CTX32_EBP_OFF, (u32b)nt_wow64_ctx_esp);   // Ebp==Esp, empty-frame convention (no caller frame yet)
+    wr32(out + CTX32_EIP_OFF, (u32b)nt_wow64_ctx_eip);
+    wr32(out + CTX32_SEGCS_OFF, (u32b)WOW64_SEGCS);
+    wr32(out + CTX32_EFLAGS_OFF, (u32b)WOW64_EFLAGS);
+    wr32(out + CTX32_ESP_OFF, (u32b)nt_wow64_ctx_esp);
+    wr32(out + CTX32_SEGSS_OFF, (u32b)WOW64_SEGSS);
+
+    if (ReturnLength) *ReturnLength = CTX32_SIZE;
+    if (nt_dispatch_log_enabled) {
+        puts("CHALICE: NtQueryInformationThread ThreadWow64Context -> eip=");
+        puthex(nt_wow64_ctx_eip); puts(" esp="); puthex(nt_wow64_ctx_esp); puts("\n");
+    }
     return STATUS_SUCCESS;
 }
 
@@ -658,6 +816,7 @@ static const char *nt_svc_name(u64b id) {
     case NT_SVC_NTWAITFORSINGLEOBJECT:      return "NtWaitForSingleObject";
     case NT_SVC_NTCREATEEVENT:              return "NtCreateEvent";
     case NT_SVC_NTQUERYINFORMATIONPROCESS:  return "NtQueryInformationProcess";
+    case NT_SVC_NTQUERYINFORMATIONTHREAD:   return "NtQueryInformationThread";
     case NT_SVC_NTQUERYSYSTEMINFORMATION:   return "NtQuerySystemInformation";
     case NT_SVC_NTQUERYSYSTEMINFORMATIONEX: return "NtQuerySystemInformationEx";
     case NT_SVC_NTCONTINUE:                 return "NtContinue";
@@ -725,8 +884,10 @@ void nt_service_tables_init(void) {
     nt_svc_argtable0[NT_SVC_NTALLOCATEVIRTUALMEMORY] = 6 * 8;
     nt_svc_table0[NT_SVC_NTFREEVIRTUALMEMORY] = (void *)NtFreeVirtualMemory;
     nt_svc_argtable0[NT_SVC_NTFREEVIRTUALMEMORY] = 4 * 8;
+    nt_svc_table0[NT_SVC_NTQUERYINFORMATIONTHREAD] = (void *)NtQueryInformationThread;
     nt_svc_table0[NT_SVC_NTQUERYINFORMATIONPROCESS] = (void *)NtQueryInformationProcess;
     nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONPROCESS] = 5 * 8;
+    nt_svc_argtable0[NT_SVC_NTQUERYINFORMATIONTHREAD] = 5 * 8;
     nt_svc_table0[NT_SVC_NTQUERYSYSTEMINFORMATION] = (void *)NtQuerySystemInformation;
     nt_svc_argtable0[NT_SVC_NTQUERYSYSTEMINFORMATION] = 4 * 8;
     // CHALICE C4-6: NtQuerySystemInformationEx(class, query, query_len,

@@ -25,6 +25,15 @@ extern volatile u64 ticks;
 // kmain.c — CHALICE C3c Atom 3C-2b: IRQ PC-sampling profiler arm flag
 extern volatile int profile_armed;
 
+// kmain.c — CHALICE C4-9 (monad ruling #2): arena L1 table-descriptor
+// install/read + standalone TLB invalidate, for ntfile.c's RESERVE/COMMIT
+// arena to add L2 table mappings for its own 1GB slots without exposing
+// mmu_on's private l1_table array. See kmain.c mmu_on for the encoding
+// receipt.
+void nt_l1_install_table(u64 l1_idx, u64 l2_phys);
+u64  nt_l1_read(u64 l1_idx);
+void nt_tlbi_vmalle1(void);
+
 // shell.c
 void shell_task(void);
 

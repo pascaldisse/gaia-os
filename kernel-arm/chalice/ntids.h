@@ -52,6 +52,7 @@
 #define NT_SVC_NTGETNLSSECTIONPTR         155  // REAL, CHALICE C3c-2n (wine-arm64-syscalls.txt:154, 0x9b)
 #define NT_SVC_NTSETVALUEKEY               96  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt, 0x60)
 #define NT_SVC_NTQUERYDEFAULTLOCALE        21  // REAL, CHALICE C3c-2o (wine-arm64-syscalls.txt:12, 0x15)
+#define NT_SVC_NTQUERYINFORMATIONTHREAD    37  // REAL, CHALICE C4-9 (wine-arm64-syscalls.txt:29, 0x25) -- ThreadWow64Context(29) only, see ntsvc.c receipt
 // CHALICE C3c-2k p1: 128 -> 512. Real Wine ARM64 max syscall id is 257
 // (wine-arm64-syscalls.txt) -- the old 128-entry table left every id in
 // [128,257] permanently out-of-range (STATUS_INVALID_SYSTEM_SERVICE via
@@ -74,6 +75,15 @@
 #define STATUS_OBJECT_NAME_INVALID    0xC0000033L
 #define STATUS_OBJECT_NAME_NOT_FOUND  0xC0000034L
 #define STATUS_INVALID_IMAGE_FORMAT   0xC000007BL
+// ---- CHALICE C4-9: RESERVE/COMMIT split (monad ruling) -- donor-grounded
+// (wine/include/ntstatus.h:303,311; virtual.c:5199-5206) status codes for
+// the commit-only-at-existing-base path: no covering VAD/view -> NOT_MAPPED_
+// VIEW, covering view already fully committed -> ALREADY_COMMITTED (used
+// only where the commit-at-base path needs to distinguish the two; the
+// idempotent "commit an already-committed WINDOW" case per ruling #3 stays
+// plain STATUS_SUCCESS, matching set_protection's own silent success there).
+#define STATUS_NOT_MAPPED_VIEW        0xC0000019L
+#define STATUS_ALREADY_COMMITTED      0xC0000021L
 
 // ---- Atom B: NtAllocateVirtualMemory/NtFreeVirtualMemory AllocationType/
 // FreeType bits (winnt.h). Only these are accepted; anything else in
@@ -91,7 +101,12 @@
 // NtQueryVirtualMemory's MemoryBasicInformation answer.
 #define MEM_IMAGE    0x1000000L
 #define MEM_FREE     0x00010000L
+// CHALICE C4-9: arena regions report Type=MEM_PRIVATE (winnt.h 0x20000) --
+// a VirtualAlloc'd range, not a mapped section/image -- and State MEM_
+// RESERVE/MEM_COMMIT (ntids.h already has both bits above) per accounting.
+#define MEM_PRIVATE  0x00020000L
 #define PAGE_NOACCESS          0x01L
+#define PAGE_READWRITE         0x04L
 #define PAGE_EXECUTE_READWRITE 0x40L
 
 // ---- TEB slot convention (offsets from TEB base; x18 holds TEB on the PE

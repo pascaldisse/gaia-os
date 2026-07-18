@@ -91,6 +91,21 @@ unsigned char *nt_high_territory_alloc(unsigned long size_of_image);
 unsigned long nt_high_territory_mark(void);
 void nt_high_territory_release_since(unsigned long mark);
 
+// CHALICE C4-9 (monad ruling): RESERVE/COMMIT arena -- see ntfile.c for the
+// full donor-grounded design receipt. ntsvc.c's NtAllocateVirtualMemory
+// routes ZeroBits==0 requests here instead of the HIGH pool directly;
+// ZeroBits!=0 (32-bit-ceiling wow64 thunk callers) is UNCHANGED, still the
+// LOW pool. ntboot.c resets the arena per-boot the same way as the other
+// two pools. NtQueryVirtualMemory/NtFreeVirtualMemory use nt_arena_contains/
+// nt_arena_query/nt_arena_release to answer honestly for arena addresses.
+int nt_arena_contains(unsigned long addr);
+unsigned char *nt_arena_reserve(unsigned long size);
+int nt_arena_commit(unsigned long base, unsigned long size);
+int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out, int *committed_out);
+int nt_arena_release(unsigned long addr, unsigned long *size_out);
+unsigned long nt_arena_mark(void);
+void nt_arena_release_since(unsigned long mark);
+
 // CHALICE C3c Atom 3C-1: blob-manifest lookup with FS fallback (stock DLLs
 // too big to embed, live on the RedSea-spirit disk instead -- fs.c/
 // mkdisk.py). Case-insensitive. On an FS-fallback hit, *out_bytes/*out_name
