@@ -475,3 +475,53 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
 }
+
+// =====================================================================
+// CHALICE C4-2 (C4-SPEC.md atom C4-2): native WOW64 image trio maps.
+// Reuses boot_blob_lookup (nt_blob_lookup_or_fs, above) + PeMapImage +
+// nt_territory_alloc + nt_image_register -- the exact same 3A machinery
+// nt_boot_process's own ntdll/exe maps use, per HANDOFF ruling #2 ("floor
+// deltas only, no parallel mechanism"). apply_relocs=1: like ntdll's own
+// bootstrap map above, there is no Wine PE-side loader present yet to
+// self-relocate these images (that's what wow64.dll itself will do to
+// ITS OWN dependents once it runs -- these two images are the ones being
+// bootstrapped here, symmetrical to how this file bootstraps ntdll+exe).
+// do_imports=0: same Architecture verdict 4 as ntdll/exe -- imports are
+// resolved by Wine's own loader machinery once code actually runs, not by
+// this kernel-side probe (no guest code runs in this atom at all).
+// =====================================================================
+long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label) {
+    nt_blob_ensure_init();
+    u64b mark = nt_territory_mark();
+
+    const unsigned char *wow64_bytes, *backend_bytes;
+    u64b wow64_len, backend_len;
+    if (!boot_blob_lookup("wow64.dll", &wow64_bytes, &wow64_len))
+        return boot_err("wow64.dll blob not found (run fetch-stock-dlls.sh)");
+    if (!boot_blob_lookup(cpu_backend_name, &backend_bytes, &backend_len))
+        return boot_err("CPU backend blob not found (run fetch-stock-dlls.sh)");
+
+    u64b wow64_base = 0, wow64_size = 0, wow64_entry = 0;
+    if (PeMapImage(wow64_bytes, wow64_len, "pe9-wow64", nt_territory_alloc, 0, 1,
+                    &wow64_base, &wow64_size, &wow64_entry) != 0)
+        return boot_err("wow64.dll map failed");
+    nt_image_register("wow64.dll", wow64_base, wow64_size, wow64_entry, 1);
+    puts("CHALICE: wow64.dll mapped base="); puthex(wow64_base);
+    puts(" size="); putdec_signed((long)wow64_size);
+    puts(" entry="); puthex(wow64_entry); puts("\n");
+
+    u64b backend_base = 0, backend_size = 0, backend_entry = 0;
+    if (PeMapImage(backend_bytes, backend_len, "pe9-cpu", nt_territory_alloc, 0, 1,
+                    &backend_base, &backend_size, &backend_entry) != 0)
+        return boot_err("CPU backend map failed");
+    nt_image_register(cpu_backend_name, backend_base, backend_size, backend_entry, 1);
+    puts("CHALICE: CPU backend mapped name="); puts(cpu_backend_name);
+    puts(" base="); puthex(backend_base);
+    puts(" size="); putdec_signed((long)backend_size);
+    puts(" entry="); puthex(backend_entry); puts("\n");
+
+    nt_territory_release_since(mark);
+    nt_vm_regions_release_since((unsigned long)mark);
+    puts(label); puts(" ret=0\n");
+    return 0;
+}

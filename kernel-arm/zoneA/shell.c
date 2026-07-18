@@ -50,6 +50,7 @@ static void cmd_help(void) {
     puts("  pe6        run CHALICE hello5 over STOCK wine ntdll.dll (FS-backed): first walk + fault log (slice3 Atom 3C-1)\n");
     puts("  pe7        run CHALICE hello6 (real KERNEL32.dll import) over STOCK wine ntdll.dll: import-table/IAT gate (slice3 Atom 3C-2j)\n");
     puts("  pe8        run CHALICE hello7 (widened KERNEL32.dll surface) over STOCK wine ntdll.dll (slice3 Atom 3C-2r)\n");
+    puts("  pe9 [fex]  CHALICE C4-2: map wow64.dll + CPU backend (default wowbox64, 'fex'=libwow64fex) into DLL territory\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -182,6 +183,17 @@ static void run_cmd(const char *line) {
         nt_boot_process("hello6.exe", "ntdll.dll", 1, "pe7");
         profile_armed = 0;
         nt_dispatch_log_enabled = 0;
+        return;
+    }
+    if ((line[0] == 'p' && line[1] == 'e' && line[2] == '9') && (line[3] == 0 || line[3] == ' ')) {
+        // CHALICE C4-2: WOW64 image trio maps (wow64.dll + ONE CPU
+        // backend). Backend is a PARAMETER at the mount seam (IRON law,
+        // C4-SPEC ruling #1) -- default wowbox64.dll, `pe9 fex` selects
+        // libwow64fex.dll. No guest code runs yet (atom C4-3..5 later).
+        const char *arg = line + 3;
+        while (*arg == ' ') arg++;
+        const char *backend = streq(arg, "fex") ? "libwow64fex.dll" : "wowbox64.dll";
+        nt_boot_wow64_probe(backend, "pe9");
         return;
     }
     if (streq(line, "pe8")) {

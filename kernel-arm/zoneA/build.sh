@@ -108,7 +108,19 @@ STOCK_DIR=../chalice/stock
 # set -- the NLS data blobs NtInitializeNlsFiles/NtGetNlsSectionPtr map
 # (ntsvc.c/ntfile.c handlers, id=158/155). Not PE images, just flat data
 # blobs (fetch-stock-dlls.sh sources them separately, same stock/ dir).
+# CHALICE C4-2: wow64.dll (native-side WOW64 dispatcher) + BOTH CPU
+# backends (wowbox64.dll default, libwow64fex.dll selectable via pe9's
+# `fex` arg -- IRON law, backend is a parameter, never hardcoded) join the
+# populate set too -- all 3 are aarch64-windows (Machine 0xAA64) images,
+# UNIQUE basenames vs the existing slice-3 set (no collision, unlike the
+# i386-windows tree which shares basenames -- C4-SPEC scar, deferred to a
+# later atom that actually needs the 32-bit tree on this FS).
+WOW64_DIR="$STOCK_DIR/wow64-chain"
 if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$STOCK_DIR/kernelbase.dll" ] && [ -s "$STOCK_DIR/apisetschema.dll" ] && [ -s "$STOCK_DIR/locale.nls" ] && [ -s "$STOCK_DIR/sortdefault.nls" ] && [ -s "$STOCK_DIR/l_intl.nls" ]; then
+    WOW64_ARGS=""
+    if [ -s "$WOW64_DIR/wow64.dll" ] && [ -s "$WOW64_DIR/wowbox64.dll" ] && [ -s "$WOW64_DIR/libwow64fex.dll" ]; then
+        WOW64_ARGS="wow64.dll=$WOW64_DIR/wow64.dll wowbox64.dll=$WOW64_DIR/wowbox64.dll libwow64fex.dll=$WOW64_DIR/libwow64fex.dll"
+    fi
     python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
         ntdll.dll="$STOCK_DIR/ntdll.dll" \
         kernel32.dll="$STOCK_DIR/kernel32.dll" \
@@ -116,7 +128,8 @@ if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$S
         apisetschema.dll="$STOCK_DIR/apisetschema.dll" \
         locale.nls="$STOCK_DIR/locale.nls" \
         sortdefault.nls="$STOCK_DIR/sortdefault.nls" \
-        l_intl.nls="$STOCK_DIR/l_intl.nls"
+        l_intl.nls="$STOCK_DIR/l_intl.nls" \
+        $WOW64_ARGS
 elif [ ! -f disk.img ]; then
     dd if=/dev/zero of=disk.img bs=1m count=4 2>/dev/null
     printf 'GAIA-OS TEMPLE DISK  LOVE=1.000  --  the first stone laid 2026-07-08' \

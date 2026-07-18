@@ -21,3 +21,18 @@
 // trailing "<label> ret=<N>" line (was hardcoded "pe5"/"pe6" off `stock`
 // alone; pe7 also has stock=1 but needs its own distinct label).
 long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, const char *label);
+
+// CHALICE C4-2 (atom C4-2, C4-SPEC.md): native WOW64 image trio -- maps
+// wow64.dll (native-side WOW64 dispatcher, aarch64-windows/0xAA64) +
+// ONE CPU-simulation backend (cpu_backend_name: "wowbox64.dll" or
+// "libwow64fex.dll", both aarch64-windows/0xAA64, same BTCpu* interface --
+// IRON law, the backend is a caller-supplied PARAMETER here, never
+// hardcoded) into DLL territory via the existing PeMapImage/
+// nt_territory_alloc/nt_image_register machinery -- no new mapping
+// primitive, same pattern nt_boot_process already uses for ntdll/exe. No
+// guest code runs (no TEB/thread/CONTEXT built) -- this atom proves the
+// two images load+relocate clean over our floor, nothing more. Prints
+// "CHALICE: wow64.dll mapped" and "CHALICE: CPU backend mapped" (with the
+// chosen name) on success. Returns 0, or -1 on any blob/map failure
+// (error already printed to serial).
+long nt_boot_wow64_probe(const char *cpu_backend_name, const char *label);
