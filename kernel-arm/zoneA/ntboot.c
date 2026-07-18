@@ -456,6 +456,27 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         nt_wow64_cpureserved_set_context(wow64_wire.cpureserved, exe_entry, x86_stack_esp);
         puts("CHALICE: x86 guest initial context eip="); puthex(exe_entry);
         puts(" esp="); puthex(x86_stack_esp); puts("\n");
+
+        // CHALICE C4-27: the syscall hinge -- seed PeMain's OWN synthetic
+        // return address ([x86_stack_esp], the exact slot its `ret` pops,
+        // matching a normal callee's entry-ESP-points-at-return-address
+        // convention hello8_x86.c's own PeMain assumes) to point at a
+        // small floor-built i386 stub. The stub's BYTES aren't known yet --
+        // it needs FEX's live BOP address, only discovered later (during
+        // BTCpuProcessInit, guest ARM64 code this floor hasn't entered
+        // yet) -- ntsvc.c's NtAllocateVirtualMemory hook writes them lazily
+        // the moment that happens, always before BTCpuSimulate ever reads
+        // this stack slot (ProcessInit strictly precedes ThreadInit/
+        // Simulate in wow64.dll's own init chain). Buffer allocated from
+        // the same LOW/64KB-aligned territory as everything else here --
+        // guest-reachable (<4GB), already proven executable (it backs
+        // every mapped DLL's own code section).
+        u64b stub_addr = (u64b)nt_territory_alloc(16);
+        if (!stub_addr) return boot_err("wow64 stub buffer alloc failed");
+        wr32((u8 *)x86_stack_esp, (u32b)stub_addr);
+        nt_wow64_stub_reserve(stub_addr);
+        puts("CHALICE: C4-27 stub buffer addr="); puthex(stub_addr);
+        puts(" seeded at esp="); puthex(x86_stack_esp); puts("\n");
     }
 
     // ---- CHALICE C3c-2l Phase A: nt_build_teb only ever registers ONE

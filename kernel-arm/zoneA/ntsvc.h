@@ -102,6 +102,13 @@ void nt_wow64_set_initial_context(unsigned long eip, unsigned long esp);
 // 0x2, wowbox64.dll+0xF88BC, live-confirmed). Call once, right after
 // nt_wow64_set_initial_context, same call site/convention.
 void nt_wow64_cpureserved_set_context(void *cpureserved, unsigned long eip, unsigned long esp);
+// CHALICE C4-27: register the guest-reachable buffer PeMain's synthetic
+// return address will point at -- see ntsvc.c's C4-27 block (above
+// NtAllocateVirtualMemory) for the full stub design/donor citations. Called
+// once by ntboot.c, right after allocating the buffer (before BOP is known
+// -- the stub bytes are written lazily, once NtAllocateVirtualMemory
+// live-detects FEX's own BOP-trampoline allocation).
+void nt_wow64_stub_reserve(unsigned long addr);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).

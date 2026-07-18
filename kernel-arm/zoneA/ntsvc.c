@@ -531,6 +531,92 @@ long NtFlushInstructionCache(void *ProcessHandle, const void *BaseAddress, unsig
     return STATUS_SUCCESS;
 }
 
+// =====================================================================
+// CHALICE C4-27: the syscall hinge -- a floor-built i386 stub that PeMain's
+// own `ret` lands in (ntboot.c seeds [x86_stack_esp] = this stub's address
+// as PeMain's synthetic return address -- conductor's fixed design ruling:
+// minimal donor-true RtlUserThreadStart-equivalent, replaced once the full
+// 32-bit ntdll boot lands, C4-28 note in HANDOFF). The stub routes
+// NtTerminateProcess(NtCurrentProcess(), status=eax) through the REAL
+// 32->64 transition -- FEX's own BOP ("bridge op") trampoline, the exact
+// address wow64.dll's process_init publishes as Wow64Transition on real
+// Windows (donor wine/dlls/wow64/syscall.c:878-880 init_image_mapping,
+// :1047 *__wine_syscall_dispatcher=pBTCpuGetBopCode()). FEX's own
+// BTCpuGetBopCode (FEX Source/Windows/WOW64/Module.cpp:689-691) just
+// returns BridgeInstrs::Syscall, a 4-byte RWX page BTCpuProcessInit
+// allocates itself via a REAL NtAllocateVirtualMemory call (Module.cpp:
+// 557-561: `SIZE_T Size = 4; NtAllocateVirtualMemory(NtCurrentProcess(),
+// &Addr, (1U<<31)-1, &Size, MEM_RESERVE|MEM_COMMIT, PAGE_EXECUTE_
+// READWRITE); *(uint32_t*)Addr = 0x2ecd2ecd; BridgeInstrs::Syscall = Addr;`)
+// -- a call THIS FLOOR ALREADY SERVICES (ZeroBits!=0 LOW-pool branch,
+// below). IRON law (never hardcode a captured address): the hook in that
+// branch derives the live BOP address straight off this exact real
+// syscall's own return value, every boot -- zero constants.
+//
+// Calling convention (measured against FEX's own HandleSyscallImpl,
+// Module.cpp:438-461, and donor Wow64SystemServiceEx, wine/dlls/wow64/
+// syscall.c:1202-1211): guest EAX=syscall id (low 12 bits select
+// syscall_tables[0], wow64.dll's own internal ntdll thunk table -- not a
+// floor table; id 0x2C == NtTerminateProcess, wine-arm64-syscalls.txt:36,
+// matching this floor's own dispatch numbering, same canonical Wine
+// numbering both sides already share). Guest stack at the `call [BOP]`
+// instruction must already hold [esp+4]=arg0, [esp+8]=arg1 in normal
+// __stdcall push order (right-to-left) -- FEX derives its `args` pointer
+// as (poppedReturnRSP)+4, exactly the address a genuine "mov eax,id; lea
+// edx,[esp+4]; call [Wow64Transition]" ntdll stub would compute BEFORE its
+// own internal `call` pushes a return address (EDX itself is never read by
+// FEX -- it recomputes purely off ESP, so this floor's stub never needs to
+// set EDX). wow64_NtTerminateProcess (wine/dlls/wow64/process.c:1144-1152)
+// unpacks args[0]=handle/args[1]=exit_code in that same declared order and
+// only special-cases a NULL handle (extra BTCpuProcessTerm call) -- this
+// stub pushes -1 (NtCurrentProcess() pseudo-handle) to skip that branch
+// (this floor's own NtTerminateProcess ignores ProcessHandle entirely
+// anyway, ntsvc.c above -- -1 is the minimal-fault-surface choice, not a
+// functional requirement).
+// =====================================================================
+static u64b nt_wow64_stub_addr;
+static int  nt_wow64_stub_addr_valid;
+static u64b nt_wow64_bop_addr;
+static int  nt_wow64_bop_valid;
+static int  nt_wow64_stub_written;
+
+// Called by ntboot.c once, right after allocating the small guest-reachable
+// (<4GB, nt_territory_alloc's own LOW-pool/64KB-aligned guarantee) code
+// buffer this stub's bytes will live in -- BEFORE the BOP address is known
+// (BTCpuProcessInit hasn't run yet at that point in boot), so only the
+// ADDRESS is recorded here; the bytes themselves are written lazily by
+// nt_wow64_stub_write_if_ready below, the moment BOP is discovered
+// (guaranteed to happen before BTCpuThreadInit/BTCpuSimulate ever reads
+// the guest stack this stub's address was seeded into -- ProcessInit always
+// precedes ThreadInit/Simulate in the real wow64.dll init chain).
+void nt_wow64_stub_reserve(unsigned long addr) {
+    nt_wow64_stub_addr = addr;
+    nt_wow64_stub_addr_valid = 1;
+}
+
+static void nt_wow64_stub_write_if_ready(void) {
+    if (nt_wow64_stub_written) return;
+    if (!nt_wow64_stub_addr_valid || !nt_wow64_bop_valid) return;
+
+    u8  *s = (u8 *)nt_wow64_stub_addr;
+    u32b i = 0;
+    s[i++] = 0x50;                    // push eax        (ExitStatus = PeMain's own return value)
+    s[i++] = 0x6A; s[i++] = 0xFF;     // push -1         (hProcess = NtCurrentProcess() pseudo-handle)
+    s[i++] = 0xB8;                    // mov eax, imm32
+    wr32(s + i, 0x2C); i += 4;        // NtTerminateProcess syscall id (table0, low 12 bits)
+    s[i] = 0xE8;                       // call rel32 -> BOP
+    {
+        u32b rel32 = (u32b)(nt_wow64_bop_addr - (nt_wow64_stub_addr + i + 5));
+        wr32(s + i + 1, rel32);
+    }
+    i += 5;
+
+    nt_wow64_stub_written = 1;
+    puts("CHALICE C4-27: guest stub written addr="); puthex(nt_wow64_stub_addr);
+    puts(" bop="); puthex(nt_wow64_bop_addr);
+    puts(" bytes="); puthex((u64b)i); puts("\n");
+}
+
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
                               unsigned long *RegionSize, unsigned long AllocationType,
                               unsigned long Protect) {
@@ -669,6 +755,24 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
         return STATUS_NO_MEMORY;
     }
     nt_avm_loopbreak_reset();
+
+    // CHALICE C4-27: FEX's BOP trampoline allocation, live-detected --
+    // Module.cpp:557-561's exact shape (Size=4, PAGE_EXECUTE_READWRITE,
+    // MEM_RESERVE|MEM_COMMIT, reached this branch so ZeroBits!=0 already
+    // holds) -- see the C4-27 block above NtAllocateVirtualMemory for the
+    // full donor citation. `size` here is the ORIGINAL requested size (4),
+    // captured before page-rounding, still in scope. First match wins
+    // (nt_wow64_bop_valid guard) -- BTCpuProcessInit allocates this exactly
+    // once per boot.
+    if (!nt_wow64_bop_valid && size == 4 && Protect == PAGE_EXECUTE_READWRITE &&
+        (AllocationType & (MEM_RESERVE | MEM_COMMIT)) == (MEM_RESERVE | MEM_COMMIT)) {
+        nt_wow64_bop_addr = (u64b)mem;
+        nt_wow64_bop_valid = 1;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE C4-27: BOP addr discovered="); puthex(nt_wow64_bop_addr); puts("\n");
+        }
+        nt_wow64_stub_write_if_ready();
+    }
 
     *BaseAddress = mem;
     *RegionSize = pages;
