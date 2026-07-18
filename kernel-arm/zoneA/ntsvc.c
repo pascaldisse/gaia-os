@@ -143,6 +143,15 @@ long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
 // not guessed. winnt.h _EXCEPTION_RECORD: Code@0 Flags@4 Record@8 Addr@0x10
 // NumberParameters@0x18 Information[]@0x20 (8B each). CONTEXT (ARM64):
 // Sp@0x100 Pc@0x108, X30(Lr)@0x008+30*8=0x0f0 (kmain.c ARM64_CONTEXT_*).
+// CHALICE C4-30: tentative (no-initializer) forward file-scope declarations
+// of the C4-27 stub-tracking statics (real definitions later in this file,
+// ~line 577) -- legal C (multiple tentative definitions at file scope merge
+// into one), needed so RAISE#1's receipt below (defined earlier in the
+// file) can read them without restructuring the file.
+static u64b nt_wow64_stub_addr;
+static int  nt_wow64_stub_addr_valid;
+static int  nt_wow64_stub_written;
+
 static u64b nt_raise_trace_count;
 long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstChance) {
     u8 *er = (u8 *)ExceptionRecord;
@@ -197,7 +206,11 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
         // syscall round-trip (confirmed live: no id=13 SET call appears
         // between the last BTCpuSimulate entry and this RAISE#1) -- read it
         // directly.
-        if (code == 0xC000001DUL && nt_raise_trace_count == 1 && nt_wow64_cpureserved_dbg) {
+        // CHALICE C4-30: was `code == 0xC000001DUL` only -- C4-29's fix
+        // changed the terminal code to 0xC0000005 (STATUS_ACCESS_VIOLATION)
+        // on this pass; the receipt is useful at RAISE#1 regardless of which
+        // status code got there, so key ONLY on nt_raise_trace_count==1.
+        if (nt_raise_trace_count == 1 && nt_wow64_cpureserved_dbg) {
             // Offsets duplicated from I386_CONTEXT (winnt.h _CONTEXT, x86) --
             // canonical CTX32_* #defines live later in this file (~line 918),
             // can't forward-reference; same duplication convention this file
@@ -229,6 +242,37 @@ long NtRaiseException(void *ExceptionRecord, void *Context, unsigned long FirstC
                 else puts("????????");
             }
             puts("\n");
+
+            // CHALICE C4-30 MEASURE step 2: is the C4-27 stub return-address
+            // still seeded on the stack? Hexdump [Esp-8,Esp+16) -- 6 words,
+            // 24 bytes -- same safe classified read as the Eip dump above.
+            puts("CHALICE C4-30 GUEST STACK @Esp-8..+16:");
+            for (long w = -8; w < 16; w += 4) {
+                u64b a = (u64b)(u32b)((long)g_esp + w);
+                u32b word;
+                puts(" ");
+                if (nt_fault_read32(a, &word)) puthex(word);
+                else puts("????????");
+            }
+            puts("\n");
+
+            // CHALICE C4-30 MEASURE step 2: is the C4-27 stub page itself
+            // intact -- 13 bytes (0xD): 50 6A FF B8 2C000000 E8 rel32.
+            if (nt_wow64_stub_addr_valid) {
+                puts("CHALICE C4-30 STUB PAGE addr="); puthex(nt_wow64_stub_addr);
+                puts(" written="); puthex((u64b)nt_wow64_stub_written);
+                puts(" bytes:");
+                for (long w = 0; w < 16; w += 4) {
+                    u64b a = nt_wow64_stub_addr + (u64b)w;
+                    u32b word;
+                    puts(" ");
+                    if (nt_fault_read32(a, &word)) puthex(word);
+                    else puts("????????");
+                }
+                puts("\n");
+            } else {
+                puts("CHALICE C4-30 STUB PAGE: addr not yet reserved\n");
+            }
         }
     }
     // CHALICE C4-24 fix (STATUS_INVALID_DISPOSITION loop) -- donor-grounded

@@ -456,6 +456,46 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
         status = STATUS_ILLEGAL_INSTRUCTION;
     } else return 0;
 
+    // CHALICE C4-30 MEASURE step 1: the ORIGINAL fault anatomy, at OUR OWN
+    // delivery point, before FEX's own BTCpuResetToConsistentStateImpl ever
+    // gets a chance to reconstruct/anchor a NEW record on top of it. This is
+    // NOT the RAISE#1 post-reset identity (ntsvc.c NtRaiseException, always
+    // libwow64fex+0x34E4/BTCpuSimulate+0x10 by FEX's own design,
+    // Module.cpp:757-777/947 -- memcpy'd over the real native Context right
+    // before that syscall) -- this is the raw ARM64 hardware trap sync_entry
+    // (boot.S) just delivered straight from ESR_EL1/ELR_EL1/FAR_EL1, before
+    // any guest code (FEX included) has touched it. WnR = ESR.ISS bit 6 (ARM
+    // ARM D13.2.37 ESR_EL1.ISS{DFSC,WnR,...} for a Data Abort). Region
+    // classification reuses the existing nt_fault_region classifier
+    // (ntfile.c) already used by the arena demand-commit path -- run here
+    // against BOTH elr and far, not just far, so a fault whose PC (not just
+    // its data address) lands in an unexpected class is equally visible.
+    {
+        u64 wnr = (esr >> 6) & 1;
+        puts("CHALICE C4-30 ORIGINAL FAULT: esr="); puthex(esr);
+        puts(" ec="); puthex(ec); puts(" status="); puthex(status);
+        puts(" elr="); puthex(elr); puts(" far="); puthex(far);
+        puts(" wnr="); puthex(wnr); puts("\n");
+        nt_fault_region("elr-orig", elr);
+        nt_fault_region("far-orig", far);
+        // CHALICE C4-30: raw instruction window [elr-32,elr+32) around the
+        // ORIGINAL fault PC -- this fault sits inside a JIT-generated
+        // reserve-commit-arena region (FEX's own dispatcher trampoline
+        // class, per C4-17/18/21's dump of the SAME class of 0x4000-byte
+        // arena), not the static libwow64fex.dll image, so map-fex-offsets.sh
+        // cannot resolve it -- dump the raw ARM64 words instead so they can
+        // be hand-disassembled (llvm-mc --disassemble --triple=aarch64)
+        // against this pass's own transcript.
+        puts("CHALICE C4-30 ELR WINDOW @elr-32..+32:");
+        for (long w = -32; w < 32; w += 4) {
+            u64 a = elr + w; u32 word;
+            puts(" ");
+            if (nt_fault_read32(a, &word)) puthex(word);
+            else puts("????????");
+        }
+        puts("\n");
+    }
+
     dispatcher = ki_user_exception_dispatcher();
     if (!dispatcher) return 0;
 
