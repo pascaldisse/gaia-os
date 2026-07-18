@@ -242,6 +242,9 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // boots back-to-back in one QEMU session was observed exhausting the
     // whole ~940MB territory on the 3rd boot without this).
     u64b nt_territory_boot_mark = nt_territory_mark();
+    // CHALICE C4-8: HIGH pool gets the same per-boot wholesale-reset mark
+    // (monad ruling #2 -- "per-boot wholesale reset covers BOTH pools").
+    u64b nt_high_territory_boot_mark = nt_high_territory_mark();
 
     const unsigned char *ntdll_bytes, *exe_bytes;
     u64b ntdll_len, exe_len;
@@ -526,6 +529,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     nt_exit_jmpbuf = 0;
 
     nt_territory_release_since(nt_territory_boot_mark);
+    nt_high_territory_release_since(nt_high_territory_boot_mark);   // CHALICE C4-8
     // CHALICE C-hello7 (continuation #3): drop this boot's OWN VM-arena
     // tracking-table slots too (ntsvc.c receipt) -- a separate fixed-size
     // bookkeeping array from the territory bump pointer that the bump reset
@@ -691,6 +695,7 @@ static void nt_pe32_section_selftest(void) {
 long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, const char *label) {
     nt_blob_ensure_init();
     u64b mark = nt_territory_mark();
+    u64b high_mark = nt_high_territory_mark();   // CHALICE C4-8: same wholesale reset, both pools
 
     const unsigned char *wow64_bytes, *backend_bytes;
     u64b wow64_len, backend_len;
@@ -854,6 +859,7 @@ long nt_boot_wow64_probe(const char *cpu_backend_name, int call_process_init, co
     }
 
     nt_territory_release_since(mark);
+    nt_high_territory_release_since(high_mark);   // CHALICE C4-8
     nt_vm_regions_release_since((unsigned long)mark);
     puts(label); puts(" ret=0\n");
     return 0;

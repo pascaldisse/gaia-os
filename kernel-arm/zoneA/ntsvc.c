@@ -157,8 +157,17 @@ static struct {
     int     used;
 } nt_vm_regions[NT_VM_MAX_REGIONS];
 
-static void *nt_vm_alloc(u64b size) {
-    u8 *aligned = nt_territory_alloc(size);   // ntfile.h; zero-filled, page-aligned
+// CHALICE C4-8 (monad ruling #2): pool selection -- `high_first` asks for
+// the HIGH (>=4GB, unconstrained) pool before the LOW (sub-4GB, 32-bit-
+// visible) one, falling back to LOW if HIGH is exhausted; LOW is also the
+// unconditional path when `high_first` is false (constrained/32-bit-
+// ceiling requests never belong above 4GB). Caller (NtAllocateVirtualMemory
+// below) derives `high_first` from ZeroBits==0 -- see the donor-grounded
+// receipt at its call site.
+static void *nt_vm_alloc_pool(u64b size, int high_first) {
+    u8 *aligned = 0;
+    if (high_first) aligned = nt_high_territory_alloc(size);   // ntfile.h
+    if (!aligned) aligned = nt_territory_alloc(size);           // ntfile.h; LOW pool / fallback
     if (!aligned) return 0;
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (nt_vm_regions[i].used) continue;
@@ -255,10 +264,62 @@ static void nt_avm_log(const char *tag, void *base, u64b size, u64b atype,
     puts("\n");
 }
 
+// CHALICE C4-8 (monad ruling #3): loop-breaker hygiene -- N consecutive
+// *failed* NtAllocateVirtualMemory requests for the SAME page-rounded size
+// (both pools exhausted) means the caller is retrying with zero backoff --
+// unbounded and unrecoverable at this floor's territory sizing (HANDOFF
+// leg-7: Box64's own init settles into exactly this pattern, requesting a
+// stuck-fixed 0x20000/128KB chunk forever once both pools fill). N default
+// ~256 (parameterized, not hardcoded) -- one legible CHALICE FAULT line
+// (size + resolved caller module+offset, via the real x9 caller LR stashed
+// at the syscall frame's stub_lr slot, NT_FRAME_STUB_LR_OFF -- ntdisp.S/
+// ntids.h receipt) then a clean process termination through the same
+// nt_setjmp/nt_longjmp unwind channel NtTerminateProcess/NtRaiseException
+// already use above -- never an infinite kernel-side spin again.
+#define NT_AVM_LOOPBREAK_N 256
+
+static u64b nt_avm_loopbreak_last_size = 0;
+static unsigned long nt_avm_loopbreak_count = 0;
+
+static void nt_avm_loopbreak_reset(void) {
+    nt_avm_loopbreak_last_size = 0;
+    nt_avm_loopbreak_count = 0;
+}
+
+static void nt_avm_loopbreak_hit(u64b pages) {
+    if (pages == nt_avm_loopbreak_last_size) {
+        nt_avm_loopbreak_count++;
+    } else {
+        nt_avm_loopbreak_last_size = pages;
+        nt_avm_loopbreak_count = 1;
+    }
+    if (nt_avm_loopbreak_count < NT_AVM_LOOPBREAK_N) return;
+
+    u64b teb; __asm__ volatile("mov %0, x18" : "=r"(teb));
+    u64b frame = rd64((const u8 *)(teb + NT_TEB_SYSCALL_FRAME_OFF));
+    u64b caller = frame ? rd64((const u8 *)(frame + NT_FRAME_STUB_LR_OFF)) : 0;
+    char name[64]; u64b off = 0;
+    puts("CHALICE FAULT: NtAllocateVirtualMemory loop-broken N=");
+    puthex((u64b)nt_avm_loopbreak_count);
+    puts(" size="); puthex(pages);
+    puts(" caller="); puthex(caller);
+    if (caller && nt_image_resolve(caller, name, sizeof(name), &off)) {
+        puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
+    }
+    puts(" -- terminating process cleanly\n");
+
+    nt_exit_code = (long)STATUS_NO_MEMORY;
+    if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
+    // unreachable if jmpbuf set (the normal case, a real guest process);
+    // falls through to the ordinary STATUS_NO_MEMORY return otherwise,
+    // counter left saturated so this line keeps firing rather than going
+    // silent again.
+}
+
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
                               unsigned long *RegionSize, unsigned long AllocationType,
                               unsigned long Protect) {
-    (void)ProcessHandle; (void)ZeroBits;
+    (void)ProcessHandle;
 
     void   *in_base = BaseAddress ? *BaseAddress : 0;
     u64b    in_size = RegionSize  ? *RegionSize  : 0;
@@ -308,11 +369,29 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
         return STATUS_SUCCESS;
     }
 
-    void *mem = nt_vm_alloc(pages);
+    // CHALICE C4-8 (monad ruling #2): ZeroBits==0 -> unconstrained ->
+    // HIGH pool first (falls back to LOW if HIGH is exhausted, inside
+    // nt_vm_alloc_pool). Donor-grounded, not guessed: wow64's own thunks
+    // ALWAYS pass a nonzero zero_bits (explicit or wow64's own
+    // default_zero_bits=0x7fffffff, wine/dlls/wow64/syscall.c:41) through
+    // get_zero_bits() (wine/dlls/wow64/wow64_private.h:94-97) into the real
+    // 64-bit NtAllocateVirtualMemory; ntdll's own get_zero_bits_limit()
+    // (wine/dlls/ntdll/unix/unix_private.h:569-586) turns a nonzero
+    // zero_bits into a concrete ceiling, while THIS function's own
+    // zero_bits==0 case hits `limit=0` == no ceiling (wine/dlls/ntdll/
+    // unix/virtual.c:5290-5297) -- i.e. genuinely unconstrained native-
+    // ARM64 callers (wowbox64.dll's own dynarec heap/code-cache growth,
+    // never a 32-bit guest's own VirtualAlloc, which always arrives here
+    // via the wow64 thunk with a nonzero zero_bits) are exactly the
+    // ZeroBits==0 case.
+    int high_first = (ZeroBits == 0);
+    void *mem = nt_vm_alloc_pool(pages, high_first);
     if (!mem) {
+        nt_avm_loopbreak_hit(pages);   // CHALICE C4-8 ruling #3 -- may terminate the process
         nt_avm_log("OUT", 0, pages, AllocationType, Protect, STATUS_NO_MEMORY);
         return STATUS_NO_MEMORY;
     }
+    nt_avm_loopbreak_reset();
 
     *BaseAddress = mem;
     *RegionSize = pages;

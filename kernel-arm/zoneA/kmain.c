@@ -23,12 +23,27 @@ static void putdec(u64 v) {
     puts(&b[i]);
 }
 
-// ---- MMU: identity map, two 1GB blocks (device @0, RAM @0x40000000) ----
+// ---- MMU: identity map (device @0, RAM @0x40000000) ----
+// CHALICE C4-8 (monad ruling #1): QEMU RAM is now a build.sh parameter
+// (GAIA_QEMU_MEM, default 4G -- see build.sh) -- was a single 1GB L1 block,
+// widened to NT_RAM_BLOCKS blocks (4 * 1GB = 4GB default) so the enlarged
+// physical range stays fully identity-mapped. Bump NT_RAM_BLOCKS (and
+// GAIA_QEMU_MEM) together if the RAM parameter ever grows past 4G.
+// NT_RAM_TOP feeds the bound checks below (sync_handler's fp-chain walk +
+// root_key_names spot-check) so debug dumps don't silently stop resolving
+// pointers above the old 1GB ceiling now that ntfile.c's HIGH territory
+// pool (>=4GB) is live real memory too.
+#define NT_RAM_BASE   0x40000000ULL
+#define NT_RAM_BLOCKS 4ULL                                   // 4 * 1GB = 4GB (GAIA_QEMU_MEM default)
+#define NT_RAM_TOP    (NT_RAM_BASE + NT_RAM_BLOCKS * 0x40000000ULL)
 static u64 l1_table[512] __attribute__((aligned(4096)));
 
 static void mmu_on(void) {
     l1_table[0] = 0x00000000ULL | (0ULL << 2) | (1ULL << 10) | 1ULL;               // device nGnRnE
-    l1_table[1] = 0x40000000ULL | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL; // normal WBWA ISH
+    for (u64 i = 0; i < NT_RAM_BLOCKS; i++) {
+        u64 base = NT_RAM_BASE + i * 0x40000000ULL;
+        l1_table[1 + i] = base | (1ULL << 2) | (3ULL << 8) | (1ULL << 10) | 1ULL;  // normal WBWA ISH
+    }
 
     u64 mair = 0xFF00;
     u64 tcr  = 32ULL | (1ULL << 8) | (1ULL << 10) | (3ULL << 12)
@@ -196,7 +211,7 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
     puts("  -- fp-chain backtrace (x29 walk) --\n");
     u64 fp = regs[29];
     for (int i = 0; i < 8; i++) {
-        if (!fp || fp < 0x40000000ULL || fp >= 0x80000000ULL || (fp & 7)) {
+        if (!fp || fp < NT_RAM_BASE || fp >= NT_RAM_TOP || (fp & 7)) {
             puts("  [fp "); putdec(i); puts("] fp="); puthex(fp);
             puts(" -> out of plausible RAM range or misaligned, stop\n");
             break;
@@ -228,12 +243,12 @@ void sync_handler(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) {
             u64 table = kb_base + 0x11cc18ULL;
             puts("  kernelbase.dll base="); puthex(kb_base);
             puts(" table="); puthex(table); puts("\n");
-            if (table >= 0x40000000ULL && table + 16 < 0x80000000ULL) {
+            if (table >= NT_RAM_BASE && table + 16 < NT_RAM_TOP) {
                 u64 *tp = (u64 *)table;
                 for (int i = 0; i < 2; i++) {
                     u64 entry = tp[i];
                     puts("  root_key_names["); putdec(i); puts("]="); puthex(entry);
-                    if (entry >= 0x40000000ULL && entry < 0x80000000ULL && !(entry & 1)) {
+                    if (entry >= NT_RAM_BASE && entry < NT_RAM_TOP && !(entry & 1)) {
                         puts(" -> \"");
                         unsigned short *ws = (unsigned short *)entry;
                         for (int k = 0; k < 24; k++) {

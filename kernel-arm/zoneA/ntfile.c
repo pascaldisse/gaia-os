@@ -297,6 +297,31 @@ int nt_image_base_by_name(const char *name, u64b *base_out, u64b *size_out) {
 // =====================================================================
 #define NT_DLL_TERRITORY_BASE  0x45000000ULL
 #define NT_DLL_TERRITORY_LIMIT 0x7ff00000ULL   // safety margin below KUSER
+
+// CHALICE C4-8 (monad ruling #2): HIGH territory pool -- unconstrained
+// (ZeroBits==0) NtAllocateVirtualMemory requests (ntsvc.c NtAllocateVirtual-
+// Memory) land here FIRST, falling back to the LOW pool above only if HIGH
+// is exhausted. Selection grounded in donor wow64/ntdll zero_bits semantics,
+// not guessed: wow64's own thunks ALWAYS pass a nonzero zero_bits (either an
+// explicit 32-bit-visible caller value or wow64's own default_zero_bits =
+// 0x7fffffff, wine/dlls/wow64/syscall.c:41) through get_zero_bits()
+// (wine/dlls/wow64/wow64_private.h:94-97) into the real 64-bit
+// NtAllocateVirtualMemory -- ntdll's own get_zero_bits_limit(zero_bits)
+// (wine/dlls/ntdll/unix/unix_private.h:569-586) turns THAT into a concrete
+// address ceiling, while zero_bits==0 (native ARM64 code with no 32-bit
+// guest to stay visible to -- e.g. wowbox64.dll's OWN dynarec heap/code-
+// cache growth) hits NtAllocateVirtualMemory's own `limit = 0` == no ceiling
+// (wine/dlls/ntdll/unix/virtual.c:5290-5297: `if (!*ret) limit =
+// get_zero_bits_limit(zero_bits); else limit = 0;` then
+// allocate_virtual_memory(...,limit,...) -- zero_bits==0 => limit==0 =>
+// unconstrained). NT_HIGH_TERRITORY_BASE sits at the 4GB mark -- above any
+// PE32 image's <4GB requirement (pemod.c assert) and above wow64's own
+// ~2GB default_zero_bits ceiling, so LOW-pool callers can never collide
+// with it. Range must track kmain.c mmu_on's identity-mapped RAM extent
+// and build.sh's GAIA_QEMU_MEM (default 4G: RAM spans 0x40000000..
+// 0x140000000) -- bump both together if GAIA_QEMU_MEM grows.
+#define NT_HIGH_TERRITORY_BASE  0x100000000ULL
+#define NT_HIGH_TERRITORY_LIMIT 0x140000000ULL
 #define NT_PAGE_SIZE 4096ULL
 // CHALICE C3c-2l Phase B: Windows allocation granularity (SectionAlignment/
 // image-map granularity every real PE loader assumes) -- 64KB, NOT the 4KB
@@ -310,11 +335,20 @@ int nt_image_base_by_name(const char *name, u64b *base_out, u64b *size_out) {
 #define NT_DLL_TERRITORY_ALIGN 0x10000ULL
 
 static u64b nt_dll_territory_next = NT_DLL_TERRITORY_BASE;
+// CHALICE C4-8: HIGH pool bump pointer -- declared here (not beside its
+// alloc/mark/release functions further down) so nt_territory_debug_stats
+// right below can report both pools in one line; same shape as the LOW
+// pointer above (bump-only, per-boot wholesale reset via
+// nt_high_territory_mark/_release_since, mirroring nt_territory_mark/
+// _release_since exactly).
+static u64b nt_dll_high_territory_next = NT_HIGH_TERRITORY_BASE;
 
 void nt_territory_debug_stats(const char *tag) {
     puts("CHALICE DEBUG: territory["); puts(tag); puts("] next=");
     puthex(nt_dll_territory_next);
     puts(" used_bytes="); puthex(nt_dll_territory_next - NT_DLL_TERRITORY_BASE);
+    puts(" high_next="); puthex(nt_dll_high_territory_next);
+    puts(" high_used_bytes="); puthex(nt_dll_high_territory_next - NT_HIGH_TERRITORY_BASE);
     puts("\n");
 }
 
@@ -394,6 +428,33 @@ unsigned char *nt_territory_alloc(unsigned long size_of_image) {
     }
     u8 *base = (u8 *)nt_dll_territory_next;
     nt_dll_territory_next += pages;
+    for (u64b i = 0; i < pages; i++) base[i] = 0;
+    return base;
+}
+
+u64b nt_high_territory_mark(void) { return nt_dll_high_territory_next; }
+
+void nt_high_territory_release_since(u64b mark) {
+    if (nt_dll_high_territory_next > mark) nt_dll_high_territory_next = mark;
+}
+
+// CHALICE C4-8: HIGH pool alloc -- identical bump/align/zero-fill shape to
+// nt_territory_alloc (LOW pool) above, just against the HIGH base/limit.
+// Returns 0 on HIGH exhaustion (caller, ntsvc.c nt_vm_alloc_pool, falls
+// back to the LOW pool -- monad ruling #2's "HIGH first, LOW fallback").
+unsigned char *nt_high_territory_alloc(unsigned long size_of_image) {
+    u64b pages = (size_of_image + (NT_PAGE_SIZE - 1)) & ~(NT_PAGE_SIZE - 1);
+    if (pages == 0) pages = NT_PAGE_SIZE;
+
+    nt_dll_high_territory_next = (nt_dll_high_territory_next + (NT_DLL_TERRITORY_ALIGN - 1)) & ~(NT_DLL_TERRITORY_ALIGN - 1);
+    if (nt_dll_high_territory_next + pages > NT_HIGH_TERRITORY_LIMIT) {
+        puts("CHALICE DEBUG: HIGH territory EXHAUSTED next="); puthex(nt_dll_high_territory_next);
+        puts(" want_pages="); puthex(pages); puts(" limit="); puthex(NT_HIGH_TERRITORY_LIMIT);
+        puts("\n");
+        return 0;
+    }
+    u8 *base = (u8 *)nt_dll_high_territory_next;
+    nt_dll_high_territory_next += pages;
     for (u64b i = 0; i < pages; i++) base[i] = 0;
     return base;
 }

@@ -175,10 +175,21 @@ QEMU_SERIAL="${GAIA_SERIAL:-mon:stdio}"
 # ceiling (SLICE2-SPEC Atom B receipt). mem.c's own heap arena tops out at
 # 0x45000000 (HEAP_BASE 0x41000000 + HEAP_SIZE 64MB) -- verified nowhere
 # near 0x7ffe0000 (~0.8GB of headroom), no guard needed there.
+# CHALICE C4-8 (monad ruling #1): 1G -> GAIA_QEMU_MEM (default 4G) -- Box64's
+# dynarec heap-grow needs real room above 4GB (ntfile.c HIGH territory pool,
+# ntsvc.c NtAllocateVirtualMemory pool selection). KUSER_SHARED_DATA's fixed
+# 0x7ffe0000 landing (above) still holds for any GAIA_QEMU_MEM>=1G -- it's
+# WITHIN the first 1GB block, untouched by growing the parameter. kmain.c
+# mmu_on's identity map (NT_RAM_BLOCKS, default 4) MUST track this value --
+# bump both together if GAIA_QEMU_MEM is ever raised past 4G. Gate scripts
+# (scratch/*.py) never hardcode -m themselves -- they inherit this default
+# via build.sh, so widening it here needs no gate-script edits ("fix the
+# gate's invocation, not the checks").
+QEMU_MEM="${GAIA_QEMU_MEM:-4G}"
 # GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
 # harness that attaches QEMU to stdio; gate scripts run build.sh themselves).
 [ -n "${GAIA_NO_RUN:-}" ] && { echo "build ok (GAIA_NO_RUN set, skipping QEMU)"; exit 0; }
-exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m 1G \
+exec qemu-system-aarch64 -M virt,gic-version=3 -cpu cortex-a72 -m "$QEMU_MEM" \
     -global virtio-mmio.force-legacy=false \
     -drive if=none,file=disk.img,format=raw,id=hd \
     -device virtio-blk-device,drive=hd \

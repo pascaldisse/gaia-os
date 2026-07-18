@@ -82,6 +82,15 @@ void nt_territory_debug_stats(const char *tag);
 unsigned long nt_territory_mark(void);
 void nt_territory_release_since(unsigned long mark);
 
+// CHALICE C4-8 (monad ruling #2): HIGH territory pool (>=4GB) -- see
+// ntfile.c for the base/limit + donor zero_bits-selection receipt.
+// ntsvc.c's NtAllocateVirtualMemory tries this pool first for unconstrained
+// (ZeroBits==0) requests, falling back to nt_territory_alloc (LOW) if it's
+// exhausted; ntboot.c resets both pools per-boot the same way.
+unsigned char *nt_high_territory_alloc(unsigned long size_of_image);
+unsigned long nt_high_territory_mark(void);
+void nt_high_territory_release_since(unsigned long mark);
+
 // CHALICE C3c Atom 3C-1: blob-manifest lookup with FS fallback (stock DLLs
 // too big to embed, live on the RedSea-spirit disk instead -- fs.c/
 // mkdisk.py). Case-insensitive. On an FS-fallback hit, *out_bytes/*out_name
