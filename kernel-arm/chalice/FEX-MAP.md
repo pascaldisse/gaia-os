@@ -1,5 +1,115 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-30 — the ORIGINAL fault (pre-reset) captured and named: FEX's own GuestSignal_SIGSEGV self-fault ("force a SIGSEGV by loading zero", `Dispatcher.cpp`), inside its fixed dispatcher buffer (0x4000 bytes == `MAX_DISPATCHER_CODE_SIZE`), reached before `BTCpuSimulate` ever dispatches to PeMain's block. Runtime `ec45bd6`; live 2026-07-19.
+
+### Receipt, live (`pe10 fex`, this pass's own new instrumentation)
+
+```text
+CHALICE ARENA: esr=0x96000006 ec=0x25 iss=0x6 elr=0x26D0C02B0 far=0x0
+CHALICE REGION elr=0x26D0C02B0 -> reserve-commit-arena committed base=0x26D0C0000 size=0x4000
+CHALICE REGION far=0x0 -> outside-known-allocators
+CHALICE ARENA: refused not-arena
+CHALICE C4-30 ORIGINAL FAULT: esr=0x96000006 ec=0x25 status=0xC0000005 elr=0x26D0C02B0 far=0x0 wnr=0
+CHALICE REGION elr-orig -> reserve-commit-arena committed base=0x26D0C0000 size=0x4000
+CHALICE REGION far-orig -> outside-known-allocators
+CHALICE C4-30 ELR WINDOW @elr-32..+32:
+  0xA9031B85 0xA9042788 0xA9052F8A 0x29026F9A 0x91070380 0x4C9F2C10 0x4C9F2C14 0x52800001
+  0xF9400021 0xD53B4200 0xB9040B80 0xF9005B99 0xA9021F84 0xA9031B85 0xA9042788 0xA9052F8A
+```
+
+`esr=0x96000006` decodes: EC=`0x25` (Data Abort, lower EL), ISS=`0x6` -> WnR=`(esr>>6)&1=0` (a READ), DFSC=`0x6` (Translation fault, level 2 — genuinely unmapped, not a permission fault). `elr=0x26D0C02B0` sits `0x2B0` into a `reserve-commit-arena` region base `0x26D0C0000` size `0x4000`, classified `committed` (real, executable, mapped code — not the fault). `far=0x0` classifies `outside-known-allocators` — an unambiguous NULL pointer, not a mis-triaged reserve-only arena address (see triage check below).
+
+### The arena IS FEX's own Dispatcher code buffer — exact size proof
+
+```cpp
+// FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp:36
+constexpr size_t MAX_DISPATCHER_CODE_SIZE = FEXCore::Utils::FEX_PAGE_SIZE * 4;   // 0x1000*4 = 0x4000
+
+// :39
+Dispatcher::Dispatcher(FEXCore::Context::ContextImpl* ctx)
+  : Arm64Emitter(ctx, FEXCore::Allocator::VirtualAlloc(MAX_DISPATCHER_CODE_SIZE, true), MAX_DISPATCHER_CODE_SIZE)
+```
+
+Our arena region's size (`0x4000`) is an exact, non-coincidental match — the SAME class of dispatcher-trampoline arena C4-17/18/21/27/28 already independently named in earlier legs (base varies boot-to-boot per this floor's bump allocator, size is always `0x4000`).
+
+### The exact instruction, disassembled + donor-matched
+
+Word window index (`elr-32` .. `elr+28`, step 4): index 8 (`w=0`) is the faulting word. Manual ARM64 field decode (bit slicing, cross-checked against the ARM ARM):
+
+- `elr-4 = 0x52800001` → `MOVZ W1, #0` (32-bit write zero-extends into X1)
+- `elr+0 = 0xF9400021` → `LDR X1, [X1, #0]` (`size=11(64-bit) opc=01(LDR) imm12=0 Rn=x1 Rt=x1`) — **the fault**: loads through the register JUST zeroed.
+
+Donor match, `FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp`, the `GuestSignal_SIGSEGV` handler (comment verbatim in the donor):
+
+```cpp
+{
+  // Guest Overflow handler
+  // Needs to be distinct from the SignalHandlerReturnAddress
+  GuestSignal_SIGSEGV = GetCursorAddress<uint64_t>();
+  SpillStaticRegs(TMP1);
+  // hlt/udf = SIGILL
+  // brk = SIGTRAP
+  // ??? = SIGSEGV
+  // Force a SIGSEGV by loading zero
+  if (CTX->ExitOnHLTEnabled()) {
+    ldr(ARMEmitter::XReg::x0, STATE_PTR(CpuStateFrame, ReturningStackLocation));
+    add(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::rsp, ARMEmitter::Reg::r0, 0);
+    PopCalleeSavedRegisters();
+    ret();
+  } else {
+    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, 0);
+    ldr(ARMEmitter::XReg::x1, ARMEmitter::Reg::r1);
+  }
+}
+```
+
+`LoadConstant(x1, 0)` → `MOVZ W1,#0`; `ldr(XReg::x1, Reg::r1)` → `LDR X1, [X1]` — byte-for-byte, instruction-for-instruction match. We hit the `else` branch, confirming `CTX->ExitOnHLTEnabled()` is FALSE (default config) live on this floor. `elr-16..elr-8` (`0x91070380 0x4C9F2C10 0x4C9F2C14`) are consistent in class with the immediately-preceding `SpillStaticRegs(TMP1)` call (ADD-immediate + SIMD LD1/ST1-style context-spill instructions) — not individually decoded to instruction-level confidence this pass (not needed for the identification; the two-instruction fault signature above is exact and sufficient).
+
+### Why FEX reaches this trampoline — named, not chased (time-boxed)
+
+`GuestSignal_SIGSEGV` is branched to ONLY from `IR::Break(FAULT_SIGSEGV)` (`FEXCore/Source/Interface/Core/JIT/MiscOps.cpp:64-93`, `DEF_OP(Break)`, `case Core::FAULT_SIGSEGV: ldr(TMP1,...Pointers.GuestSignal_SIGSEGV); br(TMP1);`). `IR::Break(FAULT_SIGSEGV)` is itself emitted by the x86 frontend (`OpcodeDispatcher.cpp`) for a closed set of reasons: `INT n` when the literal isn't the syscall gate (`0xCD`, `#GP`, line ~4679), `INTO` (`0xCE`, line ~4689), `HLT` (`0xF4`, line ~4699 — deliberately `#GP`/SIGSEGV not SIGILL), `PermissionRestrictedOp` (`#GP`, line ~5000), `NoExecOp` (non-executable-page instruction FETCH, `#PF`/`SEGV_ACCERR`, line ~5018).
+
+PeMain's own decoded bytes at the boot-seeded `Eip` (re-confirmed intact this pass, GUEST BYTES receipt: `55 89 E5 B8 2A 00 00 00 5D C3` = `push ebp; mov ebp,esp; mov eax,0x2A; pop ebp; ret`) contain none of `INT`/`HLT`/`UD2` — so if this specific `Break` fired while translating THAT exact block, it did not come from decoding those bytes. More likely this fires from a different FEX-internal path (an init-time probe/warm-up compile, or a permission/exec-bit check against an address that isn't `exe_entry`) reached before `BTCpuSimulate` ever executes PeMain's own bytes — see the CPURESERVED receipt below (Eax=0, Esp==Ebp==boot-seed: PeMain never ran).
+
+**Next lead, not chased this pass** (new instrumentation, time-boxed out, no donor edits per this project's law): `CpuStateFrame::SynchronousFaultData` (`FEXCore/include/FEXCore/Core/CoreState.h:414-421`, an 8-byte `{FaultToTopAndGeneratedException, Signal, TrapNo, si_code, err_code}` struct) is written by `IR::Break` (`MiscOps.cpp:64-75`) immediately before branching to the signal trampoline — reading it live from OUR floor (via `TlsSlots[16]`/`ThreadState`, already probed C4-22/23/29) would name the exact `TrapNo`/`si_code` and settle which frontend site fired, entirely from our own side, without touching donor code.
+
+### I386_CONTEXT + stack/stub receipts (MEASURE step 2)
+
+```text
+CHALICE C4-25 GUEST CTX: Eip=0x47661000 (hello8_x86.exe+0x1000) Esp=0x488CC000 Eax=0x0
+  Ecx=0x0 Edx=0x0 Ebx=0x0 Ebp=0x488CC000 Esi=0x0 Edi=0x0 Cs=0x1B Ss=0x23 EFlags=0x202
+CHALICE C4-25 GUEST BYTES @Eip-16..+32: 0 0 0 0 0xB8E58955 0x2A 0xC35D 0 0 0 0 0
+CHALICE C4-30 GUEST STACK @Esp-8..+16: 0 0 0x488D0000 0 0 0
+CHALICE C4-30 STUB PAGE addr=0x488D0000 written=1 bytes: 0xB8FF6A50 0x2C 0x76FFF3E8 0xF
+```
+
+`Eax=0x0`, not `0x2A` — PeMain's own `mov eax,0x2A` never executed. `Esp==Ebp==0x488CC000` — exactly the boot-seeded stack-top (`nt_wow64_cpureserved_set_context`'s own write), unchanged — **PeMain never started executing**. Guest byte hexdump confirms the entry function is intact and benign (same as C4-26 already found): `55 89 E5 B8 2A 00 00 00 5D C3`.
+
+Stack word at `Esp+0` = `0x488D0000` = exactly `nt_wow64_stub_addr` — **the C4-27 stub return-address is still correctly seeded**, undisturbed. Stub-page hexdump (13/`0xD` bytes, `written=1`): little-endian byte sequence `50 6A FF B8 2C 00 00 00 E8 F3 FF 76 0F` = `push eax; push -1; mov eax,0x2C; call rel32`, byte-for-byte the intended design. `rel32=0x0F76FFF3`; `stub_addr(0x488D0000) + 13(0xD) + rel32 = 0x58040000` (hand hex-verified) — correctly resolves forward to this boot's own live-discovered BOP address. **The C4-27 stub is intact, correctly seeded, and simply unreached** — same verdict C4-27 already reached, now doubly confirmed via a completely different fault identity than that leg saw.
+
+### Demand-commit triage check (MEASURE step 3)
+
+`sync_try_arena_demand_commit` (`kmain.c`) fires first (boot.S ordering), sees `far=0x0`, calls `nt_arena_contains(0x0)` → false (0 was never reserved by any `NtAllocateVirtualMemoryEx`/arena call) → `CHALICE ARENA: refused not-arena`. Correct behavior — **not a triage regression**; this task's branch (a) ("far ∈ demand arena → fix triage") does not apply.
+
+### Branch verdict vs the task's own (a)/(b)/(c)
+
+- **(a) does not apply** — far ∉ demand arena, correctly refused.
+- **(b) does not apply** — the C4-27 stub/Esp seeding is proven intact and unreached; not the cause. This fault happens before PeMain's own code ever runs.
+- **(c) sharpened, not a "missing service"** — the AV is inside FEX's OWN internal dispatcher-generated code, a deliberate self-fault mechanism (not a floor gap on FEX's side) that this floor's general "forward every unclassified fault to guest NT SEH" design (C4-18) cannot distinguish from a genuine guest AV. Same already-repeatedly-named architectural gap (C4-18/21/24/26/27/29) — but for the first time precisely identified as the `GuestSignal_SIGSEGV` marker specifically (not the previously-seen `SignalHandlerReturnAddress`/`hlt#0` marker C4-17/18/21/27 named, nor the now-fixed `TlsSlots[16]=2` sentinel C4-28/29 fixed).
+
+### The full chain, now proven end-to-end for the first time
+
+Our floor delivers this self-fault as a genuine `STATUS_ACCESS_VIOLATION` → stock ntdll's `KiUserExceptionDispatcher` → `dispatch_exception` → wow64's `Wow64PrepareForException` → FEX's `BTCpuResetToConsistentStateImpl` (which `memcpy`'s a NEW reconstructed context anchored at `BTCpuSimulate+0x10` over the real one, `Module.cpp:947`, by FEX's own design, to give guest SEH handlers a stable native-unwind-shaped context) → guest ntdll calls `NtRaiseException` AGAIN with that reconstructed identity → our floor's `RAISE#1` (`ntsvc.c`) only ever saw the anchor (`ctx.pc=libwow64fex+0x34E4=BTCpuSimulate+0x10`), never the original fault. Prior legs (C4-18/21/24/26/27/29) only ever observed the tail of this chain; this pass captured the head, closing the loop.
+
+### Success ladder verdict
+
+(a) **AV explained** — ACHIEVED, first time, full chain proven not inferred. (a) "+ fixed" — NOT attempted: the fix is the identical already-named architectural decision (FEX-internal-fault short-circuit vs full guest-SEH injection) five prior legs explicitly ruled needs Pascal's own design ruling — attempting it here would be the "speculative changes" this project's law forbids. (b) PeMain completes — NOT reached, now explained why (fault fires upstream of BTCpuSimulate ever dispatching to PeMain's block). (c) new frontier mapped + recorded honestly — yes, more precisely than any prior leg.
+
+### Re-gate
+
+`pe8_gate.py` ret=78 PASS; `pe9_gate.py` PASS both backends (wowbox64/fex, both ret=0); `ramfb_gate.py` PASS (7/7). Instrumentation-only change — `pe10 ret=3221225477` (`=0xC0000005`) identical before/after.
+
+
 ## C4-29 — the null image base RESOLVED: FEX's own BTCpuProcessInit read LdrSystemDllInitBlock->ntdll_handle unconditionally; fixed by mapping syswow64/ntdll.dll Phase-0 and populating it C-direct. C4-28's whole fresh fault chain (RtlImageNtHeader(NULL) -> TlsSlots[16]=2 loop) is GONE, no regression. New frontier: back at the SAME pre-existing BTCpuSimulate+0x10 architectural gap C4-18/21/24/26/27 already named -- but reached this time via a genuinely healthy path (real TlsSlots[16] heap pointer, real JIT execution in the reserve-commit arena, clean single-pass NT SEH round-trip). Runtime `c594741`; live 2026-07-19.
 
 - **MEASURE step 1 answer, live-caught** (kmain.c `resolve_line("lr", regs_safe[30])` instrumentation added this task, extending the existing guest-exception-delivery receipt): at the `RtlImageNtHeader(NULL)` fault (`elr=ntdll.dll+0x43DB8 far=0`), the caller LR resolved to `libwow64fex.dll+0x169B40`, `x0=0` (the NULL module-base argument, captured directly). Static-mapped (`map-fex-offsets.sh`) against the FEX donor: `+0x169B40` is the return address right after `bl RtlImageNtHeader` inside `FEX::Windows::InvalidationTracker::HandleImageMap(std::string_view Name, uint64_t Address)` (`Source/Windows/Common/InvalidationTracker.cpp:63`) -- `x3` (the `Address` arg) is moved into `x0` before the call, so `HandleImageMap` itself was invoked with `Address=0`.
