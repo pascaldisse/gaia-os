@@ -191,7 +191,15 @@ echo "fetch-stock-dlls: OK -- $OUT_DIR/{$( echo $NLS_TARGETS | tr ' ' ',' )}"
 X86_TARGETS="ntdll.dll kernel32.dll kernelbase.dll"
 X86_SUBDIR="./usr/lib/wine/i386-windows"
 X86_OUT_DIR="$OUT_DIR/i386-windows"
-WOW64_NATIVE_TARGETS="wow64.dll"
+# CHALICE C4-6: wow64win.dll added -- process_init (dlls/wow64/syscall.c
+# :1035) loads it right after resolving the CPU backend's BTCpu* exports,
+# UNCONDITIONALLY (its own sdwhwin32 SYSTEM_SERVICE_TABLE export feeds
+# syscall_tables[1] before BTCpuProcessInit is ever called) -- a missing
+# wow64win.dll fails the whole process_init cleanly (STATUS_DLL_NOT_FOUND,
+# NtTerminateProcess) before BTCpuProcessInit/BTCpuSimulate ever run,
+# confirmed live (pe10 probe, C4-6). Same aarch64-windows source dir as
+# wow64.dll itself -- no new fetch mechanism, just one more filename.
+WOW64_NATIVE_TARGETS="wow64.dll wow64win.dll"
 WOW64_OUT_DIR="$OUT_DIR/wow64-chain"
 CPU_BACKEND_DEBS="hangover-libwow64fex_11.9_arm64.deb:libwow64fex.dll hangover-wowbox64_11.9_arm64.deb:wowbox64.dll"
 
@@ -216,7 +224,7 @@ PYEOF
 
 x86_all_present() {
     for f in $X86_TARGETS; do [ -s "$X86_OUT_DIR/$f" ] || return 1; done
-    [ -s "$WOW64_OUT_DIR/wow64.dll" ] || return 1
+    for f in $WOW64_NATIVE_TARGETS; do [ -s "$WOW64_OUT_DIR/$f" ] || return 1; done
     for pair in $CPU_BACKEND_DEBS; do
         name=${pair#*:}
         [ -s "$WOW64_OUT_DIR/$name" ] || return 1

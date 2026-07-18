@@ -126,6 +126,13 @@ if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$S
     WOW64_ARGS=""
     if [ -s "$WOW64_DIR/wow64.dll" ] && [ -s "$WOW64_DIR/wowbox64.dll" ] && [ -s "$WOW64_DIR/libwow64fex.dll" ]; then
         WOW64_ARGS="wow64.dll=$WOW64_DIR/wow64.dll wowbox64.dll=$WOW64_DIR/wowbox64.dll libwow64fex.dll=$WOW64_DIR/libwow64fex.dll"
+        # CHALICE C4-6: wow64win.dll -- process_init loads it unconditionally
+        # right after CPU-backend resolution (dlls/wow64/syscall.c:1035),
+        # before BTCpuProcessInit ever runs. Optional (falls back silently
+        # if fetch-stock-dlls.sh predates C4-6), same wow64-chain/ dir.
+        if [ -s "$WOW64_DIR/wow64win.dll" ]; then
+            WOW64_ARGS="$WOW64_ARGS wow64win.dll=$WOW64_DIR/wow64win.dll"
+        fi
     fi
     if [ -s "$I386_DIR/ntdll.dll" ] && [ -s "$I386_DIR/kernel32.dll" ] && [ -s "$I386_DIR/kernelbase.dll" ]; then
         WOW64_ARGS="$WOW64_ARGS syswow64/ntdll.dll=$I386_DIR/ntdll.dll syswow64/kernel32.dll=$I386_DIR/kernel32.dll syswow64/kernelbase.dll=$I386_DIR/kernelbase.dll"
