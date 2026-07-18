@@ -647,8 +647,19 @@ void nt_service_tables_init(void) {
 // ThreadLocalStoragePointer(8B): 0x38+8+16+8+8 = 0x60 (matches the
 // well-known public Win64 TEB.ProcessEnvironmentBlock offset).
 #define TEB_PEB_OFF           0x60
-#define TEB_SIZE              0x400   // generous; only the slots above + A1
-                                       // dispatch slots (<=0x388) are live.
+// CHALICE C-hello7 fix (pe8 gate): TEB.StaticUnicodeString, offset
+// confirmed by disassembling stock kernelbase.dll!GetModuleHandleA ->
+// file_name_AtoW (AllocateDestinationString=FALSE path): `add x19, x18,
+// #0x1258` builds the destination UNICODE_STRING* passed to
+// RtlAnsiStringToUnicodeString/RtlOemStringToUnicodeString. Left zeroed
+// (MaximumLength=0), that Rtl call returns STATUS_BUFFER_OVERFLOW for ANY
+// non-empty ANSI name, which GetModuleHandleA turns into ERROR_MOD_NOT_FOUND
+// (0x7E) -- root cause of GetModuleHandleA("kernel32.dll") always failing
+// while GetModuleHandleA(NULL) (a different, PEB-based path) works fine.
+#define TEB_STATICUNICODESTRING_OFF 0x1258
+#define TEB_STATICUNICODEBUFFER_OFF 0x1268
+#define TEB_STATICUNICODEBUFFER_LEN 0x2C0   // bytes; ballpark of real Windows' capacity, plenty for any single module/path name
+#define TEB_SIZE              0x1600   // generous; covers A1 dispatch slots (<=0x388) + StaticUnicodeString/Buffer above
 
 // ---- PEB (peb_teb.h _PEB), sequential from field order + C_ASSERT anchors
 // (Ldr==0x18, FastPebLock==0x038, TlsExpansionCounter==0x070,
@@ -734,6 +745,16 @@ void *nt_build_teb(void *image_base, void *entry, unsigned long image_size) {
     wr64(teb + NT_TEB_SERVICE_TABLE_OFF, (u64b)nt_service_tables);
     wr64(teb + NT_TEB_SYSCALL_FRAME_OFF, 0);
     wr64(teb + NT_TEB_DISPATCH_ENTRY_OFF, (u64b)nt_dispatch);
+
+    // ---- CHALICE C-hello7 fix: TEB.StaticUnicodeString -- an empty,
+    // properly-capacitied UNICODE_STRING pointing at the in-TEB scratch
+    // buffer right after it (see offset comment above). Must be valid
+    // BEFORE any guest code resolves an ANSI module/path name (kernelbase's
+    // GetModuleHandleA/GetModuleFileNameA etc all route through this slot
+    // when AllocateDestinationString=FALSE). ----
+    wr16(teb + TEB_STATICUNICODESTRING_OFF + US_LENGTH_OFF, 0);
+    wr16(teb + TEB_STATICUNICODESTRING_OFF + US_MAXLENGTH_OFF, TEB_STATICUNICODEBUFFER_LEN);
+    wr64(teb + TEB_STATICUNICODESTRING_OFF + US_BUFFER_OFF, (u64b)(teb + TEB_STATICUNICODEBUFFER_OFF));
 
     // ---- trapdoor #3: PEB.Ldr ----
     wr64(peb + PEB_LDR_OFF, (u64b)ldr);
