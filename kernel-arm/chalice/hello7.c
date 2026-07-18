@@ -90,6 +90,9 @@ long PeMain(void) {
     say("CHALICE: GetModuleHandleA(kernel32.dll) -> ");
     say_hex((ULONGLONG)(unsigned long long)hk32);
     say("\n");
+    say("CHALICE: GetLastError-after-GetModuleHandleA -> ");
+    say_hex((ULONGLONG)GetLastError());
+    say("\n");
 
     // 4. GetProcAddress(kernel32, "WriteFile") + call through the pointer
     void *pWriteFile = GetProcAddress(hk32, "WriteFile");

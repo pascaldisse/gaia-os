@@ -452,6 +452,7 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     }
     nt_exit_jmpbuf = 0;
 
+    if (stock) { puts("CHALICE DEBUG: post-run ldr dump:\n"); nt_ldr_dump(teb); }
     puts(label); puts(" ret="); putdec_signed(ret); puts("\n");
     return ret;
 }
