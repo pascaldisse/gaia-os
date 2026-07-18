@@ -46,6 +46,10 @@ extern long nt_exit_code;
 // same reasoning/receipt as the territory bump reset. Called from
 // ntboot.c's nt_boot_process right alongside nt_territory_release_since.
 void nt_vm_regions_release_since(unsigned long mark);
+// CHALICE C4-15: NtQueryVirtualMemory needs the live LOW-pool region table
+// to coalesce free gaps instead of returning one 4KB MEM_FREE page forever.
+int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out);
+unsigned long nt_vm_region_next(unsigned long addr);
 
 // A4: allocate + populate TEB/PEB/RTL_USER_PROCESS_PARAMETERS/PEB_LDR_DATA/
 // LDR_DATA_TABLE_ENTRY for one PE image, wire the 4 trapdoor pointers +

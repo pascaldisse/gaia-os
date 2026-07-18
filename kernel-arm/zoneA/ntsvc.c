@@ -185,14 +185,30 @@ static void *nt_vm_alloc_pool(u64b size, int high_first) {
 
 // CHALICE C3a Atom 3A: does `addr` fall inside a live tracked VM region?
 // Backs NtAllocateVirtualMemory's RESERVE-then-COMMIT-at-base growth path.
-static int nt_vm_region_contains(void *addr) {
-    u64b a = (u64b)addr;
+int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned long *size_out) {
     for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
         if (!nt_vm_regions[i].used) continue;
         u64b base = (u64b)nt_vm_regions[i].aligned;
-        if (a >= base && a < base + nt_vm_regions[i].size) return 1;
+        if (addr < base || addr >= base + nt_vm_regions[i].size) continue;
+        if (base_out) *base_out = base;
+        if (size_out) *size_out = nt_vm_regions[i].size;
+        return 1;
     }
     return 0;
+}
+
+unsigned long nt_vm_region_next(unsigned long addr) {
+    u64b next = 0;
+    for (int i = 0; i < NT_VM_MAX_REGIONS; i++) {
+        if (!nt_vm_regions[i].used) continue;
+        u64b base = (u64b)nt_vm_regions[i].aligned;
+        if (base > addr && (!next || base < next)) next = base;
+    }
+    return next;
+}
+
+static int nt_vm_region_contains(void *addr) {
+    return nt_vm_region_query((u64b)addr, 0, 0);
 }
 
 // Returns page-rounded size of the freed region via *out_size, or 0 if

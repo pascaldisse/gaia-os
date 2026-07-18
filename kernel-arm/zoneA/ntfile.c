@@ -245,6 +245,15 @@ static NtImageEntry *nt_image_find_containing(u64b addr) {
     return 0;
 }
 
+static u64b nt_image_next_base(u64b addr) {
+    u64b next = 0;
+    for (int i = 0; i < NT_IMG_MAX; i++) {
+        if (!nt_images[i].used) continue;
+        if (nt_images[i].base > addr && (!next || nt_images[i].base < next)) next = nt_images[i].base;
+    }
+    return next;
+}
+
 // CHALICE C3c-2k p2 diagnostic: exact-name lookup (case-sensitive, matches
 // nt_image_register's stored basename verbatim) -- used to re-verify a
 // specific registered image's export directory is still intact LATER in
@@ -652,8 +661,20 @@ int nt_arena_query(unsigned long addr, unsigned long *base_out, unsigned long *s
     if (!nt_arena_contains(addr)) return 0;
     NtArenaRes *r = nt_arena_find_containing(addr);
     if (!r) {
-        if (base_out) *base_out = addr & ~(NT_PAGE_SIZE - 1);
-        if (size_out) *size_out = NT_PAGE_SIZE;
+        // CHALICE C4-15: one coalesced MEM_FREE gap, not one 4KB page.
+        // FEX InvalidationTracker's constructor walks `Address = BaseAddress
+        // + RegionSize` until VirtualQuery fails (pinned donor Source/Windows/
+        // Common/InvalidationTracker.cpp:16-28). Page-sized free answers turn
+        // that finite region walk into millions of syscalls. Stop at the next
+        // reservation (or arena limit), matching VirtualQuery's region shape.
+        u64b base = addr & ~(NT_PAGE_SIZE - 1);
+        u64b next = NT_ARENA_LIMIT;
+        for (int i = 0; i < NT_ARENA_MAX_RESERVATIONS; i++) {
+            if (nt_arena_res[i].used && nt_arena_res[i].base > base && nt_arena_res[i].base < next)
+                next = nt_arena_res[i].base;
+        }
+        if (base_out) *base_out = base;
+        if (size_out) *size_out = next - base;
         if (committed_out) *committed_out = -1;
         return 1;
     }
@@ -1128,9 +1149,16 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
     for (int i = 0; i < MBI_SIZE; i++) out[i] = 0;
 
     u64b addr = (u64b)BaseAddress;
+    // FEX's finite VirtualQuery address-space walk terminates when the
+    // address reaches this floor's real modeled user-VA ceiling.
+    if (addr >= NT_ARENA_LIMIT) return STATUS_INVALID_PARAMETER;
+
     NtImageEntry *img = nt_image_find_containing(addr);
     u64b arena_base = 0, arena_size = 0; int arena_committed = -1;
-    int arena_hit = !img && nt_arena_query(addr, &arena_base, &arena_size, &arena_committed);
+    u64b vm_base = 0, vm_size = 0;
+    int kuser_hit = addr >= NT_KUSER_SHARED_DATA_ADDR && addr < NT_KUSER_SHARED_DATA_ADDR + NT_PAGE_SIZE;
+    int arena_hit = !img && !kuser_hit && nt_arena_query(addr, &arena_base, &arena_size, &arena_committed);
+    int vm_hit = !img && !kuser_hit && !arena_hit && nt_vm_region_query(addr, &vm_base, &vm_size);
     if (img) {
         wr64(out + MBI_BASEADDRESS_OFF, img->base);
         wr64(out + MBI_ALLOCATIONBASE_OFF, img->base);
@@ -1139,6 +1167,14 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
         wr32(out + MBI_STATE_OFF, MEM_COMMIT);
         wr32(out + MBI_PROTECT_OFF, PAGE_EXECUTE_READWRITE);
         wr32(out + MBI_TYPE_OFF, MEM_IMAGE);
+    } else if (kuser_hit) {
+        wr64(out + MBI_BASEADDRESS_OFF, NT_KUSER_SHARED_DATA_ADDR);
+        wr64(out + MBI_ALLOCATIONBASE_OFF, NT_KUSER_SHARED_DATA_ADDR);
+        wr32(out + MBI_ALLOCPROTECT_OFF, PAGE_READWRITE);
+        wr64(out + MBI_REGIONSIZE_OFF, NT_PAGE_SIZE);
+        wr32(out + MBI_STATE_OFF, MEM_COMMIT);
+        wr32(out + MBI_PROTECT_OFF, PAGE_READWRITE);
+        wr32(out + MBI_TYPE_OFF, MEM_PRIVATE);
     } else if (arena_hit) {
         // CHALICE C4-9 (monad ruling #5): report State honestly per
         // accounting -- MEM_FREE (no reservation covers addr, sentinel -1),
@@ -1154,12 +1190,31 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
         wr32(out + MBI_STATE_OFF, arena_committed == -1 ? MEM_FREE : (arena_committed ? MEM_COMMIT : MEM_RESERVE));
         wr32(out + MBI_PROTECT_OFF, arena_committed == 1 ? PAGE_READWRITE : PAGE_NOACCESS);
         wr32(out + MBI_TYPE_OFF, arena_committed == -1 ? 0 : MEM_PRIVATE);
+    } else if (vm_hit) {
+        wr64(out + MBI_BASEADDRESS_OFF, vm_base);
+        wr64(out + MBI_ALLOCATIONBASE_OFF, vm_base);
+        wr32(out + MBI_ALLOCPROTECT_OFF, PAGE_READWRITE);
+        wr64(out + MBI_REGIONSIZE_OFF, vm_size);
+        wr32(out + MBI_STATE_OFF, MEM_COMMIT);
+        wr32(out + MBI_PROTECT_OFF, PAGE_READWRITE);
+        wr32(out + MBI_TYPE_OFF, MEM_PRIVATE);
     } else {
+        // CHALICE C4-15: VirtualQuery describes a contiguous region, not a
+        // page. Coalesce this free gap through the nearest known image,
+        // LOW-pool VM allocation, KUSER page, arena start, or VA ceiling.
+        // Source consumer: FEX InvalidationTracker.cpp:16-28.
         u64b page = addr & ~(NT_PAGE_SIZE - 1);
+        u64b next = page < NT_ARENA_BASE ? NT_ARENA_BASE : NT_ARENA_LIMIT;
+        u64b candidate = nt_image_next_base(page);
+        if (candidate && candidate < next) next = candidate;
+        candidate = nt_vm_region_next(page);
+        if (candidate && candidate < next) next = candidate;
+        if (NT_KUSER_SHARED_DATA_ADDR > page && NT_KUSER_SHARED_DATA_ADDR < next)
+            next = NT_KUSER_SHARED_DATA_ADDR;
         wr64(out + MBI_BASEADDRESS_OFF, page);
         wr64(out + MBI_ALLOCATIONBASE_OFF, 0);
         wr32(out + MBI_ALLOCPROTECT_OFF, 0);
-        wr64(out + MBI_REGIONSIZE_OFF, NT_PAGE_SIZE);
+        wr64(out + MBI_REGIONSIZE_OFF, next - page);
         wr32(out + MBI_STATE_OFF, MEM_FREE);
         wr32(out + MBI_PROTECT_OFF, PAGE_NOACCESS);
         wr32(out + MBI_TYPE_OFF, 0);
