@@ -592,6 +592,61 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
         puts("\n");
     }
 
+    // CHALICE C4-33 LEAD 2: dump FEX's InvalidationTracker::XIntervals LIVE at
+    // this NoExecOp self-fault (C4-31 proved this is the exact fault site), to
+    // answer C4-31/32's sharpened gap directly -- does the executable-range
+    // interval tree actually enclose exe_entry(0x47661000) by decode time,
+    // despite the two receipted insert paths (ctor VirtualQuery sweep +
+    // HandleImageMap)? The global `std::optional<InvalidationTracker>
+    // InvalidationTracker` lives in libwow64fex.dll's anon namespace
+    // (Module.cpp:130). Its object address is DERIVED, not guessed, from the
+    // DLL's own (non-stripped) COFF symtab + disassembly of
+    // WowSyscallHandler::QueryGuestExecutableRange (RVA 0x53f8):
+    //   adrp x0,0x18034c000 ; add x0,x0,#0x430  =>  &InvalidationTracker =
+    //   ImageBase(0x180000000)+0x34c430 (the `this` it tail-calls
+    //   InvalidationTracker::QueryExecutableRange with, RVA 0x16a910).
+    // std::optional stores its value inline; XIntervals is the FIRST member of
+    // InvalidationTracker (InvalidationTracker.h:55) => the XIntervals
+    // libc++ std::vector<Interval> sits AT the object address, layout
+    //   {Interval* begin @+0, Interval* end @+8, cap @+16}; Interval =
+    //   {uint64_t Offset @+0, uint64_t End @+8} (IntervalList.h:16-23).
+    // count = (end-begin)/16. begin/end point into the fextl/rpmalloc heap
+    // (reserve-commit arena) => read via the arena-aware nt_fault_read32.
+    {
+        static int ivt_dumped;
+        u64 fex_base = 0, fex_size = 0;
+        if (!ivt_dumped && nt_image_base_by_name("libwow64fex.dll", &fex_base, &fex_size)) {
+            ivt_dumped = 1;
+            u64 ivt = fex_base + 0x34c430;
+            u32 b_lo = 0, b_hi = 0, e_lo = 0, e_hi = 0;
+            if (nt_fault_read32(ivt + 0, &b_lo) && nt_fault_read32(ivt + 4, &b_hi) &&
+                nt_fault_read32(ivt + 8, &e_lo) && nt_fault_read32(ivt + 12, &e_hi)) {
+                u64 xbeg = ((u64)b_hi << 32) | b_lo;
+                u64 xend = ((u64)e_hi << 32) | e_lo;
+                u64 n = (xend >= xbeg && xbeg) ? (xend - xbeg) / 16 : 0;
+                puts("CHALICE C4-33 XIntervals ivt="); puthex(ivt);
+                puts(" begin="); puthex(xbeg); puts(" end="); puthex(xend);
+                puts(" count="); puthex(n); puts("\n");
+                int encloses = 0;
+                u64 target = 0x47661000;
+                for (u64 i = 0; i < n && i < 64; i++) {
+                    u32 o_lo = 0, o_hi = 0, d_lo = 0, d_hi = 0;
+                    u64 ep = xbeg + i * 16;
+                    if (nt_fault_read32(ep + 0, &o_lo) && nt_fault_read32(ep + 4, &o_hi) &&
+                        nt_fault_read32(ep + 8, &d_lo) && nt_fault_read32(ep + 12, &d_hi)) {
+                        u64 off = ((u64)o_hi << 32) | o_lo;
+                        u64 end = ((u64)d_hi << 32) | d_lo;
+                        puts(" ["); puthex(off); puts(","); puthex(end); puts(")");
+                        if (target >= off && target < end) encloses = 1;
+                    } else { puts(" [unreadable]"); break; }
+                }
+                puts("\n CHALICE C4-33 exe_entry(0x47661000) enclosed="); puthex(encloses); puts("\n");
+            } else {
+                puts("CHALICE C4-33 XIntervals ivt="); puthex(ivt); puts(" vector-unreadable\n");
+            }
+        }
+    }
+
     // The prior dispatcher stack is still live at this point.  This is the
     // exact CONTEXT bytes RtlRestoreContext was handed in the prior pass.
     if (prior_context_valid && !context_return_logged) {

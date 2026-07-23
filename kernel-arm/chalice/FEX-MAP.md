@@ -1,5 +1,40 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-33 — `XIntervals` live-dumped from the floor: it **DOES enclose `exe_entry`**. C4-31/32 "missing interval" thesis overturned; rivals (a)/(b)/(c) refuted; new NoExecOp-vs-enclosed paradox. Live 2026-07-23.
+
+### Deriving the `InvalidationTracker` global address (no donor edit, no guess)
+- libwow64fex.dll is **NOT stripped** — `objdump -t` shows a full COFF symbol table (methods `_ZN3FEX7Windows19InvalidationTracker*`, `WowSyscallHandler::QueryGuestExecutableRange`, `BTCpuProcessInit`, …). Major enabler: FEX-internal statics/methods are now addressable.
+- The global `std::optional<FEX::Windows::InvalidationTracker> InvalidationTracker` (Module.cpp:130) is in an anon namespace → not in symtab. Recovered by disassembling its consumer `WowSyscallHandler::QueryGuestExecutableRange` (RVA 0x53f8):
+```
+1800053f8: mov  x1, x2
+1800053fc: adrp x0, 0x18034c000
+180005400: add  x0, x0, #0x430          ; x0 = &InvalidationTracker
+180005404: b    0x18016a910 <InvalidationTracker::QueryExecutableRange>
+```
+  → `&InvalidationTracker = ImageBase 0x180000000 + 0x34c430` = **RVA 0x34c430**. std::optional stores its value inline; `XIntervals` is member 0 of `InvalidationTracker` (InvalidationTracker.h:55) → the `FEXCore::IntervalList<uint64_t>` = libc++ `std::vector<Interval>` `{Interval* begin@+0, Interval* end@+8, cap@+16}`; `Interval={uint64_t Offset@+0, uint64_t End@+8}` (IntervalList.h:11-23). `count=(end-begin)/16`.
+
+### Floor reader (kmain.c `sync_try_guest_exception`, `CHALICE C4-33`)
+`nt_image_base_by_name("libwow64fex.dll",&base,&size)` → `ivt=base+0x34c430`; read begin/end (each two `nt_fault_read32`, arena-aware since heap is >=4GB reserve-commit); iterate intervals, test `exe_entry(0x47661000)∈[Offset,End)`. Gated `static int ivt_dumped` (once).
+
+### RECEIPT (pe10 fex, same self-fault as C4-30/31)
+```
+CHALICE C4-33 XIntervals ivt=0x4DD8C430 begin=0x230040180 end=0x230040200 count=8
+ [47020000,47660000) [47660000,47665000) [48690000,488BD000) [4C910000,4CA30000)
+ [4DA40000,4DDA2000) [4EDC0000,4EEF0000) [4FF00000,50030000) [58040000,58041000)
+CHALICE C4-33 exe_entry(0x47661000) enclosed=1
+```
+Map: ntdll / **hello8_x86.exe** / ntdll32 / wow64 / libwow64fex / wow64win / win32u / BOP-trampoline — all 8 module EXECUTE ranges present, correctly spanned. `exe_entry` sits in `[0x47660000,0x47665000)`. Correlated same transcript: `C4-31 SynchronousFaultData=0x00000015020E0B01`=NoExecOp, `Eip=exe_entry Eax=0`, `pe10 ret=0xC0000005`.
+
+### Verdicts
+- rival (a) ctor sweep aborts early → **REFUTED** (8 complete intervals). (b) inserted-then-removed → **REFUTED** (present, full span, at fault). (c) HandleImageMap section-walk differs → **REFUTED** (present, correct).
+- decode gate re-read: `QueryExecutableRange` (InvalidationTracker.cpp:177-190) — `XIntervals.Query(exe_entry).Enclosed==true` → non-zero Size → `CheckRangeExecutable` (Frontend.cpp:90-108) returns **true** → `ReadByte`/`PeekByte` never set `HitNonExecutableRange` → **frontend cannot emit `NoExecOp` for `exe_entry`**. But the self-fault byte-matches `NoExecOp` (OpcodeDispatcher.cpp:5018-5024, the only PROT|USER|INSTR BreakDefinition). **PARADOX, receipted.**
+
+### New frontier (named, not chased)
+NoExecOp fired for an addr NOT XIntervals-enclosed while reconstructed guest `Eip`=exe_entry (which IS). (R1) `PeekByte` queries the HOST `InstStream+off` pointer; if this block's `InstStream` ≠ guest linear addr, it lands outside XIntervals (guest addrs) → false. (R2) a pre-insert warm-up decode. Next: read per-thread `Decoder` state (`InstStream`/`HitNonExecutableRange`/`ExecutableRangeBase`) — now addressable via the non-stripped symtab — or enable LEAD-1 narration.
+
+### Re-gate
+`pe8_gate` ret=78 · `pe9_gate` both backends ret=0 · `ramfb_gate` 7/7. Instrumentation-only, `pe10 ret` unchanged.
+
 ## C4-32 — HYPOTHESIS REFUTED: the exe main-image "notification" already fires, twice, self-sufficiently; wiring `BTCpuNotifyMapViewOfSection` for the exe would be a no-op. Real gap unchanged from C4-31 (FEX-internal, unreached without donor edit) plus one new, testable secondary lead (FEX's own LogMan/DFmt narration is silent despite `FEX_SILENTLOG=0`, C4-15's own fix). No fix wired (measurement contradicts the brief's premise; wiring would be speculative/pointless per this project's own law). Runtime unchanged this pass (zero source edits — `pe10 ret=3221225477` identical before/after); live 2026-07-19.
 
 ### MEASURE 1 — donor notify surface, read end-to-end (file:line)
