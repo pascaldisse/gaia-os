@@ -613,13 +613,36 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // existing green surface (pe1-9) reads this field, so this is a pure
     // floor-correctness addition, zero regression risk.
     {
-        static const char fex_env_var[] = "FEX_SILENTLOG=0";
-        u64b fex_env_len = strlen_local(fex_env_var);
-        u16b *wenv = (u16b *)MAlloc((fex_env_len + 2) * 2);
+        // CHALICE C4-39 Road 1 MEASUREMENT: second "NAME=VALUE\0" string
+        // appended to the SAME double-NUL-terminated block (real Windows
+        // env blocks are just N NUL-separated strings + a final extra NUL --
+        // donor: RtlCreateProcessParameters, kernelbase/process.c
+        // get_env_length walks exactly this shape). FEX_TSOENABLED=0 --
+        // FEX::Windows::Common::TSOHandlerConfig (Source/Windows/Common/
+        // TSOHandlerConfig.h) reads this via the same FEX_CONFIG_OPT/
+        // EnvLoader path already proven live by FEX_SILENTLOG (this file's
+        // own comment above, PARAMS_ENVIRONMENT_OFF) -- HANDOFF/FEX-MAP
+        // §C4-38 T2 verdict: FEXCore's JIT emits unconditionally-alignment-
+        // checked ldar/stlr for this guest's plain (non-atomic) x86 memcpy
+        // store, as x86-TSO-on-ARM64 ordering emulation; on a normal host
+        // FEX catches that fault itself and backpatches ldar/stlr->ldr/str+
+        // dmb (FEXCore ArchHelpers/Arm64 HandleUnalignedAccess) -- this
+        // floor's own exception path turns it into a guest AV before FEX's
+        // handler ever sees it (§C4-39 Road 2). Road 1: does the CODEGEN
+        // itself change if TSO emulation is off outright? Measurement only
+        // -- see §C4-39 for the receipt this produces.
+        static const char fex_env_var1[] = "FEX_SILENTLOG=0";
+        static const char fex_env_var2[] = "FEX_TSOENABLED=0";
+        u64b fex_env_len1 = strlen_local(fex_env_var1);
+        u64b fex_env_len2 = strlen_local(fex_env_var2);
+        u64b fex_env_total = fex_env_len1 + 1 + fex_env_len2 + 1 + 1; // both strings + their NULs + final block NUL
+        u16b *wenv = (u16b *)MAlloc(fex_env_total * 2);
         if (!wenv) return boot_err("environment block alloc failed");
-        widen_ascii(fex_env_var, wenv, fex_env_len);
-        wenv[fex_env_len] = 0;       // terminates "FEX_SILENTLOG=0"
-        wenv[fex_env_len + 1] = 0;   // terminates the whole block (double-NUL)
+        widen_ascii(fex_env_var1, wenv, fex_env_len1);
+        wenv[fex_env_len1] = 0;                                   // terminates "FEX_SILENTLOG=0"
+        widen_ascii(fex_env_var2, wenv + fex_env_len1 + 1, fex_env_len2);
+        wenv[fex_env_len1 + 1 + fex_env_len2] = 0;                // terminates "FEX_TSOENABLED=0"
+        wenv[fex_env_len1 + 1 + fex_env_len2 + 1] = 0;            // terminates the whole block (double-NUL)
         wr64(params + PARAMS_ENVIRONMENT_OFF, (u64b)wenv);
     }
 
