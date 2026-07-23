@@ -1171,6 +1171,7 @@ typedef long (*BTCpuNotifyMapViewOfSectionFn)(void *Unk1, void *Address, void *U
                                                u64b Size, unsigned long AllocType,
                                                unsigned long Prot);
 static u64b nt_btcpu_notify_map_addr;
+static int nt_wow64_ready;   // CHALICE C4-53 -- see set-site in nt_wow64_maybe_notify_map_view
 
 // CHALICE C4-48 bug1 fix: `teb` is the guest TEB captured by the CALLER
 // (NtMapViewOfSection, below) as its OWN first statement -- i.e. the SAME
@@ -1221,96 +1222,32 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
     puts(" base="); puthex(base); puts(" size="); puthex(size);
     puts(" rc="); puthex((u64b)rc); puts("\n");
 
-    // =====================================================================
-    // CHALICE C4-52 decisive experiment: call
-    // FEX::Windows::InvalidationTracker::HandleImageMap DIRECTLY, bypassing
-    // BTCpuNotifyMapViewOfSection's own wrapper/catch entirely (C4-51's sole
-    // surviving candidate: a C++ exception thrown inside the section-walk,
-    // silently swallowed by the wrapper's own landing pad, `rc=0` hardcoded
-    // regardless). Only for kernelbase.dll, once.
-    //
-    // Signature/ABI verified THIS atom by disassembling the REAL blob
-    // (objdump -d kernel-arm/chalice/stock/wow64-chain/libwow64fex.dll --
-    // NOT the vendored source, NOT inferred): symbol
-    // `_ZN3FEX7Windows19InvalidationTracker14HandleImageMapE...` sits at VMA
-    // 0x180169b10 (C4-50's own quoted COFF-symtab RVA `0x168b10` is the RAW
-    // symtab value; per C4-50's own toolchain note VMA=ImageBase+0x1000+
-    // symtab -- 0x180001000+0x168b10=0x180169b10, same address, just the
-    // section-relative RVA differs: 0x169b10). Prologue:
-    //   `mov x20,x0`        -- x0 = `this` (InvalidationTracker*)
-    //   `mov x0,x3; mov x19,x3` -- x3 = `Address` (4th/last arg)
-    //   `stp x1,x2,[sp]`    -- x1/x2 = name string_view {ptr,len}
-    // i.e. `HandleImageMap(this=x0, name_ptr=x1, name_len=x2, Address=x3)`
-    // -- confirms C4-50's own citation (4-arg shape matching vendored
-    // `Common/InvalidationTracker.cpp`'s signature) byte-for-byte.
-    //
-    // Mutex: the ONLY lock HandleImageMap itself takes is a shared_mutex at
-    // `this+0x30` (disasm-confirmed: the loop's lock/unlock call sites both
-    // compute `x23 = x20(this)+0x30` and pass x23 as the shared_mutex
-    // `this` to `__shared_mutex_base::lock/unlock`) -- acquired/released
-    // INTERNALLY, once per executable section, entirely inside the
-    // function body. We do NOT pre-acquire it ourselves: single-threaded
-    // boot, no concurrent caller, and HandleImageMap's own lock/unlock
-    // pair is self-contained (matches the ACTUAL BTCpuNotifyMapViewOfSection
-    // wrapper's own behavior, which likewise never touches this specific
-    // mutex itself -- only its OWN separate global mutex at 0x18034c398,
-    // a different, outer lock guarding the whole notify call, orthogonal to
-    // this one).
-    //
-    // `this` (InvalidationTracker instance) = fex_base+0x34c430, the SAME
-    // fixed global object C4-49/50/51's own XIntervals dumper reads and
-    // C4-51 proved is the ONE AND ONLY container the decode-time
-    // executable-range query consults -- no "wrong tank" possibility.
-    static int c452_fired;
-    if (!c452_fired && nt_streq_ci(name, "syswow64/kernelbase.dll")) {
-        c452_fired = 1;
-        u64b fex_base = 0, fex_size = 0;
-        if (nt_image_base_by_name("libwow64fex.dll", &fex_base, &fex_size)) {
-            u64b ivt_this = fex_base + 0x34c430;         // InvalidationTracker global
-            u64b handle_image_map = fex_base + 0x169b10; // real section-RVA, disasm-verified
-            static const char c452_name[] = "kernelbase.dll"; // Name unused by any gate
-                                                              // in this fn per C4-49 source
-                                                              // read (MonoHacks-only use) --
-                                                              // any valid string is safe.
-            puts("CHALICE C4-52: direct HandleImageMap call this="); puthex(ivt_this);
-            puts(" fn="); puthex(handle_image_map); puts(" Address="); puthex(base); puts("\n");
-            long hrc = pe_enter6(
-                (long (*)(void *, void *, void *, unsigned long, unsigned long, unsigned long))
-                    handle_image_map,
-                (void *)teb, (void *)ivt_this, (void *)c452_name,
-                (void *)(u64b)(sizeof(c452_name) - 1), base, 0, 0);
-            puts("CHALICE C4-52: direct HandleImageMap RETURNED rc="); puthex((u64b)hrc); puts("\n");
+    // CHALICE C4-53: mark FEX's WOW64 runtime (InvalidationTracker et al.)
+    // as constructed/ready -- we only ever reach this line for a REAL guest
+    // x86 (Machine 0x14C) image other than ntdll.dll, which can only happen
+    // AFTER BTCpuProcessInit has already run (the guest process must already
+    // be executing under FEX, via BTCpuSimulate, to have issued the LdrLoadDll
+    // that led here) -- i.e. InvalidationTracker.emplace(...) (FEX-MAP.md
+    // C4-32) is guaranteed to have already happened. Gates nt_wow64_maybe_
+    // notify_protect below from firing during the EARLIER native-ARM64-module
+    // (wow64.dll/libwow64fex.dll/wow64win.dll/win32u.dll) load phase, where
+    // this floor's own NtProtectVirtualMemory already fires repeatedly
+    // (confirmed live, C4-53 receipt) but InvalidationTracker does not exist
+    // yet -- calling into it that early faults (uninitialized shared_mutex).
+    nt_wow64_ready = 1;
 
-            // Immediate post-call dump of XIntervals (same read formula as
-            // kmain.c's own C4-49 dumper) -- did THIS call succeed where
-            // the wrapper-routed one (above) didn't?
-            u32b b_lo = 0, b_hi = 0, e_lo = 0, e_hi = 0;
-            if (nt_fault_read32(ivt_this + 0, &b_lo) && nt_fault_read32(ivt_this + 4, &b_hi) &&
-                nt_fault_read32(ivt_this + 8, &e_lo) && nt_fault_read32(ivt_this + 12, &e_hi)) {
-                u64b xbeg = ((u64b)b_hi << 32) | b_lo;
-                u64b xend = ((u64b)e_hi << 32) | e_lo;
-                u64b n = (xend >= xbeg && xbeg) ? (xend - xbeg) / 16 : 0;
-                puts("CHALICE C4-52 post-call XIntervals begin="); puthex(xbeg);
-                puts(" end="); puthex(xend); puts(" count="); puthex(n); puts("\n");
-                int enclosed = 0;
-                for (u64b i = 0; i < n && i < 64; i++) {
-                    u32b o_lo = 0, o_hi = 0, d_lo = 0, d_hi = 0;
-                    u64b ep = xbeg + i * 16;
-                    if (nt_fault_read32(ep + 0, &o_lo) && nt_fault_read32(ep + 4, &o_hi) &&
-                        nt_fault_read32(ep + 8, &d_lo) && nt_fault_read32(ep + 12, &d_hi)) {
-                        u64b off = ((u64b)o_hi << 32) | o_lo;
-                        u64b end = ((u64b)d_hi << 32) | d_lo;
-                        if (base >= off && base < end) enclosed = 1;
-                    }
-                }
-                puts("CHALICE C4-52 post-call kernelbase_base_enclosed="); puthex((u64b)enclosed); puts("\n");
-            } else {
-                puts("CHALICE C4-52 post-call XIntervals unreadable\n");
-            }
-        } else {
-            puts("CHALICE C4-52: libwow64fex.dll base not found, skipping direct call\n");
-        }
-    }
+    // CHALICE C4-53: the C4-52 experimental direct HandleImageMap bypass
+    // call (kept as a diagnostic-only crutch through C4-52) is REMOVED here
+    // -- the proper donor contract now holds without it: C4-53's own
+    // protect-notify wiring (nt_wow64_maybe_notify_protect, below) plus the
+    // NtProtectVirtualMemory OldProtect fix make the guest loader's OWN
+    // save/restore VirtualProtect idiom around kernelbase.dll's `.text`
+    // section correctly re-insert the executable range via the REAL
+    // BTCpuNotifyMemoryProtect-equivalent path -- proven live this atom
+    // (`scratch/c4-53_pe10_fex_receipt_full.log`: kernelbase_entry
+    // enclosed=1 at the (new, later) fault time, with the C4-52 crutch
+    // already removed from this build). No bypass of any wrapper needed
+    // anymore for this range.
 }
 
 // =====================================================================
@@ -1439,16 +1376,138 @@ long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
 }
 
 // =====================================================================
-// NtProtectVirtualMemory -- flat arena = no page protection; validate args,
-// record (image-registry membership check doubles as the "record" -- no
-// separate protection state to track, documented deviation per spec),
-// return old=PAGE_READWRITE, STATUS_SUCCESS.
+// CHALICE C4-53: complete the protect-notify contract.
+//
+// C4-53 disasm (objdump -d, real blob, NOT vendored source -- vendored tree
+// has no BTCpuNotifyMemoryProtect at all, C4-50's finding): the REAL
+// remover is `InvalidationTracker::HandleMemoryProtectionNotification`
+// (VMA 0x1801696d4, called by the export `BTCpuNotifyMemoryProtect`,
+// VMA 0x1800043e8). Full body traced end-to-end this atom:
+//   HandleMemoryProtectionNotification(this, Address, Size, Prot):
+//     AlignedBase = Address & ~0xFFF; AlignedEnd = ((Address&0xFFF)+Size+0xFFF) & ~0xFFF + AlignedBase
+//     lock(this->SharedMutex @ this+0x30)
+//     if (Prot & 0xF0)                      // PAGE_EXECUTE|_READ|_READWRITE|_WRITECOPY (bits 4-7)
+//         XIntervals.Insert({AlignedBase, AlignedEnd})       // executable -> INSERT
+//     else {
+//         // binary-search this->XIntervals (this+0x0) for an overlapping
+//         // interval; if found: XIntervals.Remove({AlignedBase,AlignedEnd})
+//         // AND a second Remove() on the this+0x18 SMC-disabled list too
+//     }
+//     if (Prot & 0xC0) LogMan::Msg(Warn,"...RWX..."); XIntervals.Insert(...) again (this+0x18 list)
+//     unlock(SharedMutex)
+//     if (did-work) InvalidationTracker::InvalidateIntervalInternal(this, AlignedBase, AlignedSize)
+//
+// i.e. a NewProtect WITHOUT any PAGE_EXECUTE* bit REMOVES the range from
+// the SAME `XIntervals` C4-33/49/50/51/52 all read -- exactly the
+// mechanism that could explain a later, non-exception-based interval
+// removal. Symmetric to C4-46/48's own finding for NtMapViewOfSection:
+// this floor's NtProtectVirtualMemory is a DIRECT kernel-mode syscall
+// implementation with NO wow64.dll thunk layer calling BTCpuNotifyMemory-
+// Protect afterward (grepped this whole tree pre-this-atom: zero call
+// sites) -- every guest VirtualProtect (kernel32.dll's own loader-init
+// reprotects included) never reached FEX's InvalidationTracker at all,
+// same donor-gap class C4-46 already fixed for NtMapViewOfSection.
+//
+// Wired call site: per C4-52's OWN precedent (`nt_wow64_maybe_notify_map_
+// view`'s direct HandleImageMap call, proven safe/correct -- "the WRAPPER
+// is the swallower, not HandleImageMap itself"), this calls
+// HandleMemoryProtectionNotification DIRECTLY, bypassing
+// BTCpuNotifyMemoryProtect's own wrapper -- whose own w3/w4 two-phase
+// lock-only/unlock-only/do-work-then-unlock branch protocol (disasm-
+// confirmed this atom, `kernel-arm/chalice/FEX-MAP.md` C4-53) is real
+// donor ABI we cannot fully pin down without the caller-side donor source
+// (not vendored, per C4-50), so calling it with a guessed flag combo would
+// risk leaving `libwow64fex.dll`'s own outer mutex @ImageBase+0x34c398
+// PERMANENTLY LOCKED (the w3==0 branch takes the lock and returns without
+// ever unlocking) -- a genuine deadlock risk this floor cannot recover
+// from. The inner function's OWN lock (this+0x30 shared_mutex, disasm-
+// confirmed self-contained lock()/unlock() pair inside its own body) is
+// safe to call directly, same reasoning as C4-52's own HandleImageMap
+// bypass. `this` = fex_base+0x34c430, the SAME fixed InvalidationTracker
+// global every prior atom (C4-33/49/50/51/52) has read/written.
+//
+// Applies unconditionally to every NtProtectVirtualMemory call (no guest-
+// x86-image filter, unlike NtMapViewOfSection's notify -- donor semantics:
+// BTCpuNotifyMemoryProtect fires for ANY VirtualProtect, arena or image,
+// per the SAME function's use inside InvalidationTracker's own ctor
+// VirtualQuery sweep, FEX-MAP.md C4-32).
+// =====================================================================
+static u64b nt_c453_fex_base, nt_c453_fex_size;
+
+static void nt_wow64_maybe_notify_protect(u64b base, u64b size, unsigned long new_protect, u64b teb) {
+    // CHALICE C4-53: do NOT resolve/call before FEX's WOW64 runtime is known
+    // constructed -- see nt_wow64_ready's own set-site/receipt (this floor's
+    // NtProtectVirtualMemory fires ~13 times on native ARM64 modules, e.g.
+    // wow64.dll's own relocation/import-protect calls, BEFORE BTCpuProcessInit
+    // ever runs -- calling into InvalidationTracker that early faults, live-
+    // confirmed this atom: alignment fault inside __shared_mutex_base::lock
+    // on the not-yet-constructed global).
+    if (!nt_wow64_ready) return;
+    if (!nt_c453_fex_base) {
+        nt_image_base_by_name("libwow64fex.dll", &nt_c453_fex_base, &nt_c453_fex_size);
+    }
+    if (!nt_c453_fex_base || !base || !size) return;
+
+    u64b ivt_this = nt_c453_fex_base + 0x34c430;          // InvalidationTracker global (C4-33)
+    u64b handle_prot_notify = nt_c453_fex_base + 0x1696d4; // HandleMemoryProtectionNotification, disasm-verified this atom
+
+    long rc = pe_enter6(
+        (long (*)(void *, void *, void *, unsigned long, unsigned long, unsigned long))handle_prot_notify,
+        (void *)teb, (void *)ivt_this, (void *)base, (void *)size, (unsigned long)new_protect, 0, 0);
+    (void)rc;
+    puts("CHALICE C4-53: HandleMemoryProtectionNotification base="); puthex(base);
+    puts(" size="); puthex(size); puts(" prot="); puthex((u64b)new_protect); puts("\n");
+}
+
+// =====================================================================
+// NtProtectVirtualMemory -- flat arena = no REAL page protection (our own
+// bookkeeping is unchanged, documented deviation per spec); C4-53 ADDS the
+// FEX-side notify call above so the CPU-simulation module's OWN
+// executable-range tracker (XIntervals) stays correct across guest
+// VirtualProtect calls.
+//
+// C4-53 OldProtect fix: the OLD hardcoded `*OldProtect = 0x04` (PAGE_
+// READWRITE) is a REAL, floor-caused correctness bug, named live this
+// atom -- not just a "missing notify" gap. Guest PE loaders universally
+// use the save/restore idiom around relocation-fixup writes:
+//   NtProtectVirtualMemory(Section, PAGE_READWRITE, &OldProtect);  // save
+//   <patch relocations>
+//   NtProtectVirtualMemory(Section, OldProtect, &discard);         // restore
+// Live-confirmed this atom (`scratch/c4-53_pe10_fex_receipt.log`): the
+// guest loader does EXACTLY this for kernelbase.dll's own `.text` section
+// (base=0x5E1C1000 size=0x69000) -- but because this floor always answered
+// `OldProtect=0x04` regardless of the section's TRUE protection (which
+// should reflect its `IMAGE_SCN_MEM_EXECUTE` PE characteristic), the
+// "restore" call ALSO requests `PAGE_READWRITE` (the wrong value we handed
+// back) -- the section's executable range, correctly REMOVED from FEX's
+// `XIntervals` by the FIRST (genuinely-non-executable) protect call via
+// C4-53's new notify wiring, is NEVER RE-INSERTED, because the "restore"
+// call the loader believes is restoring EXECUTE permission is actually
+// just ANOTHER no-exec-bit PAGE_READWRITE call. Fix: derive OldProtect
+// from the image registry (same img-membership check/convention this
+// floor's own NtQueryVirtualMemory already uses for its `AllocProtect`
+// answer, FEX-MAP.md C4-32 Measure 2: "unconditionally reports AllocProtect
+// =PAGE_EXECUTE_READWRITE for the WHOLE registered image span") -- inside
+// a registered image: PAGE_EXECUTE_READWRITE (0x40, matches donor: this
+// floor's flat-arena model has no real W^X, every image page already
+// answers EXECUTE_READWRITE everywhere else); outside any image (plain
+// arena/heap): PAGE_READWRITE (0x04), unchanged.
 // =====================================================================
 long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long *RegionSize,
                              unsigned long NewProtect, unsigned long *OldProtect) {
-    (void)ProcessHandle; (void)NewProtect;
+    // CHALICE C4-53: capture the guest TEB as the ABSOLUTE FIRST statement,
+    // same x18-clobber-safety idiom C4-48 established for NtMapViewOfSection
+    // (every callee below is plain aarch64-elf C, free to clobber x18).
+    u64b nt_c453_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c453_teb));
+
+    (void)ProcessHandle;
     if (!BaseAddress || !*BaseAddress || !RegionSize || *RegionSize == 0) return STATUS_INVALID_PARAMETER;
-    if (OldProtect) *OldProtect = 0x04;   // PAGE_READWRITE
+    if (OldProtect) {
+        NtImageEntry *old_img = nt_image_find_containing((u64b)*BaseAddress);
+        *OldProtect = old_img ? 0x40 /* PAGE_EXECUTE_READWRITE */ : 0x04 /* PAGE_READWRITE */;
+    }
+
+    nt_wow64_maybe_notify_protect((u64b)*BaseAddress, (u64b)*RegionSize, NewProtect, nt_c453_teb);
     return STATUS_SUCCESS;
 }
 
