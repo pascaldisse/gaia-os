@@ -1,5 +1,20 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-41 — HYPOTHESIS TESTED, DISPROVEN: resumed C4-40's 7th-fault frontier (`RtlImageNtHeader(NULL)` at `syswow64/ntdll.dll+0x2B34E`). Implemented WOW64 `MEMORY_BASIC_INFORMATION32` shaping in `NtQueryVirtualMemory` (`kernel-arm/zoneA/ntfile.c`, gated on `nt_wow64_get_peb32()!=0 && MemoryInformationLength < 0x30`) plus a one-shot `NtSetInformationThread` diagnostic (`ntsvc.c`) that traps `eip==ntdll32+0x2B34E` and dumps `Eax`/`Ebp`/guest-stack `[ebp+4]`(retaddr)/`[ebp+8]`(arg0), plus one more frame up to `alloc_module`'s own caller.
+
+Build/gate clean: `pe8` ret=78, `pe9` both backends ret=0, `ramfb` 7/7. Commit `775c513` (source-only, `ntfile.c`+`ntsvc.c`).
+
+`pe10 fex` re-run (`scratch/c4-41_pe10_fex_receipt.log`, 3542 lines): **fault unchanged** — `pe10 ret=3221225477` (`0xC0000005`), same site as C4-40. Diagnostic fired once:
+```
+CHALICE C4-41: fault-site eip=ntdll.dll+0x2B34E eax(BaseAddress)=0x0 ebp=0x488CBBE4 [ebp+4](retaddr)=0x486BEEA6 [ebp+8](arg0)=0x0
+CHALICE C4-41: caller = syswow64/ntdll.dll+0x2EEA6
+CHALICE C4-41: live PEB32.ImageBaseAddress=0x47660000
+CHALICE C4-41: alloc_module ebp=0x488CBC10 alloc_module's own retaddr=0x486BBB06 -> syswow64/ntdll.dll+0x2BB06
+```
+**Root cause DISPROVEN**: every `NtQueryVirtualMemory ENTRY` this boot (61 total, grepped in full) uses `MemoryInformationLength` = `0x30`, `0x218`, or `0x8` — **never `0x1c`**; the new `C4-41: NtQueryVirtualMemory(wow64)` log line **never appears (0 occurrences)** — the `use32` branch is dead code. No caller anywhere in this boot ever queries with a 32-bit-sized MBI buffer, so a bad/uninitialized MBI answer from this kernel's `NtQueryVirtualMemory` was never how `alloc_module` gets fed a NULL base (real WOW64 marshals `Nt*` args to native 64-bit shape inside `wow64.dll`'s own thunk, before this floor's syscall table ever sees a 32-bit-sized buffer). Fix kept (donor-correct behavior, harmless, no regression) but does not move the frontier.
+
+**Next lead** (not chased, out of this atom's time-box): disasm `syswow64/ntdll.dll+0x2BB06` and `+0x2EEA6` directly (`objdump` on the stock image, NOT `map-fex-offsets.sh` — that script only resolves FEX-side DLL offsets) to find what feeds `alloc_module` its (NULL) base argument — likely a PEB32/`LDR_DATA_TABLE_ENTRY32` list-walk field, not a VirtualQuery answer.
+
 ## C4-40 — FIX APPLIED: `sync_try_guest_exception` (`kernel-arm/zoneA/kmain.c`) branch, exactly as C4-39's own recon named it:
 ```c
 #define STATUS_DATATYPE_MISALIGNMENT 0x80000002U // wine/include/winnt.h:629
