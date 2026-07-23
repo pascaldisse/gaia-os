@@ -676,10 +676,17 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     // count = (end-begin)/16. begin/end point into the fextl/rpmalloc heap
     // (reserve-commit arena) => read via the arena-aware nt_fault_read32.
     {
-        static int ivt_dumped;
+        // CHALICE C4-49: re-armed (was one-shot, static int ivt_dumped) --
+        // fired at the FIRST self-fault only (an earlier, unrelated event
+        // in this same run), never re-checked at the LATER kernelbase.dll
+        // NoExecOp self-fault C4-49 actually needs to inspect. Now dumps at
+        // every self-fault occurrence (capped, cheap) and checks BOTH the
+        // original exe_entry target AND kernelbase.dll's real entry
+        // (0x5E228BD0, this run's own live eip) for enclosure.
+        static int ivt_dump_count;
         u64 fex_base = 0, fex_size = 0;
-        if (!ivt_dumped && nt_image_base_by_name("libwow64fex.dll", &fex_base, &fex_size)) {
-            ivt_dumped = 1;
+        if (ivt_dump_count < 16 && nt_image_base_by_name("libwow64fex.dll", &fex_base, &fex_size)) {
+            ivt_dump_count++;
             u64 ivt = fex_base + 0x34c430;
             u32 b_lo = 0, b_hi = 0, e_lo = 0, e_hi = 0;
             if (nt_fault_read32(ivt + 0, &b_lo) && nt_fault_read32(ivt + 4, &b_hi) &&
@@ -687,11 +694,12 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
                 u64 xbeg = ((u64)b_hi << 32) | b_lo;
                 u64 xend = ((u64)e_hi << 32) | e_lo;
                 u64 n = (xend >= xbeg && xbeg) ? (xend - xbeg) / 16 : 0;
-                puts("CHALICE C4-33 XIntervals ivt="); puthex(ivt);
+                puts("CHALICE C4-49 XIntervals ivt="); puthex(ivt);
                 puts(" begin="); puthex(xbeg); puts(" end="); puthex(xend);
                 puts(" count="); puthex(n); puts("\n");
-                int encloses = 0;
+                int encloses = 0, encloses_kb = 0;
                 u64 target = 0x47661000;
+                u64 target_kb = 0x5E228BD0;
                 for (u64 i = 0; i < n && i < 64; i++) {
                     u32 o_lo = 0, o_hi = 0, d_lo = 0, d_hi = 0;
                     u64 ep = xbeg + i * 16;
@@ -701,11 +709,13 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
                         u64 end = ((u64)d_hi << 32) | d_lo;
                         puts(" ["); puthex(off); puts(","); puthex(end); puts(")");
                         if (target >= off && target < end) encloses = 1;
+                        if (target_kb >= off && target_kb < end) encloses_kb = 1;
                     } else { puts(" [unreadable]"); break; }
                 }
-                puts("\n CHALICE C4-33 exe_entry(0x47661000) enclosed="); puthex(encloses); puts("\n");
+                puts("\n CHALICE C4-49 exe_entry(0x47661000) enclosed="); puthex(encloses);
+                puts(" kernelbase_entry(0x5E228BD0) enclosed="); puthex(encloses_kb); puts("\n");
             } else {
-                puts("CHALICE C4-33 XIntervals ivt="); puthex(ivt); puts(" vector-unreadable\n");
+                puts("CHALICE C4-49 XIntervals ivt="); puthex(ivt); puts(" vector-unreadable\n");
             }
         }
     }
