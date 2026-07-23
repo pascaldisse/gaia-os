@@ -2362,9 +2362,52 @@ void nt_wow64_build_params32(void *peb32_v,
     wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_LENGTH_OFF, 3 * 2);
     wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_MAXLENGTH_OFF, 4 * 2);
     wr32(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_BUFFER_OFF, (u32b)(u64b)curdir_w);
-    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_LENGTH_OFF, 3 * 2);
-    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_MAXLENGTH_OFF, 4 * 2);
-    wr32(params32 + PARAMS32_DLLPATH_OFF + US32_BUFFER_OFF, (u32b)(u64b)curdir_w);
+
+    // CHALICE C4-45: DllPath -- was aliased to curdir_w ("C:\\", a bare
+    // drive root, single ';'-free segment) -- root cause of the SECOND
+    // STATUS_INVALID_IMAGE_FORMAT (0xC000007B) C4-44 left unpinned. Donor
+    // trace (wine/dlls/ntdll/loader.c): process_init sets `default_load_path
+    // = peb->ProcessParameters->DllPath.Buffer` (loader.c:4482) whenever
+    // DllPath is non-empty (it always was here, just wrong-shaped); the
+    // later `load_dll(NULL, L"kernel32.dll", ...)` call (loader.c:4493,
+    // process_init's own hardcoded KERNEL32 dependency load, independent of
+    // hello8_x86.exe's own EMPTY import table -- not the C4-44 build_main_
+    // module gate) resolves load_path=NULL to that exact default_load_path,
+    // then find_dll_file->search_dll_file (loader.c:3236-3238) splits it on
+    // ';' -- a bare "C:\\" has none, so exactly ONE candidate is tried:
+    // "C:\\kernel32.dll" (byte-for-byte the `NtOpenFile kernel32.dll dir=C:`
+    // this floor's own receipt showed). This floor's own NtOpenFile dirname
+    // redirect (ntfile.c, C4-4) only rewrites dirname=="system32"(+wow64)/
+    // "syswow64"/"sysnative" to the syswow64/ blob root -- dirname "C:"
+    // matches none of those, so the lookup falls through to the BARE-name
+    // blob registry entry, which mkdisk.sh registers FIRST as the NATIVE
+    // (AMD64) kernel32.dll, not the 32-bit syswow64 one. Donor's own
+    // is_valid_binary (loader.c:2515-2529, checked via NtQuerySection
+    // SectionImageInformation.Machine, already answered correctly by this
+    // floor since C3c-2i) then rejects that wrong-arch mapping ->
+    // STATUS_NOT_SUPPORTED -> search_dll_file's single-candidate loop
+    // exhausts -> STATUS_NOT_SUPPORTED propagates -> find_dll_file's own
+    // conversion (loader.c:3323) turns it into STATUS_INVALID_IMAGE_FORMAT
+    // -> process_init's kernel32-load check (loader.c:4493-4499) calls
+    // `NtTerminateProcess(GetCurrentProcess(), status)` -- exactly this
+    // floor's second 0xC000007B, now pinned end-to-end via donor source,
+    // no guesswork. Fix (donor-exact default): real Windows/Wine's own
+    // DllPath default is "%SystemRoot%\\System32" (get_dll_load_path,
+    // unix/loader.c) -- a single "C:\\windows\\system32" segment gives
+    // dirname="system32" on the SAME lookup, which this floor's EXISTING
+    // redirect (nt_wow64_process_active is true for every wow64 boot,
+    // ntboot.c nt_wow64_set_active) already turns into the CORRECT
+    // "syswow64/kernel32.dll" blob open -- zero new redirect logic needed,
+    // just a correctly-shaped DllPath value.
+    static const char dllpath_ascii[] = "C:\\windows\\system32";
+    #define C4_45_DLLPATH_CHARS ((unsigned long)(sizeof(dllpath_ascii) - 1))
+    u16 *dllpath_w = (u16 *)nt_zalloc((C4_45_DLLPATH_CHARS + 1) * 2);
+    if (!dllpath_w) return;
+    for (unsigned long i = 0; i < C4_45_DLLPATH_CHARS; i++) dllpath_w[i] = (u16)(unsigned char)dllpath_ascii[i];
+    dllpath_w[C4_45_DLLPATH_CHARS] = 0;
+    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_LENGTH_OFF, (u16)(C4_45_DLLPATH_CHARS * 2));
+    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_MAXLENGTH_OFF, (u16)((C4_45_DLLPATH_CHARS + 1) * 2));
+    wr32(params32 + PARAMS32_DLLPATH_OFF + US32_BUFFER_OFF, (u32b)(u64b)dllpath_w);
 
     if (image_path && image_path_chars) {
         wr16(params32 + PARAMS32_IMAGEPATHNAME_OFF + US32_LENGTH_OFF, (u16)(image_path_chars * 2));
