@@ -15,6 +15,7 @@
 #include "kernel.h"
 #include "ntfile.h"
 #include "ntsvc.h"
+#include "pemod.h"   // CHALICE C4-57: pe_find_named_export (i386 IAT binder)
 
 typedef unsigned char  u8;
 typedef unsigned long  u64b;   // aarch64-none-elf LP64: `unsigned long` = 8B
@@ -1288,6 +1289,172 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
 // relocates unconditionally on address mismatch either way). Records an
 // image-registry entry.
 // =====================================================================
+// =====================================================================
+// CHALICE C4-57: kernel-side i386 IAT binder -- Road B (HANDOFF/FEX-MAP
+// C4-56/C4-57). MEASURED root cause (C4-57 receipt): wine's OWN
+// guest-executed loader chain (ntdll32 LdrInitializeThunk -> loader_init
+// -> build_main_module(LDR_DONT_RESOLVE_REFS) -> explicit
+// `fixup_imports(wm, NULL)` on the MAIN module, donor `dlls/ntdll/
+// loader.c:4507-4513`) is real and DOES run for `kernel32.dll`/
+// `kernelbase.dll` themselves (C4-42 through C4-45's own proven,
+// guest-executed, WOW64-thunked NtOpenFile/NtCreateSection/
+// NtMapViewOfSection chain, correct `syswow64/` i386 resolution, correct
+// DLL-to-DLL `fixup_imports` for kernelbase's OWN imports) -- but that
+// chain's entry point is Hangover/FEX's OWN per-process container
+// bootstrap (`Source/Windows/WOW64/Module.cpp`, native ARM64,
+// `BTCpuProcessInit`-driven), which loads SYSTEM DLLs for FEX's own
+// bookkeeping and NEVER reaches wine's PE-side USER EXE loader at all --
+// this floor's own Phase-0 (`nt_boot_process`, `ntboot.c`) maps the boot
+// EXE directly (`do_imports=0`, `nt_wow64_set_initial_context` seeds the
+// guest's FIRST Eip straight at the EXE's own entry point, never at any
+// ntdll32 `LdrInitializeThunk`), so `build_main_module`/`fixup_imports`
+// never run for the boot EXE's OWN Import Directory -- its IAT slots stay
+// at their unbound, on-disk (zero) values (`hello9_x86.exe`'s
+// `KERNEL32.dll` import of `GetStdHandle`/`WriteFile`).
+//
+// Fix: once BOTH `syswow64/kernel32.dll` and `syswow64/kernelbase.dll`
+// are guest-mapped (real addresses, real export tables, proven live by
+// the SAME chain above), walk the boot EXE's OWN PE32 Import Directory
+// (`IMAGE_IMPORT_DESCRIPTOR` array, `IMAGE_THUNK_DATA32`/`IMAGE_IMPORT_
+// BY_NAME` shapes -- 4-byte thunks, NOT `pemod.c`'s existing `do_imports`
+// code, which hardcodes 8-byte `IMAGE_THUNK_DATA64` reads/writes and
+// resolves via `zc_resolve()`, the kernel-native-stub table -- the wrong
+// tool for a guest i386 IAT against real `KERNELBASE`/`KERNEL32` exports,
+// HANDOFF's own C4-56 verdict) and resolve each imported name via the
+// ALREADY is_pe32-aware `pe_find_named_export` (C4-36) against those two
+// real, live-mapped images -- writing the resolved 32-bit VA straight
+// into the IAT slot. One-shot (`nt_iat_bind_done`), fires from
+// `NtMapViewOfSection` the moment the second of the two DLLs registers
+// (same call-site-driven-notify idiom C4-46/48/53/54's own
+// InvalidationTracker hooks already use), always strictly BEFORE the
+// guest's OWN Eip (seeded at the EXE's entry point) ever executes --
+// `kernel32.dll`/`kernelbase.dll` are always mapped well before `PeMain`
+// runs (both DLL loads are driven by FEX's OWN container bootstrap,
+// which completes long before this floor's synthetic guest Eip/Esp seed
+// is ever read by `BTCpuSimulate`).
+// =====================================================================
+#define C57_IMPDESC_ENTRY_SIZE 20
+#define C57_IMPDESC_OFT   0    // OriginalFirstThunk
+#define C57_IMPDESC_NAME  12
+#define C57_IMPDESC_FT    16   // FirstThunk
+#define C57_DOS_E_LFANEW  0x3C
+#define C57_OPT_MAGIC_OFF (4 + 20)          // after "PE\0\0" + 20B COFF header
+#define C57_PE32_MAGIC    0x10B
+#define C57_OPT_NUMDIRS32 0x5C
+#define C57_OPT_DATADIRS32 0x60
+#define C57_IMAGE_DIR_IMPORT 1
+
+static int nt_iat_bind_done;
+
+// Tries kernel32.dll first (real Windows' own common case for these two
+// names), falls back to kernelbase.dll (real export owner on modern
+// Windows/Wine, kernel32.dll often just forwards -- forwarders return -2
+// from pe_find_named_export, C4-51's own established convention, treated
+// here as "not found on this DLL", not chased further).
+static long nt_iat_resolve_i386(u64b k32base, u64b k32size, u64b kbbase, u64b kbsize,
+                                 const char *name, u64b *out_addr) {
+    unsigned long addr = 0;
+    if (k32base && pe_find_named_export(k32base, k32size, name, &addr) == 0) {
+        *out_addr = (u64b)addr;
+        return 0;
+    }
+    if (kbbase && pe_find_named_export(kbbase, kbsize, name, &addr) == 0) {
+        *out_addr = (u64b)addr;
+        return 0;
+    }
+    return -1;
+}
+
+static void nt_iat_bind_walk(u64b exe_base, u64b exe_size, u64b k32base, u64b k32size,
+                              u64b kbbase, u64b kbsize) {
+    const u8 *base = (const u8 *)exe_base;
+    u32b e_lfanew = rd32(base + C57_DOS_E_LFANEW);
+    const u8 *opt = base + e_lfanew + C57_OPT_MAGIC_OFF;
+    u16b magic = (u16b)(opt[0] | (opt[1] << 8));
+    if (magic != C57_PE32_MAGIC) {
+        puts("CHALICE C4-57: boot exe is not PE32 -- IAT bind skipped\n");
+        return;
+    }
+    u32b num_dirs = rd32(opt + C57_OPT_NUMDIRS32);
+    if (num_dirs <= C57_IMAGE_DIR_IMPORT) {
+        puts("CHALICE C4-57: boot exe has no Import Directory -- nothing to bind\n");
+        return;
+    }
+    const u8 *dirs = opt + C57_OPT_DATADIRS32;
+    u32b irva = rd32(dirs + C57_IMAGE_DIR_IMPORT * 8);
+    u32b isz  = rd32(dirs + C57_IMAGE_DIR_IMPORT * 8 + 4);
+    if (!irva || !isz) {
+        puts("CHALICE C4-57: boot exe Import Directory empty -- nothing to bind\n");
+        return;
+    }
+
+    int bound = 0, failed = 0;
+    const u8 *desc = base + irva;
+    for (;;) {
+        if ((u64b)(desc - base) + C57_IMPDESC_ENTRY_SIZE > exe_size) break;
+        u32b oft   = rd32(desc + C57_IMPDESC_OFT);
+        u32b nrva  = rd32(desc + C57_IMPDESC_NAME);
+        u32b ft    = rd32(desc + C57_IMPDESC_FT);
+        if (!oft && !nrva && !ft) break;   // null terminator
+
+        const char *dllname = (const char *)(base + nrva);
+        puts("CHALICE C4-57: import DLL="); puts(dllname); puts("\n");
+
+        u32b thunk_rva = oft ? oft : ft;
+        const u8 *thunk = base + thunk_rva;
+        u8 *iat = (u8 *)(base + ft);
+        for (u32b j = 0; ; j++) {
+            u32b tval = rd32(thunk + j * 4);
+            if (!tval) break;
+            if (tval & 0x80000000UL) {
+                puts("CHALICE C4-57: ordinal import unsupported, slot skipped\n");
+                failed++;
+                continue;
+            }
+            const char *fname = (const char *)(base + tval + 2);   // skip Hint(u16)
+            u64b addr = 0;
+            if (nt_iat_resolve_i386(k32base, k32size, kbbase, kbsize, fname, &addr) == 0) {
+                wr32(iat + j * 4, (u32b)addr);
+                puts("CHALICE C4-57: bound "); puts(fname); puts(" -> "); puthex(addr); puts("\n");
+                bound++;
+            } else {
+                puts("CHALICE C4-57: UNRESOLVED import "); puts(fname); puts("\n");
+                failed++;
+            }
+        }
+        desc += C57_IMPDESC_ENTRY_SIZE;
+    }
+    puts("CHALICE C4-57: IAT bind done bound="); puthex((u64b)bound);
+    puts(" failed="); puthex((u64b)failed); puts("\n");
+}
+
+// Finds the sole is_dll==0 entry in the image registry -- the boot EXE
+// itself (nt_boot_process's own nt_image_register(exe_name,...,0) call,
+// ntboot.c) -- the ONLY registry entry ever registered with is_dll==0 on
+// a wow64 boot (every DLL, incl. ntdll/ntdll32/kernel32/kernelbase/wow64.
+// dll/the CPU backend, registers with is_dll==1).
+static int nt_find_boot_exe(u64b *base_out, u64b *size_out) {
+    for (int i = 0; i < NT_IMG_MAX; i++) {
+        if (nt_images[i].used && !nt_images[i].is_dll) {
+            *base_out = nt_images[i].base;
+            *size_out = nt_images[i].size;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void nt_iat_bind_maybe(void) {
+    if (nt_iat_bind_done) return;
+    u64b k32base = 0, k32size = 0, kbbase = 0, kbsize = 0, exebase = 0, exesize = 0;
+    if (!nt_image_base_by_name("syswow64/kernel32.dll", &k32base, &k32size)) return;
+    if (!nt_image_base_by_name("syswow64/kernelbase.dll", &kbbase, &kbsize)) return;
+    if (!nt_find_boot_exe(&exebase, &exesize)) return;
+    nt_iat_bind_done = 1;   // one-shot regardless of outcome below
+    puts("CHALICE C4-57: both syswow64 kernel32/kernelbase mapped -- binding boot exe IAT\n");
+    nt_iat_bind_walk(exebase, exesize, k32base, k32size, kbbase, kbsize);
+}
+
 long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAddress,
                          unsigned long ZeroBits, unsigned long CommitSize, void *SectionOffset,
                          unsigned long *ViewSize, unsigned long InheritDisposition,
@@ -1320,6 +1487,7 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
     nt_image_register(sh->name, base, size, entry, 1);
     nt_wow64_populate_init_block_if_ntdll32(sh->name, base, size);   // CHALICE C4-26
     nt_wow64_maybe_notify_map_view(sh->name, base, size, nt_c4_48_teb);  // C4-46/C4-48
+    nt_iat_bind_maybe();   // CHALICE C4-57: bind the boot exe's own IAT once kernel32+kernelbase are up
     return STATUS_SUCCESS;
 }
 
