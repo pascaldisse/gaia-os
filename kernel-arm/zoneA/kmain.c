@@ -647,6 +647,78 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
         }
     }
 
+    // CHALICE C4-34 MEASURE atom: C4-33 proved XIntervals ENCLOSES exe_entry at
+    // this exact self-fault, yet the fault byte-matches NoExecOp -- meaning the
+    // failing FEXCore::Frontend::Decoder::CheckRangeExecutable call queried a
+    // DIFFERENT address than exe_entry (R1: a host InstStream pointer, not the
+    // guest linear addr) or ran at an earlier timestamp than the interval
+    // insert (R2). Read the live per-thread Decoder object directly -- no
+    // donor edit, offsets DERIVED (not guessed) by disassembling libwow64fex.dll
+    // (this pass, objdump -d, matching against FEXCore/Source/Interface/Core/
+    // Frontend.h/.cpp source line-for-line):
+    //   InternalThreadState+0x28 = FrontendDecoder (Decoder*) -- confirmed via
+    //     ContextImpl::CheckIfBlockIsCacheable's own `ldr x0,[x1,#0x28]` before
+    //     tail-calling Decoder::CheckIfCacheable (Thread.FrontendDecoder->...).
+    //   Decoder+0x68 = ExecutableRangeBase (u64), Decoder+0x70 =
+    //     ExecutableRangeEnd (u64), Decoder+0x78 = ExecutableRangeWritable
+    //     (bool), Decoder+0x79 = HitNonExecutableRange (bool), Decoder+0x80 =
+    //     InstStream (const uint8_t*), Decoder+0x88 = InstructionSize (uint8_t)
+    //     -- all confirmed by disassembling CheckRangeExecutable/ReadByte/
+    //     PeekByte (RVAs 0x1ce90/0x1cf34/0x1d000): identical Base/End compare
+    //     sequence in all three, InstStream+InstructionSize+Offset==ByteAddress
+    //     matches Frontend.cpp:127 exactly (PeekByte), and the HitNonExecRange
+    //     store site (ReadByte, offset 0x79) matches Frontend.cpp:116 exactly.
+    // ByteAddress computed here with Offset=0 (ReadByte's own PeekByte(0) call,
+    // the first byte of any new instruction) -- THE queried address.
+    {
+        static int decoder_dumped;
+        u64 teb2 = regs_safe[18];
+        if (!decoder_dumped && teb2 && teb2 >= NT_RAM_BASE && teb2 + 0x1490 < NT_RAM_TOP) {
+            decoder_dumped = 1;
+            u64 thread_state2 = *(volatile u64 *)(teb2 + 0x1480 + 16 * 8);
+            puts("CHALICE C4-34 ThreadState="); puthex(thread_state2);
+            u32 d_lo = 0, d_hi = 0;
+            if (thread_state2 && nt_fault_read32(thread_state2 + 0x28, &d_lo) &&
+                nt_fault_read32(thread_state2 + 0x2c, &d_hi)) {
+                u64 decoder = ((u64)d_hi << 32) | d_lo;
+                puts(" Decoder="); puthex(decoder);
+                u32 rb_lo = 0, rb_hi = 0, re_lo = 0, re_hi = 0;
+                u32 flags_word = 0, is_lo = 0, is_hi = 0;
+                if (decoder &&
+                    nt_fault_read32(decoder + 0x68, &rb_lo) && nt_fault_read32(decoder + 0x6c, &rb_hi) &&
+                    nt_fault_read32(decoder + 0x70, &re_lo) && nt_fault_read32(decoder + 0x74, &re_hi) &&
+                    nt_fault_read32(decoder + 0x78, &flags_word) &&
+                    nt_fault_read32(decoder + 0x80, &is_lo) && nt_fault_read32(decoder + 0x84, &is_hi)) {
+                    u64 exec_base = ((u64)rb_hi << 32) | rb_lo;
+                    u64 exec_end  = ((u64)re_hi << 32) | re_lo;
+                    u64 inst_stream = ((u64)is_hi << 32) | is_lo;
+                    u32 inst_size_byte = 0;
+                    /* InstructionSize (u8) lives at Decoder+0x88 -- separate word */
+                    nt_fault_read32(decoder + 0x88, &inst_size_byte);
+                    u32 inst_size = inst_size_byte & 0xff;
+                    u32 writable = flags_word & 0xff;
+                    u32 hit_nonexec = (flags_word >> 8) & 0xff;
+                    u64 byte_address = inst_stream + inst_size; /* Offset=0, ReadByte's own PeekByte(0) */
+                    int enclosed34 = (byte_address >= exec_base && byte_address < exec_end) ? 1 : 0;
+                    puts(" ExecutableRangeBase="); puthex(exec_base);
+                    puts(" ExecutableRangeEnd="); puthex(exec_end);
+                    puts(" ExecutableRangeWritable="); puthex(writable);
+                    puts(" HitNonExecutableRange="); puthex(hit_nonexec);
+                    puts(" InstStream="); puthex(inst_stream);
+                    puts(" InstructionSize="); puthex(inst_size);
+                    puts("\n CHALICE C4-34 ByteAddress(queried)="); puthex(byte_address);
+                    puts(" enclosed="); puthex(enclosed34);
+                    puts(" exe_entry(0x47661000) match="); puthex(byte_address == 0x47661000 ? 1 : 0);
+                    puts("\n");
+                } else {
+                    puts(" Decoder-fields-unreadable\n");
+                }
+            } else {
+                puts(" Decoder-ptr-unreadable\n");
+            }
+        }
+    }
+
     // The prior dispatcher stack is still live at this point.  This is the
     // exact CONTEXT bytes RtlRestoreContext was handed in the prior pass.
     if (prior_context_valid && !context_return_logged) {
