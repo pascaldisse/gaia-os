@@ -720,6 +720,68 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
         }
     }
 
+    // CHALICE C4-50: blob disasm (objdump -t/-d, real prebuilt Hangover-11.9
+    // libwow64fex.dll, NOT vendored source) found the notify path is:
+    // BTCpuNotifyMapViewOfSection -> internal wrapper (locks mutex, calls
+    // GetSectionFilePath then BOTH InvalidationTracker::HandleImageMap
+    // (RVA 0x168b10, source-matching) AND a SEPARATE ImageTracker::
+    // HandleImageMap(name,Address,bool) (RVA 0x165710 -- NOT present in the
+    // vendored FEX/Source tree at all, proving this blob is a newer/
+    // different FEX revision). InvalidationTracker::HandleImageMap's own
+    // gate, read straight off the disasm (RVA 0x168b3c-0x168b44):
+    //   bl RtlImageNtHeader        ; x0 = RtlImageNtHeader(Address)
+    //   ldrh w8, [x0, #0x6]        ; w8 = FileHeader.NumberOfSections
+    //   cbz  x8, <skip-to-epilogue> ; if NumberOfSections==0, the ENTIRE
+    //                                 section-interval-insert loop (the only
+    //                                 code path that ever calls
+    //                                 IntervalList::Insert) is skipped --
+    //                                 function returns having inserted
+    //                                 nothing.
+    // This is THE tell: the insert is gated solely on
+    // RtlImageNtHeader(Address)->FileHeader.NumberOfSections != 0. Live
+    // check below reads that exact field (offset e_lfanew+4+2 from each
+    // DLL's own mapped base -- IMAGE_NT_HEADERS.FileHeader.NumberOfSections,
+    // the SAME bytes RtlImageNtHeader(Address) would return a pointer into)
+    // directly out of THIS boot's real mapped kernel32.dll/kernelbase.dll
+    // images (PeMapImage's own copy, ntfile.c/pemod.c -- RAM is
+    // identity-mapped so a plain bounds-checked C deref is safe, matching
+    // the root_key_names[] spot-check idiom below) to confirm which side of
+    // the branch the blob actually takes for these two DLLs.
+    {
+        static int c450_dumped;
+        if (!c450_dumped) {
+            const char *names[2] = {"kernel32.dll", "kernelbase.dll"};
+            int any = 0;
+            for (int di = 0; di < 2; di++) {
+                u64 dbase = 0, dsize = 0;
+                if (!nt_image_base_by_name(names[di], &dbase, &dsize)) continue;
+                any = 1;
+                puts("CHALICE C4-50 "); puts(names[di]); puts(" base="); puthex(dbase);
+    puts(" size="); puthex(dsize);
+                if (dbase < NT_RAM_BASE || dbase + 0x1000 >= NT_RAM_TOP) {
+                    puts(" -> base out of RAM range, not dereferenced\n");
+                    continue;
+                }
+                u32 mz = *(u32 *)dbase;
+                u32 e_lfanew = *(u32 *)(dbase + 0x3C);
+                puts(" mz="); puthex(mz); puts(" e_lfanew="); puthex(e_lfanew);
+                u64 nth = dbase + e_lfanew;
+                if (nth + 8 >= NT_RAM_TOP || e_lfanew > dsize) {
+                    puts(" -> NT header out of range, not dereferenced\n");
+                    continue;
+                }
+                u32 pesig = *(u32 *)nth;
+                u16 machine = *(u16 *)(nth + 4);
+                u16 nsections = *(u16 *)(nth + 6);
+                puts(" pesig="); puthex(pesig); puts(" machine="); puthex(machine);
+                puts(" NumberOfSections="); puthex(nsections);
+                puts(nsections == 0 ? " -> GATE TAKEN (skip, matches live XIntervals stall)\n"
+                                    : " -> GATE NOT TAKEN (insert should proceed)\n");
+            }
+            if (any) c450_dumped = 1;
+        }
+    }
+
     // CHALICE C4-34 MEASURE atom: C4-33 proved XIntervals ENCLOSES exe_entry at
     // this exact self-fault, yet the fault byte-matches NoExecOp -- meaning the
     // failing FEXCore::Frontend::Decoder::CheckRangeExecutable call queried a
