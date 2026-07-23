@@ -1,0 +1,67 @@
+transcript saved: /tmp/gaia-pe9-gate.log (101354 bytes)
+---- required-green ----
+OK   pe1 ret=42
+OK   CHALICE: the cup fills
+OK   pe2 ret=7
+OK   CHALICE: the cup speaks
+OK   CHALICE: continue lands
+OK   CHALICE: NT10 floor
+OK   pe3 ret=99
+OK   CHALICE: the cup links
+OK   pe4 ret=60
+OK   CHALICE: thunk enters
+OK   CHALICE: the chain speaks
+OK   pe5 ret=99
+OK   CHALICE: stock ntdll mapped
+OK   CHALICE: stock thunk enters
+OK   CHALICE: kernel32 speaks
+OK   pe7 ret=77
+OK   CHALICE: hello7 surface walk complete
+OK   pe8 ret=78
+OK   CHALICE: wow64.dll mapped
+OK   CHALICE: CPU backend mapped name=wowbox64.dll
+OK   CHALICE: BTCpu export scan name=wowbox64.dll
+OK   CHALICE: BTCpu wired
+OK   CHALICE: fstest native-default wow64active=0 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000AA64
+OK   CHALICE: fstest wow64-redirect wow64active=1 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000014C
+OK   CHALICE: fstest sysnative-escape wow64active=1 path=\??\C:\windows\sysnative\ntdll.dll open_rc=0 machine=0x000000000000AA64
+OK   CHALICE: fstest explicit-syswow64 wow64active=0 path=\??\C:\windows\syswow64\kernelbase.dll open_rc=0 machine=0x000000000000014C
+OK   CHALICE: pe32sec syswow64-ntdll path=\??\C:\windows\syswow64\ntdll.dll open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C
+OK   CHALICE: pe32sec hello8-x86-exe path=\??\C:\windows\hello8_x86.exe open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C
+OK   CHALICE: WOW64 teb32/peb32 built
+OK   CHALICE: WOW64 crossproclist addr=
+OK   pe9 ret=0
+OK   CHALICE: CPU backend mapped name=libwow64fex.dll
+OK   CHALICE: BTCpu export scan name=libwow64fex.dll
+---- pe9-specific / fault lines ----
+CHALICE: NtQueryInformationProcess ProcessWow64Information -> peb32=0x0000000000000000
+CHALICE: NtQueryInformationProcess ProcessWow64Information -> peb32=0x0000000000000000
+CHALICE: NtQueryInformationProcess ProcessWow64Information -> peb32=0x0000000000000000
+T:/> pe9
+CHALICE IMAGE: name=wow64.dll base=0x0000000047040000 size=0x0000000000120000
+CHALICE: wow64.dll mapped base=0x0000000047040000 size=1179648 entry=0x00000000470612A4
+CHALICE: CPU backend mapped name=wowbox64.dll base=0x0000000047160000 size=22085632 entry=0x0000000047162D28
+CHALICE: BTCpu export scan name=wowbox64.dll resolved=14/22 ProcessInit=0x000000004716239C Simulate=0x00000000471626F8
+CHALICE: BTCpu wired
+CHALICE: fstest native-default wow64active=0 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000AA64
+CHALICE: fstest wow64-redirect wow64active=1 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000014C
+CHALICE: fstest sysnative-escape wow64active=1 path=\??\C:\windows\sysnative\ntdll.dll open_rc=0 machine=0x000000000000AA64
+CHALICE: fstest explicit-syswow64 wow64active=0 path=\??\C:\windows\syswow64\kernelbase.dll open_rc=0 machine=0x000000000000014C
+CHALICE: pe32sec syswow64-ntdll path=\??\C:\windows\syswow64\ntdll.dll open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C TransferAddress=0x000000007BC64190 map_rc=0 base=0x000000004D7F0000 size=2281472
+CHALICE: WOW64 teb32/peb32 built teb64=0x00000000411A0BC0 teb32=0x00000000411A2BC0 peb32=0x00000000411A4F40 wow64info=0x00000000411A53C0
+CHALICE: WOW64 crossproclist addr=0x00000000411A5400 size=16384 entries=408 cpureserved=0x00000000411A9410
+pe9 ret=0
+T:/> pe9 fex
+CHALICE: wow64.dll mapped base=0x0000000047040000 size=1179648 entry=0x00000000470612A4
+CHALICE: CPU backend mapped name=libwow64fex.dll base=0x0000000047160000 size=3547136 entry=0x00000000472CB93C
+CHALICE: BTCpu export scan name=libwow64fex.dll resolved=21/22 ProcessInit=0x0000000047161FB4 Simulate=0x00000000471634D4
+CHALICE: BTCpu wired
+CHALICE: fstest native-default wow64active=0 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000AA64
+CHALICE: fstest wow64-redirect wow64active=1 path=\??\C:\windows\system32\kernel32.dll open_rc=0 machine=0x000000000000014C
+CHALICE: fstest sysnative-escape wow64active=1 path=\??\C:\windows\sysnative\ntdll.dll open_rc=0 machine=0x000000000000AA64
+CHALICE: fstest explicit-syswow64 wow64active=0 path=\??\C:\windows\syswow64\kernelbase.dll open_rc=0 machine=0x000000000000014C
+CHALICE: pe32sec syswow64-ntdll path=\??\C:\windows\syswow64\ntdll.dll open_rc=0 create_rc=0 query_rc=0 Machine=0x000000000000014C TransferAddress=0x000000007BC64190 map_rc=0 base=0x000000004C650000 size=2281472
+CHALICE: WOW64 teb32/peb32 built teb64=0x00000000411A9710 teb32=0x00000000411AB710 peb32=0x00000000411ADA90 wow64info=0x00000000411ADF10
+CHALICE: WOW64 crossproclist addr=0x00000000411ADF50 size=16384 entries=408 cpureserved=0x00000000411B1F60
+pe9 ret=0
+GATE PASS (required-green, no regression, both CPU backends)
