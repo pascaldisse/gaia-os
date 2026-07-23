@@ -776,6 +776,46 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
             puts(" NumberOfSections="); puthex(nsections);
             puts(nsections == 0 ? " -> GATE TAKEN (skip, matches live XIntervals stall)\n"
                                 : " -> GATE NOT TAKEN (insert should proceed)\n");
+
+            // CHALICE C4-51: blob disasm of InvalidationTracker::HandleImageMap's
+            // FULL body (RVA 0x168b10, not just C4-50's header gate) proved the
+            // section-walk loop calls IntervalList::Insert(this, SectionBase,
+            // SectionEnd) UNCONDITIONALLY for every section with
+            // IMAGE_SCN_MEM_EXECUTE set (Characteristics byte 3 bit 5 = bit 29 =
+            // 0x20000000), gated on Insert()'s own "Base==End" empty-interval
+            // skip (0x18000566c) -- and IntervalList::Insert writes into
+            // `this+0` (begin/end/cap, libc++ vector layout), the EXACT SAME
+            // vector our own XIntervals dumper reads at fex_base+0x34c430+0 --
+            // proven via the SAME `this` global (adrp 0x18034c000+0x430) used by
+            // BOTH BTCpuProcessInit's wrapper call site (0x1800029c8-d0) AND
+            // WowSyscallHandler::QueryGuestExecutableRange's tail-call
+            // (0x1800053fc-400) -- object-identity mismatch (C4-50 candidate iii)
+            // is REFUTED. Sole remaining candidate (ii): walk each section's
+            // REAL Characteristics/VirtualAddress/VirtualSize as this boot's own
+            // mapped image actually has them (same raw-deref technique as the
+            // NumberOfSections read above), to see whether ANY section is
+            // EXECUTE+nonzero-size (the two preconditions Insert() and the
+            // EXECUTE-bit test both require).
+            u16 opthdrsz = *(u16 *)(nth + 0x14);
+            u64 sec0 = nth + 0x18 + opthdrsz;
+            puts(" SizeOfOptionalHeader="); puthex(opthdrsz);
+            puts(" FirstSection="); puthex(sec0); puts("\n");
+            int any_exec = 0;
+            for (int si = 0; si < nsections && si < 16; si++) {
+                u64 sh = sec0 + (u64)si * 0x28;
+                if (sh + 0x28 >= NT_RAM_TOP) { puts("  [section out of range]\n"); break; }
+                u32 vsize = *(u32 *)(sh + 0x8);
+                u32 vaddr = *(u32 *)(sh + 0xC);
+                u32 chars = *(u32 *)(sh + 0x24);
+                int is_exec = (chars & 0x20000000) ? 1 : 0;
+                int nonempty = (vsize != 0) ? 1 : 0;
+                if (is_exec && nonempty) any_exec = 1;
+                puts("  CHALICE C4-51 section["); puthex((u64)si); puts("] VA="); puthex(vaddr);
+                puts(" VSize="); puthex(vsize); puts(" Characteristics="); puthex(chars);
+                puts(is_exec ? " EXEC=1" : " EXEC=0");
+                puts(nonempty ? " nonempty=1" : " nonempty=0"); puts("\n");
+            }
+            puts(" CHALICE C4-51 any_exec_nonempty_section="); puthex((u64)any_exec); puts("\n");
         }
     }
 
