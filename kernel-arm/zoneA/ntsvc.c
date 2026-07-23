@@ -2060,9 +2060,18 @@ void nt_wow64_build_params32(void *peb32_v,
     if (!params32) return;
 
     // CurrentDirectory (CURDIR32 @ 0x24) + DllPath (@ 0x30): real "C:\\",
-    // own static (persistent) buffer -- C4-28 scar law: some ntdll
-    // helpers deref DosPath.Buffer regardless of Length.
-    static const unsigned short curdir_w[3] = { 'C', ':', '\\' };
+    // heap-backed buffer -- C4-28 scar law: some ntdll helpers deref
+    // DosPath.Buffer regardless of Length. MUST be guest-visible heap
+    // memory (nt_zalloc/mem.c HEAP_BASE 0x41000000), NOT a `static const`
+    // kernel global -- a first live-caught version of this fix used the
+    // latter and faulted (translation fault, DFSC level-1) the moment
+    // ntdll32's own memcpy tried to read it: kernel .rodata is EL1-only,
+    // never mapped into the guest/EL0 execution context the FEX JIT runs
+    // under, unlike this heap range (already proven guest-accessible by
+    // every other wide buffer in this file/ntboot.c).
+    u16 *curdir_w = (u16 *)nt_zalloc(4 * 2);
+    if (!curdir_w) return;
+    curdir_w[0] = 'C'; curdir_w[1] = ':'; curdir_w[2] = '\\'; curdir_w[3] = 0;
     wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_LENGTH_OFF, 3 * 2);
     wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_MAXLENGTH_OFF, 4 * 2);
     wr32(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_BUFFER_OFF, (u32b)(u64b)curdir_w);
