@@ -386,6 +386,12 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
 #define STATUS_ACCESS_VIOLATION  0xc0000005U  // wine/include/winnt.h:634
 #define STATUS_BREAKPOINT        0x80000003U  // wine/include/winnt.h:630
 #define STATUS_ILLEGAL_INSTRUCTION 0xc000001dU // wine/include/winnt.h:638
+// CHALICE C4-40: donor wine/include/winnt.h:629, ntstatus.h:223 -- ARM ARM
+// D17.2.28 ESR_EL1 Data-Abort DFSC=0b100001 (0x21) is the alignment-fault
+// encoding; wine/dlls/ntdll/unix/signal_arm64.c segv_handler routes that
+// DFSC straight to this code, SKIPPING the AV/read-write classification.
+#define STATUS_DATATYPE_MISALIGNMENT 0x80000002U // wine/include/winnt.h:629
+#define ESR_DFSC_ALIGN_FAULT 0x21U
 #define NTDLL_KIUSEREXCEPTIONDISPATCHER_RVA 0x66c40U
 
 // Matches SAVEALL_SYNC/RESTOREALL_SYNC.  Any future C/asm layout drift is a
@@ -480,7 +486,29 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     if (elr >= (u64)_load_base && elr < (u64)_kernel_end) return 0;
     if (!known_guest) return 0;
 
-    if (ec == 0x24 || ec == 0x25) {                 // data abort, lower/current EL
+    if ((ec == 0x24 || ec == 0x25) && (esr & 0x3f) == ESR_DFSC_ALIGN_FAULT) {
+        // CHALICE C4-40 fix (named recon, C4-39): donor segv_handler
+        // (signal_arm64.c ~1123-1128) checks DFSC==ALIGN_FAULT BEFORE the
+        // generic Data-Abort read/write classification and returns a bare
+        // EXCEPTION_DATATYPE_MISALIGNMENT with NumberParameters==0 (never
+        // falls through to the ExceptionInformation[0/1]=WnR/addr code a
+        // few lines below in the SAME donor switch case) -- mirror that
+        // exact shape: no ExceptionInformation params, so FEX's own
+        // BTCpuResetToConsistentStateImpl (Module.cpp:926) sees
+        // ExceptionCode==EXCEPTION_DATATYPE_MISALIGNMENT (not
+        // EXCEPTION_ACCESS_VIOLATION), skips the whole AV-shaped branch
+        // above it (CallRetStack/OvercommitTracker/suspend/JITGuardPage/
+        // InvalidationTracker -- none apply, none read ExceptionInformation
+        // for this code anyway) and reaches its
+        // `Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT &&
+        // Context::HandleUnalignedAccess(TLS, Context)` gate, which decodes
+        // the faulting ldar/stlr at Context->Pc (== our `elr`, wired below
+        // via rec+0x10) directly from the CONTEXT register file already
+        // built for every other path here -- no other record field this
+        // consumer reads.
+        status = STATUS_DATATYPE_MISALIGNMENT;
+        params = 0;
+    } else if (ec == 0x24 || ec == 0x25) {           // data abort, lower/current EL
         status = STATUS_ACCESS_VIOLATION;
         params = 2;
     } else if (ec == 0x3c && nt_fault_read32(elr, &insn) &&
