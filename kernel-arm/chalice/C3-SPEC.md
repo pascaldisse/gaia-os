@@ -1,406 +1,242 @@
-# CHALICE C3-SPEC — graphics recon (SPEC ONLY, zero code edits this slice)
+# CHALICE C3-SPEC — GPU road: Venus/virtio-gpu for Teardown(GL)+MXO(D3D9)
 
-Goal: answer Pascal's C3 options-page ask — minimal win32u floor, display seam,
-GPU reality, atom ladder — grounded in DONOR SOURCE (wine/ @ 93e084a7, "Wine
-version 11.13" per VERSION) + reactos/ + this kernel's own zoneA/ sources, not
-memory. Anchor: HANDOFF.md (pe8 green, hello7 surface walk, ramfb_gate.py).
-⚠ Version skew (same class HANDOFF already flags for ntdll): stock DLLs =
-Hangover 11.9; donor checkout = wine 11.13. `chalice/stock/` holds ONLY
-ntdll/kernel32/kernelbase/apisetschema — no user32.dll/gdi32.dll/win32u.dll
-fetched yet, so the syscall numbers below are read from the wine 11.13 donor's
-generated header, NOT yet cross-checked against a real 11.9 binary (that
-binary doesn't exist in this tree). Re-verify at whichever atom first fetches
-those 3 DLLs, same discipline as the pe6 stock-ntdll walk.
+RECON + SPEC ONLY. No kernel edits, no QEMU boots. Supersedes the prior
+software-Mesa-as-PE ruling recorded in this file's git history (commits
+`91a8d88` C3-SPEC graphics recon + `1f7304e` C3-GPU-0 Mesa PE staging) — Pascal
+now rules the **Venus protocol → patched-QEMU (KosmicKrisp) → one Vulkan floor →
+DXVK + Zink** road. Old lavapipe/llvmpipe-PE recon retrievable from git if the
+software path is ever wanted as a fallback; not carried forward here.
 
-## 1 — Minimal win32u floor: entry points + real syscall numbers
+## Provenance (fresh this pass)
 
-Ground truth, not the runtime call graph of a live game — the **static
-Nt-call surface user32.dll/gdi32.dll issue to get one window with a drawable
-surface on screen**, read from the two donor call sites:
-- `wine/dlls/user32/win.c:391` `NtUserCreateWindowEx(...)` inside
-  `WIN_CreateWindowEx`; `class.c:360` `NtUserRegisterClassExWOW(...)` inside
-  `RegisterClassExA`; `win.c:347,350,471,482` `NtUserShowWindow(...)`.
-- `wine/dlls/user32/button.c:153,234,337` (representative — same pattern
-  repeats in edit.c/static.c/listbox.c/combo.c/msgbox.c/dialog.c/mdi.c/
-  icontitle.c): `NtUserGetDC`/`NtUserGetDCEx`/`NtUserBeginPaint`/
-  `NtUserReleaseDC`/`NtUserEndPaint` — the HDC returned by these IS the
-  window's drawable surface handle; no separate "create surface" call needed
-  from user32's side, win32u wires HDC↔window internally
-  (`wine/dlls/win32u/window.c:5788` `NtUserCreateWindowEx`, calls
-  `create_window_handle` + later `window_surface_create`,
-  `wine/include/wine/gdi_driver.h:322`).
-- `wine/dlls/gdi32/dc.c:375,1954` `NtGdiOpenDCW`/`NtGdiBitBlt` — the actual
-  pixel-copy primitive gdi32 issues once it has an HDC.
+FRESH-READ donor:
+- `kernel-arm/zoneA/build.sh:212-217` — live QEMU rig line.
+- `kernel-arm/zoneA/virtio.c` (whole) — the ONLY virtio transport we own.
+- `quarry/venus-protocol` — cloned read-only this pass
+  (`gitlab.freedesktop.org/virgl/venus-protocol`, depth-1, gitignored):
+  `docs/VK_EXT_command_serialization.txt` (stream encoding),
+  `include/vulkan/vk_icd.h` (loader↔ICD contract).
 
-**Numbers are real, from `wine/dlls/win32u/win32syscalls.h`'s `_WIN64` block
-(line 1545-3085, the ARM64/x86-64 variant — NOT the `ALL_SYSCALLS32` block
-at line 3-1540, which is 32-bit-arg-width and wrong for this ABI).** Encoding
-proven identical to ntdll's own table-select scheme (already live in this
-kernel, `zoneA/ntdisp.S:135-136` `and x20,x8,#0xfff` / `ubfx x21,x8,#12,#2`,
-donor equivalent `wine/dlls/ntdll/unix/signal_arm64.c:1681-1682`, same two
-instructions verbatim): **table index = bits 12-13 of x8, service id = low
-12 bits.** win32u registers itself as **table 1**
-(`wine/dlls/win32u/syscall.c:184` `KeAddSystemServiceTable(syscalls, NULL,
-ARRAY_SIZE(syscalls), arguments, 1)`), so every id below has `table_idx=1`,
-and the **low-12-bit value (not the raw 0x1xxx id) is the array index** into
-our `nt_service_tables[1]`. `args` = total argument bytes (regs+stack, same
-convention this kernel already uses in `ntsvc.c` — e.g. `NtWriteFile` stored
-as `9*8`), lifted verbatim from the header, no re-derivation.
+FRESH-WEB verified (given road, confirmed):
+- `github.com/startergo/homebrew-qemu-virgl-kosmickrisp` — "Venus support:
+  Modern virtio-gpu Vulkan transport … includes KosmicKrisp, a Vulkan-to-Metal
+  layered driver for Apple Silicon." ✓ tap name, KosmicKrisp = Mesa vk→Metal ICD.
+- `github.com/startergo/homebrew-virglrenderer` — Venus via KosmicKrisp; host
+  renderer = virglrenderer HEAD (MIT). ✓
+- akihikodaki gist `87df4149…` (Linux desktop on Apple Silicon) — "Fixed it by
+  switching from **virtio-gpu-gl-pci to virtio-gpu-pci**." ✓ akihikodaki QEMU
+  patches; the venus device is `virtio-gpu-pci` (NOT `-gl-pci`).
+- `docs.mesa3d.org/drivers/venus.html` — "Venus is a Virtio-GPU protocol for
+  Vulkan command serialization. Protocol + codegen at venus-protocol; renderer
+  at virglrenderer. … experimental." ✓
 
-| Nt* entry (win32syscalls.h:line) | raw id | table1 idx (id&0xfff) | args(B) |
-|---|---|---|---|
-| NtUserRegisterClassExWOW :1262 | 0x14eb | 1259 | 56 |
-| NtUserCreateWindowEx :878 | 0x136b | 875 | 136 |
-| NtUserShowWindow :1472 | 0x15bd | 1469 | 16 |
-| NtUserGetDC :1006 | 0x13eb | 1003 | 8 |
-| NtUserGetDCEx :1007 | 0x13ec | 1004 | 24 |
-| NtUserReleaseDC :1292 | 0x1509 | 1289 | 16 |
-| NtUserBeginPaint :810 | 0x1327 | 807 | 16 |
-| NtUserEndPaint :959 | 0x13bc | 956 | 16 |
-| NtUserDestroyWindow :903 | 0x1384 | 900 | 8 |
-| NtUserGetClassName :988 | 0x13d9 | 985 | 24 |
-| NtUserSetWindowPos :1450 | 0x15a7 | 1447 | 56 |
-| NtUserGetMessage :1054 | 0x141b | 1051 | 32 |
-| NtUserPeekMessage :1229 | 0x14ca | 1226 | 40 |
-| NtUserTranslateMessage :1499 | 0x15d8 | 1496 | 16 |
-| NtUserDispatchMessage :910 | 0x138b | 907 | 8 |
-| NtUserPostMessage :1235 | 0x14d0 | 1232 | 32 |
-| NtUserMessageCall :1208 | 0x14b5 | 1205 | 56 |
-| NtUserCallOneParam :832 | 0x133d | 829 | 16 |
-| NtUserCallNoParam :831 | 0x133c | 828 | 8 |
-| NtGdiOpenDCW :585 | 0x1246 | 582 | 64 |
-| NtGdiCreateCompatibleDC :177 | 0x10ae | 174 | 8 |
-| NtGdiCreateCompatibleBitmap :176 | 0x10ad | 173 | 24 |
-| NtGdiCreateDIBSection :179 | 0x10b0 | 176 | 72 |
-| NtGdiCreateSolidBrush :194 | 0x10bf | 191 | 16 |
-| NtGdiCreatePen :189 | 0x10ba | 186 | 32 |
-| NtGdiSelectBitmap :622 | 0x126b | 619 | 16 |
-| NtGdiSelectBrush :623 | 0x126c | 620 | 16 |
-| NtGdiSelectPen :626 | 0x126f | 623 | 16 |
-| NtGdiBitBlt :154 | 0x1097 | 151 | 88 |
-| NtGdiPatBlt :591 | 0x124c | 588 | 48 |
-| NtGdiRectangle :604 | 0x1259 | 601 | 40 |
-| NtGdiExtTextOutW :460 | 0x11c9 | 457 | 72 |
-| NtGdiDeleteObjectApp :402 | 0x118f | 399 | 8 |
-| NtGdiFlush :472 | 0x11d5 | 469 | 0 |
-| NtGdiSwapBuffers :662 | 0x1293 | 659 | 8 |
+CITE-AT-IMPLEMENTATION (not clone-verified this pass, marked ⚑): full Mesa
+`src/virtio/vulkan/` (vn_ring, vn_renderer_virtgpu, generated vn_protocol) — huge,
+Linux/drm-coupled, NOT cloned; virtio-gpu device spec §5.7 (blob/context-init).
+Every ⚑ below = re-derive against a real clone at that rung, same discipline as
+HANDOFF's pe6 stock-ntdll walk.
 
-Full win32u universe = **1540 entries** (`0x1000`-`0x1603`,
-`win32syscalls.h:1545-3085`) — DComposition/DXGK/RIM/MIT/composition-surface
-noise is 90%+ of it (font, printing, ICM, OPM/DRM-adjacent, multi-monitor,
-touch — irrelevant to "one drawable window"). List above is the traced-minimum
-for RegisterClass→CreateWindow→ShowWindow→GetDC/BeginPaint→one blit→
-message-pump-enough-to-not-busy-spin-forever; NOT every symbol user32/gdi32
-import — `GetProcAddress`-style lazy resolution + our own stub-fill (already
-proven pattern, `zoneA/ntsvc.c:552-561`, `NtStub`→`STATUS_NOT_IMPLEMENTED`)
-means unresolved extras surface as one `CHALICE FAULT` line each, burned down
-per the pe6/pe7/pe8 precedent — not blocking, not silent.
-
-## 2 — Display driver seam: chosen = none (kernel IS the driver, table 1 only)
-
-Wine's real seam (`wine/include/wine/gdi_driver.h:362`
-`struct user_driver_funcs`, `:292` `struct window_surface_funcs`,
-`:443` `__wine_set_user_driver`) is a **Unix-side-only** vtable
-(`gdi_driver.h:26` `#error The GDI driver can only be used on the Unix side`)
-that `winex11.drv`/`winewayland.drv` register into from a `.so` unixlib built
-*separately* from their thin PE stub module
-(`wine/dlls/winex11.drv/Makefile.in:2-3` `MODULE=winex11.drv` /
-`UNIXLIB=winex11.so`, linked `-lwin32u`, i.e. it calls back into win32u's own
-Unix-side internals — a live X11 client process talking to a live X server,
-routed through wineserver). **None of that substrate exists here** (no Unix
-side, no X11, no wineserver, no second process — this kernel is already
-single-address-space/direct-call, per HANDOFF's `nt_dispatch` architecture).
-
-`win32u.dll`'s PE side is confirmed mechanically identical to ntdll's: its
-`.spec` marks every one of these entries `-syscall`
-(`wine/dlls/win32u/win32u.spec:153,877` e.g.
-`@ stdcall -syscall NtGdiBitBlt(...)` / `NtUserCreateWindowEx(...)`) — same
-winebuild-generated `mov x8,#id; blr [dispatcher]` stub shape as every ntdll
-Nt* export this kernel already intercepts. The real semantics
-(`window.c`/`dc.c`/`class.c` — 1000s of lines) run **only** in win32u's own
-Unix-side unixlib (`Makefile.in:2-3` `MODULE=win32u.dll`/`UNIXLIB=win32u.so`),
-which is exactly the C-logic-we-write-ourselves side this kernel already
-replaces for ntdll (NtWriteFile, NtCreateSection, etc. are OUR C, not wine's).
-
-**Decision: implement §1's ~30 entries as new native kernel services in
-`nt_service_tables[1]`** (already-provisioned, currently zeroed —
-`zoneA/ntsvc.c:548,628` `NtServiceTable nt_service_tables[4]` +
-`"tables[1..3]: zero-initialized statics -> ServiceLimit=0"`) — same
-`nt_svc_table0`/`nt_svc_argtable0` fill pattern as table 0
-(`ntsvc.c:552-624`), blitting straight onto the ramfb linear buffer
-(`zoneA/fw_cfg.c:24` `RAMFB_FOURCC` = `DRM_FORMAT_XRGB8888`, 640x480,
-`kmain.c:309` `FbInit`). **Justification (2 lines): (a) the alternative —
-porting winex11.drv's unixlib or writing a new "winegaia.drv" unixlib — only
-makes sense if a Unix-process/wineserver substrate exists to plug it into,
-and it doesn't; (b) win32u's PE/Unix split means we already keep 100% of our
-existing ntdll-service pattern and skip ~1000s of donor lines (window
-handle tables, CBT hooks, desktop/wineserver objects) we'd otherwise have to
-port for zero benefit — we only need OUR OWN semantics for OUR OWN ~30 ids.**
-
-ReactOS win32k (`reactos/win32ss/win32k.c`, `ntoskrnl/ex/win32k.c`) is a
-real in-kernel win32k reference but **x86/x86_64 only, no ARM64 port exists**
-in this donor checkout — informational only, not load-bearing for this ABI.
-
-## 3 — GPU reality per target
-
-Current rig, verified in `zoneA/build.sh:142-149`: `qemu-system-aarch64 -M
-virt,gic-version=3 -cpu cortex-a72 -m 1G ... -device ramfb`. **No
-`-device virtio-gpu-*` of any kind is present** — `ramfb` is a
-firmware-config-negotiated dumb linear buffer (`fw_cfg.c:1-5`, guest-RAM
-allocated, QEMU only scans it out — no 3D, no command queue, no GPU object
-model). Zero GPU substrate exists in the rig today, full stop.
-
-| Target | API | Path needed | Viable now? | Needs |
-|---|---|---|---|---|
-| MXO (DX9, 32-bit, DXVK-proven per HANDOFF) | Direct3D9→DXVK | DXVK needs a **Vulkan** ICD in-guest | **No** — no virtio-gpu device in build.sh, no Vulkan ICD anywhere in this tree | New QEMU device (`virtio-gpu-gl`/venus) + a guest Vulkan driver that speaks the venus protocol (large Mesa port, C5-metal-adjacent scope), OR a from-scratch software Vulkan ICD (Mesa lavapipe/llvmpipe cross-built as our `aarch64-windows-gnu` PE target) — both are their own multi-slice efforts, not this atom |
-| Teardown (OpenGL, x86-64 per HANDOFF) | wined3d-free direct GL | wined3d's `wine/dlls/win32u/opengl.c` + `wine/include/wine/opengl_driver.h` `pOpenGLInit` hook needs a real GL context from *something* | **No** — same zero-GPU-substrate blocker; no GL implementation (hardware-backed or software/Mesa-softpipe-as-PE) exists in-guest | Same two forks as DX9 (virtio-gpu-gl passthrough vs. software Mesa GL-as-PE), independently sized from Vulkan (shares no code) |
-| 2D GDI window (this spec's own floor, §1/§2) | NtGdi* direct ramfb blit | none — CPU memcpy/blend, kernel-side | **Yes** — no GPU needed at all, XRGB8888 ramfb already proven (`ramfb_gate.py`, HANDOFF) | nothing; this is the atom ladder below |
-
-Both real GPU forks (venus-passthrough vs. software-Mesa-as-PE) are **bigger
-than a C3 atom each** — Pascal's ruling needed before either starts (same
-"NO autonomous work" law HANDOFF already states for C3/C4/C5). This spec's
-atom ladder (§4) stops at the 2D floor, which is unconditionally buildable
-today, and marks the GPU fork as the explicit next decision point.
-
-## 4 — Atom ladder (serial, each bounded + testable)
-
-**G1 — table-1 skeleton (no real handlers yet).** `nt_svc_table1[N]`/
-`nt_svc_argtable1[N]` arrays mirroring `ntsvc.c:552-561`'s table-0
-init-to-`NtStub` pattern; wire `nt_service_tables[1]` (currently unused
-zeroed struct). New opaque handle space for HWND/HDC/HBITMAP/HBRUSH/HPEN
-(flat array + kind tag, same shape as the existing 3A handle table). Gate:
-one real id (e.g. `NtGdiFlush`, args=0, trivial no-op) + one deliberately
-unimplemented id, both routed through table 1, both logged
-(`nt_dispatch_log`, `ntdisp.S:166-182` already generic across tables) —
-proves table-1 routing end-to-end with zero drawing logic yet.
-
-**G2 — GDI-only floor, no window manager.** Real handlers: `NtGdiOpenDCW`
-(screen DC = the ramfb buffer itself, no window needed), `NtGdiPatBlt`/
-`NtGdiRectangle` (solid-fill correctness), `NtGdiCreateCompatibleDC`+
-`NtGdiCreateCompatibleBitmap`+`NtGdiSelectBitmap` (off-screen buffer) +
-`NtGdiBitBlt` (copy compatible-DC → screen DC). Needs stock `gdi32.dll`
-fetched (extend `fetch-stock-dlls.sh` TARGETS, same recipe already proven for
-ntdll/kernel32/kernelbase). Gate: new `hello9.exe` gets the screen DC, fills
-a known rect with a known color directly (no CreateWindow at all yet),
-extends `ramfb_gate.py`'s pixel-check list at the new rect's coords.
-
-**G3 — window floor.** Real handlers: `NtUserRegisterClassExWOW` (single
-global class-name→proc table, no atom-table donor complexity),
-`NtUserCreateWindowEx` (own minimal WND struct: rect + class + wndproc
-pointer only — no owner/parent chains, no CBT hooks, no desktop object),
-`NtUserShowWindow` (marks visible, triggers one full-window-rect blit onto
-ramfb at its screen position), `NtUserGetDC`/`NtUserBeginPaint`/
-`NtUserEndPaint`/`NtUserReleaseDC` (return a per-window compatible-DC,
-clipped to the window rect, composited onto ramfb on release/endpaint).
-Needs stock `user32.dll` fetched (same recipe). Gate: `hello10.exe`
-RegisterClass→CreateWindowEx→ShowWindow→GetDC→Rectangle→ReleaseDC,
-`ramfb_gate.py` checks pixels at the window's screen-space rect.
-
-**G4 — message-pump floor.** Real handlers: `NtUserGetMessage`/
-`NtUserPeekMessage`/`NtUserTranslateMessage`/`NtUserDispatchMessage`
-(dispatch = direct call to the WND's stored wndproc pointer — no
-cross-process queue, no wineserver), `NtUserPostMessage` (self-enqueue,
-single-process single-thread queue, flat ring buffer), enough of
-`NtUserMessageCall`/`NtUserCallOneParam`/`NtUserCallNoParam` to satisfy
-user32's internal `DefWindowProc`/`SendMessage` plumbing for WM_PAINT/
-WM_CLOSE/WM_DESTROY only (widen per fault, same pe6→pe8 burn-down
-discipline). Gate: `hello11.exe` runs a real `while(GetMessage())
-{Translate;Dispatch}` loop, self-posts WM_CLOSE after N iterations
-(deterministic exit, no real input device exists yet — see gap below),
-`ret=<code>` on clean `WM_QUIT`.
-
-**Gap, explicitly out of this ladder — input.** No keyboard/mouse device
-exists in zoneA at all (virtio-input, PS/2, or otherwise) — G4's gate is
-self-triggered, not interactive. Real input is its own recon (a "C3b" spec),
-not assumed solved by this one.
-
-**GPU fork (Pascal's ruling required, not autonomous) — opens after G4.**
-Per §3: choose venus-passthrough (`virtio-gpu-gl` QEMU device + Mesa venus
-guest driver port) vs. software-Mesa-as-PE (lavapipe/llvmpipe cross-built for
-`aarch64-windows-gnu`, zero QEMU/host-GPU changes) before either DX9/DXVK
-(MXO) or GL/wined3d (Teardown) can move past G4's 2D floor. Both are
-multi-slice efforts in their own right — this spec stops here by design.
-
-## Sizing notes
-- §1-3 recon (this file) — no code, spec only, this commit.
-- G1 ≈ 100-150 loc (arrays + wiring, mirrors ntsvc.c:552-628 exactly).
-- G2 ≈ 300-400 loc (4-5 real NtGdi handlers + fetch-script extension) + 1
-  test binary.
-- G3 ≈ 400-500 loc (WND struct + 5 real NtUser handlers + fetch-script
-  extension) + 1 test binary.
-- G4 ≈ 250-350 loc (flat message queue + dispatch + partial MessageCall) + 1
-  test binary.
-- GPU fork: unsized until Pascal's ruling; expect multi-slice either way.
+⚠ Version/host skew: KosmicKrisp = macOS 15+ host only; venus+virglrenderer both
+"experimental" upstream. Whole road = QEMU-rig-only; bare-metal Apple AGX = C5
+throne road, OUT OF SCOPE here.
 
 ---
 
-## GPU leg 0 — staged binaries (2026-07-18, Pascal's ruling: software Mesa
-as PE DLLs, NOT virtio-gpu/venus)
+## 1 — Minimal guest-side Venus driver contract
 
-**Monad ruling settles §3's fork**: no new QEMU device, no venus guest
-driver port. GPU path = real Mesa Gallium software rasterizers
-(lavapipe/llvmpipe), prebuilt as genuine `aarch64` Windows PE DLLs, loaded
-above the NT floor exactly like `chalice/stock/`'s ntdll/kernel32/
-kernelbase — same `PeMapImage`/territory-mapping mechanism, zero new guest
-substrate.
+The guest (GAIA-OS) must itself BE the venus front-end: no Linux, no Mesa drm,
+no `/dev/dri`. All existing venus implementations are Mesa-on-Linux → this is
+OUR from-scratch work. Minimal chain to a first triangle:
 
-### Provenance
+**(a) Device discovery.** Tap ships `-device virtio-gpu-pci,vulkan=on` (akihikodaki
+road ✓). virtio-gpu = virtio device-id **16** (`VIRTIO_ID_GPU`). On PCI it is a
+virtio-modern PCIe function (vendor `0x1af4`, device `0x1050`) on the `virt` GPEX
+host bridge. ⚑ TRANSPORT FORK — decide at R0:
+- (i) `virtio-gpu-pci` = PCIe → needs PCIe ECAM enumeration + virtio-pci
+  capability walk (common/notify/isr/device-cfg caps in BARs) + BAR mapping. We
+  have NONE of this (see §2).
+- (ii) `virtio-gpu-device` = virtio-**mmio** variant → rides the transport
+  `virtio.c` ALREADY drives (device-id match at `0x0a000000+i*0x200`). ⚑ MUST
+  test whether `vulkan=on`/venus is offered over the mmio variant on this tap —
+  if yes, PCI is avoided entirely and R0 collapses to a device-class add.
 
-| file | source | version | sha256 | size |
-|---|---|---|---|---|
-| `vulkan_lvp.dll` (lavapipe Vulkan ICD) | github.com/mmozeiko/build-mesa release `26.1.5`, asset `mesa-lavapipe-arm64-26.1.5.7z` | mesa 26.1.5 (build date embedded 2026-07-16) | `062eb076838a38af7a55e9d9b8271c0bb843e5765ed3af09750b1adfb029e15a` (asset .7z; matches GitHub release API `digest` field exactly) | 51,477,504 B (extracted dll) / 9,911,337 B (.7z) |
-| `lvp_icd.aarch64.json` (Vulkan ICD manifest, `library_path: .\vulkan_lvp.dll`, `api_version: 1.4.354`) | same asset | same | n/a (142 B text) | 142 B |
-| `opengl32.dll` (llvmpipe GL, full opengl32.dll-replacement ICD model) | same repo, asset `mesa-llvmpipe-arm64-26.1.5.7z` | mesa 26.1.5 | `d4b4675c5877007efa1162e09baf9fe75826d77039ea8ea290920813a5b393e2` (asset .7z; matches GitHub release API `digest` exactly) | 54,611,456 B (extracted dll) / 12,800,266 B (.7z) |
+**(b) Virtqueue setup.** virtio-gpu exposes **controlq (0)** + **cursorq (1)**;
+venus adds per-context command submission. `virtio.c`'s handshake
+(`build.sh` handshake at `virtio.c:65-75`: ACK→DRIVER→FEATURES_OK→DRIVER_OK) +
+split-ring layout (`VqDesc desc/avail/used`, `virtio.c:38-49,77-83`) is the
+correct SHAPE — but is hardcoded single-queue, `QSZ=8` (`virtio.c:53-55`),
+blk-specific static `vq`. Venus needs: multi-queue, larger rings, and feature
+negotiation of **`VIRTIO_GPU_F_VIRGL`(0) + `VIRTIO_GPU_F_CONTEXT_INIT`(4)**
+(virtio.c today accepts only `VIRTIO_F_VERSION_1`, `virtio.c:68-72` — must widen).
 
-`build-mesa` = static/automatic CI builds of upstream Mesa for Windows
-x86/x64/arm64 (BSD/MIT per Mesa's own license, no GPL entanglement,
-distinct project from Hangover but same "real Windows Mesa binary" class of
-artifact `fetch-stock-dlls.sh` already established for ntdll/kernel32).
-Staged (gitignored, mirrors `chalice/stock/`) at `chalice/stock-gpu/`:
-`vulkan_lvp.dll`, `lvp_icd.aarch64.json`, `opengl32.dll`. Sibling assets in
-the same release NOT staged (out of scope this leg): `libEGL.dll`/
-`libGLESv2.dll`/`libGLESv1_CM.dll` (GLES, not needed — Teardown per HANDOFF
-is desktop GL), `mesa-d3d12-*`/`mesa-dzn-*`/`mesa-zink-*`/`mesa-mft-*`
-(D3D12-backed/media-foundation variants — wrong backend for a
-zero-real-GPU guest).
+**(c) Context + capset.** Venus needs a 3D context bound to the venus capset:
+⚑ `VIRTIO_GPU_CMD_GET_CAPSET_INFO` → find `VIRTIO_GPU_CAPSET_VENUS` (=4);
+`VIRTIO_GPU_CMD_CTX_CREATE` with `context_init` carrying `capset_id=VENUS`.
 
-### Arch proof — genuine ARM64 (0xAA64), not ARM64EC (0xA641)
+**(d) Venus command serialization** — the real contract, donor-exact from
+`quarry/venus-protocol/docs/VK_EXT_command_serialization.txt`:
+- Command stream = variable-length records: `DW0=VkCommandTypeEXT`,
+  `DW1=VkCommandFlagsEXT`, `DW2..N = params serialized in order`. Length is
+  IMPLICIT per command type (cannot skip unknown types).
+- Reply stream (when `VK_COMMAND_GENERATE_REPLY_BIT_EXT` set): `DW0=type`,
+  then return value + non-const out-params in order.
+- Scalars little-endian, padded to 32-bit; floats reinterpret-cast; enums as
+  `int32_t`; `size_t` as `uint64_t`; object handles as `uint64_t` object-id
+  (0 = NULL/`VK_NULL_HANDLE`).
+- ⚑ Transport of the stream to host: Mesa maps a shared **ring** in a host3d
+  **blob resource** (`RESOURCE_CREATE_BLOB` + `RESOURCE_MAP_BLOB` into a guest
+  window) and submits execbuffers; on Linux via `DRM_IOCTL_VIRTGPU_EXECBUFFER`.
+  We have no drm → we speak the raw virtio-gpu control command
+  `VIRTIO_GPU_CMD_SUBMIT_3D` (context cmd buffer) directly on our own queue.
+  Re-derive exact blob/ring mechanics vs raw SUBMIT_3D against Mesa
+  `src/virtio/vulkan/vn_renderer_virtgpu.c` + virtio-gpu spec §5.7 at R1.
 
-`llvm-objdump -f` (coff-arm64 format) + raw PE-header Machine-field read
-(same method as `fetch-stock-dlls.sh`'s `verify_one`, `e_lfanew@0x3c` →
-`Machine@e_lfanew+4`):
+**(e) First-triangle subset** (what R1/R2 actually serialize): `vkCreateInstance`,
+`vkEnumeratePhysicalDevices`, `vkGetPhysicalDeviceProperties` (R1 probe);
+then `vkCreateDevice`, `vkCreateShaderModule`×2, `vkCreateRenderPass`,
+`vkCreateGraphicsPipelines`, `vkCreateImage`+`AllocateMemory`+`BindImageMemory`
+(offscreen RT), `vkCreateFramebuffer`, `vkAllocateCommandBuffers`,
+`Begin/CmdBeginRenderPass/CmdBindPipeline/CmdDraw(3)/EndRenderPass/End`,
+`vkQueueSubmit`, `vkWaitForFences` (poll a venus fence), then readback. A small
+but non-trivial slice of the venus command universe — NOT the whole codegen.
 
+---
+
+## 2 — Kernel floor: have vs need (cite zoneA, read-only)
+
+HAVE (`kernel-arm/zoneA/virtio.c`, whole; `build.sh:212-217`):
+- virtio-**mmio** modern-v2 discovery loop, base `0x0a000000` stride `0x200` ×32
+  (`virtio.c:5-7,59-64`); magic/devid/version gate (`virtio.c:62`).
+- Full status handshake + FEATURES_OK check (`virtio.c:65-75`).
+- Split-virtqueue: desc/avail/used, queue-select + desc/avail/used addr program
+  + QREADY (`virtio.c:38-49,77-83`), cooperative **poll** (NO_INTERRUPT,
+  `virtio.c:85,106`).
+- `MMIO32` accessor; `dsb sy` barriers; `mem.c` phys alloc; flat-map MMU.
+- ramfb 2D scanout (`fw_cfg.c`, `kmain.c FbInit`) — 2D ONLY, no command queue.
+
+NEED (none present):
+- **PCIe substrate** (IF R0 picks `virtio-gpu-pci`): GPEX ECAM enumeration
+  (virt ECAM window), virtio-pci capability parse (common/notify/ISR/device-cfg
+  BAR caps), BAR sizing/mapping, optional MSI-X. ZERO PCI code anywhere in zoneA
+  (grep clean). Biggest single add on the PCI branch; the parallel C4 lane does
+  not provide it. AVOIDABLE if R0 proves mmio-venus works.
+- **Generic multi-queue virtqueue allocator** — current `vq` is one static
+  blk-shaped ring; venus needs controlq+cursorq+bigger rings, dynamically sized.
+- **Host-visible blob / shared-memory mapping** — venus rings + host-mapped
+  memory live in `RESOURCE_MAP_BLOB` regions (PCI SHM cap or a device window);
+  MMU must map them; virtio.c has no notion of device-side shared memory.
+- **virtio-gpu device class** — control-command encode/decode
+  (GET_CAPSET_INFO, CTX_CREATE, RESOURCE_CREATE_BLOB, SUBMIT_3D, fences),
+  feature bits `VIRGL`/`CONTEXT_INIT` (widen `virtio.c:68-72`).
+- **Guest→device syscall seam** for the ICD (see §3): a private Nt-path the
+  guest-user Venus ICD calls to hand command streams to the kernel driver.
+- Poll model is fine for a rig (fences via `Yield` loop, like `BlkRW`).
+
+---
+
+## 3 — Wine-side chain: winevulkan → our Venus ICD → DXVK/Zink
+
+Key correction to the naive "winevulkan" framing: **winevulkan is a Wine
+UNIX-side thunk** (`winevulkan.dll`→`winevulkan.so`→host `libvulkan`). GAIA-OS
+has NO Unix side (HANDOFF: single-address-space, direct-call). So winevulkan's
+role is REPLACED, exactly as the prior C3-GPU-0 leg already established for the
+software-Mesa ICD: a genuine **PE Vulkan ICD** discovered by the WINDOWS Vulkan
+loader (`vulkan-1.dll`) via an ICD manifest JSON + registry — same
+`PeMapImage`/manifest mechanism already staged for lavapipe
+(`stock-gpu/lvp_icd.aarch64.json`, C3-GPU-0). Contract donor-exact from
+`quarry/venus-protocol/include/vulkan/vk_icd.h`: our ICD PE must export
+`vk_icdNegotiateLoaderICDInterfaceVersion` (loader↔ICD version, current=**7**,
+`vk_icd.h:39`) + `vk_icdGetInstanceProcAddr` (`vk_icd.h:52-54`).
+
+Chain, per game:
 ```
-vulkan_lvp.dll: file format coff-arm64, architecture: aarch64, Machine=0xaa64
-opengl32.dll:   file format coff-arm64, architecture: aarch64, Machine=0xaa64
+MXO(D3D9,32-bit) → DXVK d3d9.dll → vulkan-1.dll(32) → OUR Venus ICD(32) → NtGpu* → virtio-gpu(venus) → QEMU/virglrenderer → KosmicKrisp → Metal
+Teardown(GL,x86-64) → Zink opengl32.dll → vulkan-1.dll(64) → OUR Venus ICD(64) → NtGpu* → (same host stack)
+vk-probe(native aarch64) → vulkan-1.dll → OUR Venus ICD → NtGpu* → (same)
 ```
+- Our Venus ICD = the §1 driver, packaged as a PE DLL. Its backend serializes
+  venus streams (§1d) and hands them to the kernel virtio-gpu driver via the §2
+  `NtGpu*` seam (cleaner than mmapping the blob into user for a first triangle).
+- **DXVK** (MXO): prebuilt `d3d9.dll`, loaded like `stock/` DLLs; 8800GTX-spoof
+  DXVK config already in Pascal's hand. Needs a **32-bit** DXVK + 32-bit
+  `vulkan-1` loader + **32-bit build of our ICD** — and rides the FEX x86 door
+  (C4), which per HANDOFF C4-32 has NOT yet executed a guest x86 instruction.
+- **Zink** (Teardown): Mesa GL-on-Vulkan as `opengl32.dll` (mmozeiko build-mesa
+  `mesa-zink-arm64` asset class — the C3-GPU-0 leg noted it un-staged; stage it
+  for this branch). Teardown x86-64 → also rides C4's 64-bit path.
+- Only the **native-aarch64 vk-probe/triangle (R1/R2)** is reachable BEFORE the
+  C4 x86 door lands; R3/R4 gate on C4.
 
-Both PE32+ (Magic `020b`), `ImageBase 0x180000000` — same ImageBase
-convention as `chalice/stock/`'s ntdll/kernel32/kernelbase (HANDOFF's
-ImageBase pattern holds for these too, no special-casing needed in
-`PeMapImage`).
+---
 
-### Import-gap list — the real floor burn-down, grouped by DLL
+## 4 — Rung ladder (serial, each gated)
 
-Both DLLs import the **identical 8-DLL set** (`llvm-objdump -p`, full dump):
-`api-ms-win-core-synch-l1-2-0.dll`, `KERNEL32.dll`, `USER32.dll`,
-`GDI32.dll`, `SHELL32.dll`, `ole32.dll`, `ADVAPI32.dll`, `ntdll.dll`. Every
-name below is resolved by the real stock DLL export (loaded as a normal PE,
-like kernel32/kernelbase already are) — the gap is NOT "import not found",
-it's "the Nt*/win32u syscall that export eventually calls down to isn't
-wired in `nt_service_tables[]` yet". Marked against HANDOFF's proven `pe8`
-surface + this kernel's real-service list.
+**R0 — transport decision + device bring-up (NO Vulkan yet).** On the tap QEMU:
+determine venus transport (⚑ mmio `virtio-gpu-device,vulkan=on` vs PCI
+`virtio-gpu-pci,vulkan=on`). Kernel enumerates the virtio-gpu device (devid 16),
+completes status handshake, negotiates `VIRGL`+`CONTEXT_INIT`, reads capsets,
+finds `CAPSET_VENUS`. If PCI required → sub-rung **R0b**: minimal PCIe ECAM +
+virtio-pci cap parse + BAR map. GATE: serial log "venus capset found, ctx
+created", no fault.
 
-**`ntdll.dll` (6 fns, both DLLs identical): `VerSetConditionMask`,
-`RtlUnwind`, `RtlUnwindEx`, `RtlGetLastNtStatus`, `RtlLookupFunctionEntry`,
-`RtlPcToFileHeader`.** Gap: **none expected** — these are ordinary ntdll.dll
-*exports* (not Nt* syscalls), and `chalice/stock/ntdll.dll` is already the
-real Hangover binary, already mapped (`pe6`: "stock ntdll mapped"/"stock
-thunk enters"). Untested specifically for these 6 symbols, but same class
-as every other already-working ntdll export — low risk, not a new floor gap.
+**R1 — vk-probe exe.** Guest exe: load `vulkan-1.dll`, `vkCreateInstance`,
+`vkEnumeratePhysicalDevices`, print device name. Exercises loader→ICD
+negotiation (`vk_icd.h`) + instance/physdev venus streams round-trip. GATE:
+prints the KosmicKrisp/venus GPU name; `ret=0`. (Native aarch64 first — no C4.)
 
-**`KERNEL32.dll` (~150 fns, union of both DLLs).** Proven-served today (pe8
-surface walk, HANDOFF): `GetCommandLineA`/`GetCommandLineW`,
-`GetModuleHandleA`/`GetModuleHandleW`/`GetModuleHandleExW`, `GetProcAddress`,
-`GetProcessHeap`+`HeapAlloc`+`HeapFree`, `GetCurrentProcessId`,
-`GetLastError`/`SetLastError`, plus `WriteFile` (pe7, "kernel32 speaks").
-**Not yet served (the real gap, by category):**
-- *Threading*: `CreateThread`/`ExitThread`/`ResumeThread`/`GetExitCodeThread`,
-  `InitializeCriticalSection[Ex]`/`Enter/LeaveCriticalSection`/
-  `DeleteCriticalSection`, `AcquireSRWLock*`/`ReleaseSRWLock*`,
-  `InitOnceExecuteOnce`/`InitOnceBeginInitialize`/`InitOnceComplete`,
-  `Sleep`/`SleepConditionVariable*`/`WakeConditionVariable*`,
-  `WaitForSingleObject`, `TlsAlloc`/`TlsGetValue`/`TlsSetValue`/`TlsFree`,
-  `Thread32First`/`Thread32Next`/`CreateToolhelp32Snapshot`.
-- *Virtual memory beyond what's live*: `VirtualAlloc`/`VirtualFree`/
-  `VirtualProtect`/`VirtualQuery` — underlying `NtAllocate/Free/
-  ProtectVirtualMemory`/`NtQueryVirtualMemory` **are** real services
-  per HANDOFF; only the kernel32-level wrapper path is unexercised, likely
-  cheap once hit (same shape as `HeapAlloc`, already proven).
-- *File I/O beyond `NtOpenFile`/`ReadFile`/`WriteFile`*: `CreateFileW`,
-  `CreateFileMappingW`/`MapViewOfFile`/`UnmapViewOfFile`, `FindFirstFileExW`/
-  `FindNextFileW`/`FindClose`, `GetFileAttributes[Ex]W`, `SetFilePointerEx`,
-  `LockFileEx`/`UnlockFileEx`, `DeleteFileW`, `GetTempPathA`/
-  `GetTempFileNameA`, `SearchPathW`, `GetVolumePathNameW`, `GetDriveTypeW`.
-- *Process/env/system query*: `GetSystemInfo`/`GetNativeSystemInfo`,
-  `GlobalMemoryStatusEx`, `GetSystemDirectoryW`, `GetEnvironmentVariable[A/W]`,
-  `CreateProcessW`, `CreateJobObjectW`/`AssignProcessToJobObject`,
-  `QueryPerformanceCounter`/`QueryPerformanceFrequency`, `GetSystemTime*`.
-- *Console*: `GetStdHandle`, `WriteConsoleW`/`ReadConsoleW`,
-  `GetConsoleMode`/`GetConsoleScreenBufferInfo`/`SetConsoleTextAttribute`.
-- *Locale/string*: `MultiByteToWideChar`/`WideCharToMultiByte`,
-  `LCMapString[Ex/W]`, `GetLocaleInfo[Ex/W]`, `CompareStringW`,
-  `EnumSystemLocalesW`, `GetUserDefaultLCID`, `IsValidLocale` — partial
-  overlap with the already-proven NLS floor (`NtInitializeNlsFiles`/
-  `NtGetNlsSectionPtr`/`NtQueryDefaultLocale`), likely the cheapest bucket.
+**R2 — triangle.** Headless `vkCreateDevice`→pipeline→`CmdDraw(3)` into an
+offscreen image; readback checksum OR scanout onto ramfb/virtio-gpu. GATE:
+known-pixel check (extend `ramfb_gate.py` style) of the triangle.
 
-**`USER32.dll` (union: `GetDC`, `GetClientRect`, `ReleaseDC`,
-`SetWindowsHookExA`/`UnhookWindowsHookEx`/`CallNextHookEx`, `GetWindowRect`,
-`ClientToScreen`, `LoadCursorA`/`LoadIconA`, `RegisterClassA`,
-`DefWindowProcA`, `WindowFromDC`, `CreateWindowExA`,
-`EnumDisplaySettingsA`, `DestroyWindow`, `AdjustWindowRectEx`).** Gap:
-**all unserved** — table 1 (`nt_service_tables[1]`) is still zeroed
-(C3-SPEC §1/§4 G1-G3). `GetDC`/`CreateWindowExA`/`RegisterClassA`/
-`DestroyWindow` map directly onto this spec's own G2/G3 atoms
-(`NtUserGetDC`, `NtUserCreateWindowEx`, `NtUserRegisterClassExWOW`,
-`NtUserDestroyWindow` — already in §1's table). `SetWindowsHookExA`/
-`EnumDisplaySettingsA`/`WindowFromDC` are new asks not yet in §1's traced
-minimum — extend the id table when first hit (same burn-down discipline as
-pe6→pe8), not blocking G1-G3.
+**R3 — DXVK d3d9 clear.** 32-bit exe: `Direct3DCreate9`→`CreateDevice`→
+`Clear(color)`→`Present` via DXVK. GATE: cleared color on screen. DEPENDS ON C4
+(32-bit guest execution) + 32-bit ICD/DXVK/vulkan-1.
 
-**`GDI32.dll` (union: `CreateDIBSection`, `StretchBlt`/`StretchDIBits`,
-`SelectObject`, `DeleteObject`, `DeleteDC`, `CreateCompatibleDC`,
-`GetObjectA`, `SetPixelFormat`/`GetPixelFormat`/`DescribePixelFormat`,
-`GetGlyphOutlineA`).** Gap: **all unserved**, same table-1-zeroed reason.
-`CreateCompatibleDC`/`CreateDIBSection`/`SelectObject`/`DeleteObject`/
-`DeleteDC` map directly onto G2's traced minimum (`NtGdiCreateCompatibleDC`,
-`NtGdiCreateDIBSection`, `NtGdiSelectBitmap`, `NtGdiDeleteObjectApp`).
-`SetPixelFormat`/`GetPixelFormat`/`DescribePixelFormat` are **WGL-specific,
-not in §1's traced list yet** — these are the pixel-format negotiation calls
-`wglCreateContext`/`wglMakeCurrent` need before any GL draw call; new ids to
-add to table 1 when GL work starts (own small atom, not sized here).
-`GetGlyphOutlineA`/`StretchDIBits` are GL's software text/blit fallback
-paths — lower priority, same burn-down-per-fault approach.
+**R4 — MXO menu.** MXO 32-bit under FEX(C4)+DXVK+our ICD → reach main menu
+render. GATE: menu frame presented. DEPENDS ON C4 fully (HANDOFF C4-32: not yet).
 
-**`ADVAPI32.dll` (union: `RegQueryValueExA`, `RegEnumKeyExA`,
-`RegGetValueW`, `RegOpenKeyExA`, `RegCloseKey`, `LookupPrivilegeValueW`,
-`AdjustTokenPrivileges`, `OpenProcessToken`, `CryptGenRandom`,
-`CryptAcquireContextW`/`CryptReleaseContext`).** Gap: registry floor exists
-(`NtCreateKey`/`NtOpenKey`/`NtQueryValueKey`/`NtSetValueKey`, HANDOFF) but is
-minimal-stub (`STATUS_OBJECT_NAME_NOT_FOUND`-only reads) — Mesa's registry
-probes (driver-override env-var-style config keys) will each return "not
-found" and fall through to defaults, same pattern NLS already relies on;
-likely fine as-is. `CryptGenRandom`/`CryptAcquireContextW` (used for GUID/
-cache-key generation) and token/privilege calls are **wholly unserved, no
-equivalent Nt* exists yet** — new small surface if Mesa's init path hard-
-requires them (untested which do).
+**Teardown branch (after R2/R3).** Stage `mesa-zink` PE as `opengl32.dll`;
+Teardown x86-64 GL → Zink → our ICD. GATE: Teardown first frame. DEPENDS ON C4
+(64-bit x86 door).
 
-**`SHELL32.dll` (`SHGetKnownFolderPath`, both DLLs) / `ole32.dll`
-(`CoTaskMemFree`, both DLLs).** Gap: **both wholly unserved.**
-`SHGetKnownFolderPath` (shader-cache directory lookup, e.g.
-`FOLDERID_LocalAppData`) has no NT-service equivalent in this floor at all
-— smallest-effort fix is likely a **pure kernel32/shell32-level stub**
-(return a fixed in-territory path string, no real filesystem persistence
-needed since there's no real disk) rather than a new Nt* service.
-`CoTaskMemFree` is a trivial COM heap free (can shim onto the existing
-`HeapFree` plumbing) — no OLE/COM object model needed for just this one
-call.
+---
 
-### Net for C3/C4 planning
+## 5 — Sizes / risks per rung
 
-The GPU-specific new asks beyond §1's already-planned G1-G4 ladder are
-small: WGL pixel-format calls (`SetPixelFormat`/`GetPixelFormat`/
-`DescribePixelFormat`) + a `SHGetKnownFolderPath` stub +
-`CryptGenRandom`/`CryptAcquireContextW` (untested necessity). Everything
-else Mesa needs from `USER32`/`GDI32.dll` is **already** on the G1-G4
-burn-down list this spec wrote before this binary ever existed — the DLLs
-validate the ladder's shape rather than expanding it. `KERNEL32.dll`'s
-threading/file/console/locale gap is the larger real remaining burn-down,
-shared with any non-GPU userland (hello9+ would hit the same wall) — not
-GPU-specific.
+| Rung | Size (loc, rough) | Risk |
+|---|---|---|
+| R0 (mmio branch) | ~300-500 (gpu device class over existing virtio.c) | LOW-MED: reuses transport |
+| R0b (PCI branch, only if forced) | +600-1000 (ECAM + virtio-pci caps + BAR/MSI-X) | HIGH: all-new floor |
+| R1 | ~1-3k (hand venus subset: negotiate + instance/physdev + ring/blob transport + NtGpu seam) — OR much more if porting Mesa vn_protocol | HIGH: the from-scratch venus front-end, largest unknown |
+| R2 | +1-2k (device/pipeline/renderpass/cmdbuf/fence command types) | MED-HIGH: wide command surface |
+| R3 | ~0 new (DXVK prebuilt) + 32-bit ICD/loader build | HIGH: gated on C4 32-bit door (not done) + 32-bit Vulkan subset depth |
+| R4 | config/integration | HIGH: full MXO + C4 + DXVK stack |
+| Teardown | stage zink PE + opengl32 wiring | MED: gated on C4 64-bit + Zink Vulkan feature demands |
 
-**Not yet run**: no `hello`-class test binary loads these DLLs this leg
-(staging only, per task scope — no zoneA edits, no boot). First real test
-is whichever atom (G1-G3 or a WGL-specific one) first calls `LoadLibraryW`
-on `stock-gpu/opengl32.dll`/`vulkan_lvp.dll` and hits its first
-`CHALICE FAULT`.
+QEMU-rig-only caveat: entire ladder assumes the patched KosmicKrisp QEMU tap on
+a macOS-15+ host. Bare-metal Apple AGX (a native guest Vulkan→AGX driver) = C5
+throne road, explicitly OUT OF SCOPE.
+
+---
+
+## Top-3 risks
+
+1. **The guest Venus driver is OUR from-scratch work.** Every venus
+   implementation is Mesa-on-Linux, coupled to drm/virtio
+   (`vn_renderer_virtgpu`→`DRM_IOCTL_VIRTGPU_EXECBUFFER`, dma-buf, gem) and to
+   Mesa's generated `vn_protocol` codegen. On a bare NT-on-virtio floor with no
+   drm we must either reimplement the ring/blob/fence transport by hand or
+   heavily de-Linux Mesa. This (R1) is likely the whole slice's weight.
+
+2. **PCI transport gap.** The tap ships `virtio-gpu-pci`; the kernel has ZERO
+   PCIe (only virtio-mmio, `virtio.c`). If venus won't ride the mmio variant
+   (R0 ⚑ fork), we must add PCIe ECAM + virtio-pci cap parsing + BAR/MSI-X — a
+   substantial new floor the parallel C4 lane doesn't provide. R0 must settle
+   this before R1 can move.
+
+3. **32-bit / C4 dependency.** MXO(32) + Teardown(x86-64) both ride the FEX x86
+   door, which per HANDOFF C4-32 has not yet executed a single guest x86
+   instruction. R3/R4 + Teardown are BLOCKED on C4. Only native-aarch64 R1/R2
+   are reachable now — and R3 additionally needs a full 32-bit DXVK/vulkan-1/ICD
+   stack. Plus host lock-in: KosmicKrisp is macOS-15+-only, whole road
+   QEMU-rig-only.

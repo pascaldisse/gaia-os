@@ -7,6 +7,7 @@ wine/
 box64/
 hangover/
 FEX/
+m1n1/
 .gaia/
 *.o
 *.elf
@@ -14,3 +15,4 @@ FEX/
 .DS_Store
 kernel-arm/chalice/stock/
 kernel-arm/chalice/stock-gpu/
+kernel-arm/chalice/quarry/
