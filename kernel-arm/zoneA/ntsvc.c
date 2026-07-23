@@ -1062,6 +1062,21 @@ void nt_wow64_set_peb32(void *peb32) { nt_current_wow64_peb32 = peb32; }
 // CHALICE C4-37: getter, see ntsvc.h receipt.
 void *nt_wow64_get_peb32(void) { return nt_current_wow64_peb32; }
 
+// CHALICE C4-44: single-process-kernel stash for ProcessImageInformation
+// (class 37) -- the SAME donor need nt_current_wow64_peb32 above answers
+// for class 26, one boot-process's worth of state. Set once by ntboot.c
+// right after PeMapImage maps the main exe (real, runtime TransferAddress
+// known only post-map) -- see ntfile.h for the field-shape receipt.
+static PeImageInfo nt_current_main_image_info;
+static u64b        nt_current_main_image_transfer;
+static int         nt_current_main_image_valid;
+void nt_set_main_image_info(const PeImageInfo *info, unsigned long transfer_address) {
+    if (!info) { nt_current_main_image_valid = 0; return; }
+    nt_current_main_image_info = *info;
+    nt_current_main_image_transfer = (u64b)transfer_address;
+    nt_current_main_image_valid = 1;
+}
+
 long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
                                 void *ProcessInformation, unsigned long ProcessInformationLength,
                                 unsigned long *ReturnLength) {
@@ -1074,6 +1089,67 @@ long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInforma
         if (nt_dispatch_log_enabled) {
             puts("CHALICE: NtQueryInformationProcess ProcessWow64Information -> peb32=");
             puthex((u64b)nt_current_wow64_peb32); puts("\n");
+        }
+        return STATUS_SUCCESS;
+    }
+    // CHALICE C4-44: ProcessImageInformation (class 37) -- donor wine/dlls/
+    // ntdll/loader.c build_main_module (~2895-2906) queries this on ITS OWN
+    // process right after mapping the main exe, into a LOCAL declared
+    // WITHOUT `={0}` (unlike the sibling wow64/syscall.c copy), then tests
+    // `info.ImageCharacteristics & IMAGE_FILE_DLL` unconditionally -- an
+    // unanswered (STATUS_NOT_IMPLEMENTED, buffer untouched) call here left
+    // that local as guest-stack garbage, false-positiving the DLL bit on a
+    // genuine EXE (hello8_x86.exe) and self-terminating (pe10 ret=0xC000007B,
+    // C4-43 frontier). Same SECTION_IMAGE_INFORMATION shape/offsets
+    // NtQuerySection(SectionImageInformation) already fills (ntfile.h SII_*
+    // defines, shared -- one struct, two producers: NtQuerySection answers
+      // pre-map from a section's raw PE blob, this answers post-map from
+      // THIS booted process's own main image, stashed by ntboot.c via
+      // nt_set_main_image_info right after PeMapImage returns the real
+      // (relocated) entry address). No wow64/thunking seam here: this
+      // syscall is dispatched by the 32-bit guest through wow64.dll's own
+      // syscall thunk (dlls/wow64/syscall.c's NtQueryInformationProcess
+      // wrapper) which, for ProcessImageInformation, passes the SAME 64-bit-
+      // shaped SECTION_IMAGE_INFORMATION straight through to the native
+      // syscall UNTRANSLATED (donor syscall.c has no per-class thunk table
+      // entry for class 37 -- unlike e.g. ProcessBasicInformation's PROCESS_
+      // BASIC_INFORMATION, which .../wow64/syscall.c DOES shrink to a 32-bit
+      // shape; ProcessImageInformation is passed through because build_
+      // main_module calls it directly against the NATIVE ntdll, not via a
+      // WOW64 guest call at all -- it runs during process init, BEFORE the
+      // wow64 CPU simulation rig even starts). Confirmed against this
+      // floor's own boot log (C4-43 receipt): the call is logged as plain
+      // syscall id 25 with the same 0x40-byte SECTION_IMAGE_INFORMATION
+      // length NtQuerySection already uses -- native shape, no thunk.
+    if (ProcessInformationClass == 37 /* ProcessImageInformation */) {
+        if (!ProcessInformation) return STATUS_INVALID_PARAMETER;
+        if (ProcessInformationLength < SII_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+        if (!nt_current_main_image_valid) return STATUS_NOT_IMPLEMENTED;
+
+        const PeImageInfo *info = &nt_current_main_image_info;
+        u8 *out = (u8 *)ProcessInformation;
+        for (unsigned long i = 0; i < SII_SIZE; i++) out[i] = 0;
+
+        wr64(out + SII_TRANSFERADDRESS_OFF, nt_current_main_image_transfer);
+        wr64(out + SII_MAXSTACKSIZE_OFF, (u64b)info->stack_reserve);
+        wr64(out + SII_COMMITSTACKSIZE_OFF, (u64b)info->stack_commit);
+        wr32(out + SII_SUBSYSTEMTYPE_OFF, (u32b)info->subsystem);
+        wr16(out + SII_MINORSUBSYS_OFF, info->subsystem_minor);
+        wr16(out + SII_MAJORSUBSYS_OFF, info->subsystem_major);
+        wr16(out + SII_MAJOROS_OFF, info->os_major);
+        wr16(out + SII_MINOROS_OFF, info->os_minor);
+        wr16(out + SII_IMAGECHAR_OFF, info->image_characteristics);
+        wr16(out + SII_DLLCHAR_OFF, info->dll_characteristics);
+        wr16(out + SII_MACHINE_OFF, info->machine);
+        out[SII_CONTAINSCODE_OFF] = info->contains_code;
+        wr32(out + SII_LOADERFLAGS_OFF, (u32b)info->loader_flags);
+        wr32(out + SII_IMAGEFILESIZE_OFF, (u32b)info->file_size);
+
+        if (ReturnLength) *ReturnLength = SII_SIZE;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE: NtQueryInformationProcess ProcessImageInformation -> ImageCharacteristics=");
+            puthex(info->image_characteristics); puts(" TransferAddress=");
+            puthex(nt_current_main_image_transfer); puts("\n");
         }
         return STATUS_SUCCESS;
     }

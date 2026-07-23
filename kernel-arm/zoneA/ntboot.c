@@ -331,6 +331,11 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     puts("CHALICE PROBE: exe_base="); puthex(exe_base);
     puts(" exe_size="); puthex(exe_size);
     puts(" exe_entry="); puthex(exe_entry); puts("\n");
+    // CHALICE C4-44: stash this booted process's own main-image info
+    // (exe_info already computed above for the wow64_mode gate; exe_entry,
+    // the REAL post-map/relocated address, only exists now) for
+    // NtQueryInformationProcess(ProcessImageInformation) -- ntsvc.c.
+    nt_set_main_image_info(&exe_info, exe_entry);
 
     // ---- required ntdll exports (Architecture verdict 3 required-name
     // set; kernel only needs to LOOK UP the four it directly consumes --

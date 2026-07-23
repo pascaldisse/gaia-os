@@ -44,6 +44,34 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
 long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
                      void *SectionInformation, unsigned long SectionInformationLength,
                      unsigned long *ReturnLength);
+// CHALICE C4-44: SECTION_IMAGE_INFORMATION (winternl.h) field offsets --
+// shared here (not static in ntfile.c) so ntsvc.c's NtQueryInformationProcess
+// (ProcessImageInformation, class 37) fills the SAME struct shape
+// NtQuerySection already does, from PeImageInfo (pemod.h), one definition.
+#define SII_SIZE                 0x40
+#define SII_TRANSFERADDRESS_OFF  0x00
+#define SII_MAXSTACKSIZE_OFF     0x10
+#define SII_COMMITSTACKSIZE_OFF  0x18
+#define SII_SUBSYSTEMTYPE_OFF    0x20
+#define SII_MINORSUBSYS_OFF      0x24
+#define SII_MAJORSUBSYS_OFF      0x26
+#define SII_MAJOROS_OFF          0x28
+#define SII_MINOROS_OFF          0x2A
+#define SII_IMAGECHAR_OFF        0x2C
+#define SII_DLLCHAR_OFF          0x2E
+#define SII_MACHINE_OFF          0x30
+#define SII_CONTAINSCODE_OFF     0x32
+#define SII_LOADERFLAGS_OFF      0x34
+#define SII_IMAGEFILESIZE_OFF    0x38
+// CHALICE C4-44: stash of the booted process's own main-image PeImageInfo +
+// its ACTUAL (post-map, relocated) entry point address -- set once by
+// ntboot.c right after PeMapImage returns the real exe_entry (the exe_info
+// itself was already computed earlier, pre-map, for the wow64_mode gate;
+// TransferAddress must be the runtime address, not the preferred
+// ImageBase+rva NtQuerySection answers with pre-map -- donor wine/dlls/
+// ntdll/unix virtual.c's build_main_module reads its OWN process's already-
+// mapped image, not a not-yet-mapped section).
+void nt_set_main_image_info(const PeImageInfo *info, unsigned long transfer_address);
 // CHALICE C3c-2n: NtInitializeNlsFiles -- see ntfile.c for the donor
 // contract receipt (wine/dlls/ntdll/unix/env.c:2243).
 long NtInitializeNlsFiles(void **BaseAddress, unsigned long *DefaultLocaleId,

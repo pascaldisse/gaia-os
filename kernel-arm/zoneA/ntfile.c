@@ -1167,21 +1167,9 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
 // the rest of the boot-critical loader path -- SLICE3-SPEC's own
 // no-registry-needed-to-boot precedent for low-value optional fields).
 // =====================================================================
-#define SII_SIZE                 0x40
-#define SII_TRANSFERADDRESS_OFF  0x00
-#define SII_MAXSTACKSIZE_OFF     0x10
-#define SII_COMMITSTACKSIZE_OFF  0x18
-#define SII_SUBSYSTEMTYPE_OFF    0x20
-#define SII_MINORSUBSYS_OFF      0x24
-#define SII_MAJORSUBSYS_OFF      0x26
-#define SII_MAJOROS_OFF          0x28
-#define SII_MINOROS_OFF          0x2A
-#define SII_IMAGECHAR_OFF        0x2C
-#define SII_DLLCHAR_OFF          0x2E
-#define SII_MACHINE_OFF          0x30
-#define SII_CONTAINSCODE_OFF     0x32
-#define SII_LOADERFLAGS_OFF      0x34
-#define SII_IMAGEFILESIZE_OFF    0x38
+// CHALICE C4-44: SII_* offsets moved to ntfile.h (shared with ntsvc.c's
+// NtQueryInformationProcess ProcessImageInformation, class 37 -- same
+// struct shape, one definition).
 #define SECTION_IMAGE_INFORMATION_CLASS 1   // SECTION_INFORMATION_CLASS enum index
 
 long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
