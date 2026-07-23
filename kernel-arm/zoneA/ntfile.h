@@ -176,3 +176,15 @@ int nt_image_resolve(unsigned long addr, char *name_out, unsigned long namelen,
 // registry nt_image_resolve reads, exact-name match (nt_image_find_by_name's
 // contract). Returns 0 if that image was never registered.
 int nt_image_base_by_name(const char *name, unsigned long *base_out, unsigned long *size_out);
+
+// CHALICE C4-54: exposed (was static) so ntsvc.c's NtAllocateVirtualMemory
+// can register a guest EXEC-protect allocation's ACTUAL (base,size,protect)
+// result with FEX's InvalidationTracker, same call this file already makes
+// from NtProtectVirtualMemory (C4-53) and from its own retroactive C4-27
+// stub-page registration (C4-54, nt_wow64_maybe_notify_map_view). No-ops
+// (via the shared nt_wow64_ready gate) until FEX's WOW64 runtime is proven
+// constructed. `teb` = the caller's OWN x18-captured guest TEB (same
+// stash-immediately-on-entry idiom C4-48/53 established -- every callee in
+// between is plain aarch64-elf C, free to clobber x18 as scratch).
+void nt_wow64_maybe_notify_protect(unsigned long base, unsigned long size,
+                                    unsigned long new_protect, unsigned long teb);

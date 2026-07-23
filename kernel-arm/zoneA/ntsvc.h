@@ -135,6 +135,10 @@ void nt_wow64_cpureserved_set_context(void *cpureserved, unsigned long eip, unsi
 // -- the stub bytes are written lazily, once NtAllocateVirtualMemory
 // live-detects FEX's own BOP-trampoline allocation).
 void nt_wow64_stub_reserve(unsigned long addr);
+// CHALICE C4-54: getter for ntfile.c's nt_wow64_maybe_notify_map_view --
+// see ntsvc.c definition for the full receipt (retroactive stub-page
+// registration, the moment nt_wow64_ready first allows it).
+int nt_wow64_stub_range(unsigned long *addr_out, unsigned long *size_out);
 
 // A3 real handlers (Win ABI arg order; called only via nt_dispatch's blr,
 // but prototyped here too so ntsvc.c and callers agree on signatures).

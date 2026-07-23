@@ -719,9 +719,31 @@ static void nt_wow64_stub_write_if_ready(void) {
     puts(" bytes="); puthex((u64b)i); puts("\n");
 }
 
+// CHALICE C4-54: getter for ntfile.c's own nt_wow64_maybe_notify_map_view
+// -- the FIRST place nt_wow64_ready flips true -- to retroactively register
+// this floor-internal stub page (see that call site's own receipt for why
+// it can never be reached via any guest-visible NtAllocateVirtualMemory
+// call). Returns 1 (and fills addr/size) only once the bytes are actually
+// written (nt_wow64_stub_written); size is the fixed 16B buffer ntboot.c
+// allocated (HandleMemoryProtectionNotification aligns to page bounds
+// internally, C4-53's own disasm receipt -- no rounding needed here).
+int nt_wow64_stub_range(unsigned long *addr_out, unsigned long *size_out) {
+    if (!nt_wow64_stub_written) return 0;
+    if (addr_out) *addr_out = nt_wow64_stub_addr;
+    if (size_out) *size_out = 16;
+    return 1;
+}
+
 long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned long ZeroBits,
                               unsigned long *RegionSize, unsigned long AllocationType,
                               unsigned long Protect) {
+    // CHALICE C4-54: capture the guest TEB as the ABSOLUTE FIRST statement,
+    // same x18-clobber-safety idiom C4-48/53 established for NtMapViewOf-
+    // Section/NtProtectVirtualMemory (every callee below -- nt_arena_*/
+    // nt_vm_alloc_pool/etc -- is plain aarch64-elf C, free to clobber x18).
+    // Threaded down to nt_wow64_maybe_notify_protect's own pe_enter6 call
+    // site (ntfile.c) at each real EXEC-protect success return below.
+    u64b nt_c454_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c454_teb));
     (void)ProcessHandle;
 
     void   *in_base = BaseAddress ? *BaseAddress : 0;
@@ -786,6 +808,10 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
                 return STATUS_NOT_MAPPED_VIEW;
             }
             *RegionSize = pages;
+            // CHALICE C4-54: real guest EXEC-protect allocation (donor gap,
+            // symmetric to C4-46/53) -- derive base/size from the ACTUAL
+            // commit result (IRON), not the caller's hint.
+            if (Protect & 0xF0) nt_wow64_maybe_notify_protect((u64b)*BaseAddress, pages, Protect, nt_c454_teb);
             nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_SUCCESS);
             return STATUS_SUCCESS;
         }
@@ -803,6 +829,12 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
             nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_INVALID_PARAMETER);
             return STATUS_INVALID_PARAMETER;
         }
+        // CHALICE C4-54: EXEC-protect notify, same as the commit-at-base
+        // branch above -- this is bookkeeping-only success (page already
+        // committed), but the guest's own Protect argument is still a real
+        // VirtualAlloc(MEM_COMMIT) call FEX's InvalidationTracker needs to
+        // learn about if it carries an EXEC bit.
+        if (Protect & 0xF0) nt_wow64_maybe_notify_protect((u64b)*BaseAddress, pages, Protect, nt_c454_teb);
         nt_avm_log("OUT", *BaseAddress, pages, AllocationType, Protect, STATUS_SUCCESS);
         return STATUS_SUCCESS;
     }
@@ -844,6 +876,10 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
         nt_avm_loopbreak_reset();
         *BaseAddress = base;
         *RegionSize = pages;
+        // CHALICE C4-54: EXEC-protect notify -- unconstrained-arena growth
+        // path (wowbox64.dll's own dynarec code-cache growth is exactly this
+        // case, per this function's own pre-existing C4-9 receipt above).
+        if (Protect & 0xF0) nt_wow64_maybe_notify_protect((u64b)base, pages, Protect, nt_c454_teb);
         nt_avm_log("OUT", base, pages, AllocationType, Protect, STATUS_SUCCESS);
         return STATUS_SUCCESS;
     }
@@ -878,6 +914,11 @@ long NtAllocateVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned l
 
     *BaseAddress = mem;
     *RegionSize = pages;
+    // CHALICE C4-54: EXEC-protect notify -- LOW-pool path (covers the BOP
+    // trampoline allocation above too; harmless no-op there since
+    // nt_wow64_ready is still 0 at that point in boot, same gate every
+    // other notify call site on this floor already shares).
+    if (Protect & 0xF0) nt_wow64_maybe_notify_protect((u64b)mem, pages, Protect, nt_c454_teb);
     nt_avm_log("OUT", mem, pages, AllocationType, Protect, STATUS_SUCCESS);
     return STATUS_SUCCESS;
 }

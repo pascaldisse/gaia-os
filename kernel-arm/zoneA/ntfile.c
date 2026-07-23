@@ -1236,6 +1236,29 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
     // yet -- calling into it that early faults (uninitialized shared_mutex).
     nt_wow64_ready = 1;
 
+    // CHALICE C4-54: retroactively register this floor's OWN C4-27
+    // syscall-hinge stub page (nt_territory_alloc(16), ntboot.c) with FEX's
+    // InvalidationTracker, the FIRST moment nt_wow64_ready allows it. That
+    // stub page is NOT allocated via any guest-visible NtAllocateVirtual-
+    // Memory call at all -- it's this floor's own internal bookkeeping
+    // buffer, written by nt_wow64_stub_write_if_ready (ntsvc.c) during
+    // BTCpuProcessInit itself (well before this function -- reached only via
+    // a REAL dynamic LdrLoadDll -- can ever run), so it crosses NEITHER of
+    // the two syscalls this floor forwards to FEX's notify chain and
+    // XIntervals never learns about it. It is, by construction, always
+    // already fully written (or never allocated at all, on a non-wow64
+    // boot) by the time control can reach here, so a plain one-shot
+    // registration exactly here (paired with the SAME nt_wow64_ready gate
+    // this whole notify chain already uses) is sufficient -- no separate
+    // guest syscall exists to hook for this floor-internal buffer, unlike a
+    // genuine guest EXEC NtAllocateVirtualMemory call (see ntsvc.c's own
+    // NtAllocateVirtualMemory, wired separately, same atom).
+    {
+        u64b c454_stub_base = 0, c454_stub_size = 0;
+        if (nt_wow64_stub_range(&c454_stub_base, &c454_stub_size))
+            nt_wow64_maybe_notify_protect(c454_stub_base, c454_stub_size, PAGE_EXECUTE_READWRITE, teb);
+    }
+
     // CHALICE C4-53: the C4-52 experimental direct HandleImageMap bypass
     // call (kept as a diagnostic-only crutch through C4-52) is REMOVED here
     // -- the proper donor contract now holds without it: C4-53's own
@@ -1434,7 +1457,11 @@ long NtQuerySection(void *SectionHandle, unsigned long SectionInformationClass,
 // =====================================================================
 static u64b nt_c453_fex_base, nt_c453_fex_size;
 
-static void nt_wow64_maybe_notify_protect(u64b base, u64b size, unsigned long new_protect, u64b teb) {
+// CHALICE C4-54: no longer static -- ntsvc.c's NtAllocateVirtualMemory
+// (guest EXEC-protect allocations) and this file's own retroactive
+// stub-page registration (nt_wow64_maybe_notify_map_view, below) both call
+// this directly. Declared in ntfile.h.
+void nt_wow64_maybe_notify_protect(u64b base, u64b size, unsigned long new_protect, u64b teb) {
     // CHALICE C4-53: do NOT resolve/call before FEX's WOW64 runtime is known
     // constructed -- see nt_wow64_ready's own set-site/receipt (this floor's
     // NtProtectVirtualMemory fires ~13 times on native ARM64 modules, e.g.
