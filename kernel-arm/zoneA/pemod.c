@@ -325,9 +325,20 @@ long pe_find_named_export(unsigned long baseL, unsigned long size_of_imageL,
     const u8 *pe = base + e_lfanew;
     const u8 *coff = pe + 4;
     const u8 *opt = coff + COFF_HDR_SIZE;
-    u32b num_dirs = rd32(opt + OPT_NUMBER_OF_DIRS);
+    // CHALICE C4-36: same is_pe32 dispatch PeMapImage already implements
+    // (pemod.c:149-164) -- pe_find_named_export previously hardcoded the
+    // PE32+ (0x20B) data-directory offsets unconditionally, misreading a
+    // genuine PE32 (0x10B) image's NumberOfRvaAndSizes/DataDirectory[]
+    // fields (real fields sit at 0x5C/0x60 for PE32, not 0x6C/0x70) --
+    // for syswow64/ntdll.dll (PE32) this always read num_dirs=0 -> early
+    // return -3 before the export table was ever consulted -> caller's
+    // *out_addr (LdrInitializeThunk) stayed 0. See HANDOFF.md/FEX-MAP.md
+    // C4-35/C4-36.
+    u16b magic = rd16(opt + OPT_MAGIC);
+    int is_pe32 = (magic == PE32_MAGIC);
+    u32b num_dirs = rd32(opt + (is_pe32 ? OPT_NUMBER_OF_DIRS32 : OPT_NUMBER_OF_DIRS));
     if (num_dirs < 1) return -3;
-    const u8 *dirs = opt + OPT_DATA_DIRS;
+    const u8 *dirs = opt + (is_pe32 ? OPT_DATA_DIRS32 : OPT_DATA_DIRS);
     u32b exp_rva  = rd32(dirs + 0);
     u32b exp_size = rd32(dirs + 4);
     if (!exp_rva) return -3;

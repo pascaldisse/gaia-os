@@ -1,5 +1,35 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-36 — FIX + downstream receipt. Diff: `pemod.c`'s `pe_find_named_export`:
+```c
+    u16b magic = rd16(opt + OPT_MAGIC);
+    int is_pe32 = (magic == PE32_MAGIC);
+    u32b num_dirs = rd32(opt + (is_pe32 ? OPT_NUMBER_OF_DIRS32 : OPT_NUMBER_OF_DIRS));
+    if (num_dirs < 1) return -3;
+    const u8 *dirs = opt + (is_pe32 ? OPT_DATA_DIRS32 : OPT_DATA_DIRS);
+```
+(replacing the old unconditional `rd32(opt+OPT_NUMBER_OF_DIRS)`/`opt+OPT_DATA_DIRS`), identical pattern to `PeMapImage` (pemod.c:149-164). Build clean; `pe10 fex` transcript (`/tmp/gaia-pe10-probe.log`):
+```
+CHALICE C4-26: LdrSystemDllInitBlock populated thunk=0x486DE0A0 rtlstart=0x486DD6BC ... ntdll32_base=0x48690000
+CHALICE: NtSetInformationThread ThreadWow64Context <- eip=0x486DE0A0 esp=0x488CBD20   (was eip=0x0 in C4-35 -- thread_init's Eip=pLdrInitializeThunk write)
+CHALICE C4-33 exe_entry(0x47661000) enclosed=1
+CHALICE C4-34 ThreadState=0x270001000 Decoder=0x2300B0080 ExecutableRangeBase=0x48690000 ExecutableRangeEnd=0x488BD000 ExecutableRangeWritable=1 HitNonExecutableRange=0 InstStream=0x486AED89 InstructionSize=1
+ CHALICE C4-34 ByteAddress(queried)=0x486AED8A enclosed=1 exe_entry(0x47661000) match=0   (NoExecOp GONE -- decoder found this range executable, unlike C4-33/34's own prior receipt)
+CHALICE: NtSetInformationThread ThreadWow64Context <- eip=0x486AE914 esp=0x488CB9CC
+CHALICE ARENA: esr=0x96000006 ec=0x25 iss=0x6 elr=0x2968DB0C0 far=0x290
+CHALICE ARENA: refused not-arena
+CHALICE C4-30 ORIGINAL FAULT: ... status=0xC0000005 elr=0x2968DB0C0 far=0x290 wnr=0
+CHALICE: NtRaiseException code=0xC0000005 addr=0x486AE914 (syswow64/ntdll.dll+0x1E914)
+CHALICE RAISE#1: ... info[0]=0x0 info[1]=0x290 firstchance=0 ctx.pc=0x4DA434E4 ctx.sp=0x4116B770
+CHALICE: NtRaiseException FirstChance=FALSE (second-chance, unhandled) -- terminating
+pe10 ret=3221225477
+```
+**thunk populated** (`0x486DE0A0`, real `LdrInitializeThunk` RVA `0x4E0A0`+`ntdll32_base`) → **Eip=pLdrInitializeThunk** (thread_init's second `BTCpuSetContext`, `eip=0x486DE0A0` not `0x0`) → **NoExecOp gone** (C4-34's own receipt: `HitNonExecutableRange=0`, decoder finds the block executable) → **real ntdll32 code executes**: guest runs ~0x475 bytes into `_init_user_process_params` (donor `stock/i386-windows/ntdll.dll`, RVA `0x1E8F0`, disassembled `llvm-objdump -d --start-address=0x7BC1E8F0` at ImageBase `0x7BC00000`) before a NEW real guest AV: `movl 0x290(%ebx), %esi` (RVA `0x1E914`) where `%ebx` = `PEB32->ProcessParameters` (loaded 3 instructions earlier: `fs:0x18`→TEB, `+0x30`→PEB, `+0x10`→ProcessParameters) — **`%ebx`==NULL**, so the read faults at exactly `far=0x290`, byte-matching the source offset (`0x0+0x290`), not a coincidence. This is qualitatively the pe10 ret=42/32→64-transition proof's PREREQUISITE stage reached for the first time (PeMain itself is still unreached — this fault is inside ntdll32's own WOW64 process-params bootstrap, upstream of `LdrInitializeThunk` ever calling PeMain) — **NOT `ret=42`**; a new, later, real fault.
+
+**Named, not chased (per this atom's own scope)**: root candidate is `PEB32.ProcessParameters` never being wired by this floor's PEB32 builder (`nt_build_wow64_teb32`, C4-29 wired `ImageBaseAddress` only, `ProcessParameters` left 0) — real Windows populates it via `RtlCreateProcessParametersEx`-built `RTL_USER_PROCESS_PARAMETERS` handed through wow64's own 32/64 thunking, not yet present on this floor. Also per this task's explicit instruction, noted only: `nt_wow64_cpureserved_dbg` (stale boot-seed reader) vs `NtSetInformationThread`'s separate live stash (`ntsvc.c:1241-1263`) remain unreconciled — not fixed this pass.
+
+**Gates (all green, no regression)**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64` `ret=0`, `fex` `ret=0`) · `ramfb_gate.py` PASS 7/7. **Commit**: source-only `pemod.c` diff above (kernel-arm/zoneA/). Live 2026-07-23.
+
 ## C4-35 — the producer of GuestCode/InstStream=0x0 NAMED: `pe_find_named_export`'s missing PE32/PE32+ dispatch reads `NumberOfRvaAndSizes=0` for the 32-bit ntdll, so `LdrInitializeThunk` resolves to 0; wine's `thread_init()` installs that 0 as the guest's real starting Eip via a REAL, live-caught `NtSetInformationThread(eip=0)` call; `GuestCode` (Core.cpp:532) is a bare cast of that 0 RIP, not a failed translation. The "Eip=exe_entry" receipt 5 prior legs relied on is a stale-memory-read artifact. No fix applied (measurement atom). Live 2026-07-23.
 
 ### GuestCode is not a translation — corrects C4-34's R1 framing
