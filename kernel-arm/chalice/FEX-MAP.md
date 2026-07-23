@@ -1,5 +1,44 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-43 — FIX APPLIED, FRONTIER MOVED: wired the C4-42-named `TEB32.ActivationContextStackPointer` NULL deref. Disasm-confirmed byte-exact against `stock/i386-windows/ntdll.dll` (`i686-w64-mingw32-objdump -d`, ImageBase `0x7bc00000`):
+
+```
+7bc0fef9: 64 a1 18 00 00 00    mov    %fs:0x18,%eax
+7bc0feff: 8b 80 a8 01 00 00    mov    0x1a8(%eax),%eax   ; TEB32.ActivationContextStackPointer
+7bc0ff05: 8b 00                mov    (%eax),%eax        ; <- ELR (this is the exact +0xFF05 fault site)
+7bc0ff07: 89 ce                mov    %ecx,%esi
+7bc0ff09: 85 c0                test   %eax,%eax          ; null-check on the RESULT, not the pointer
+7bc0ff0b: 74 3e                je     7bc0ff4b            ; fast empty-activation-stack branch
+```
+
+Byte-for-byte match to the C4-42 frontier note and to `wine/include/winternl.h:1087` (`_TEB32.ActivationContextStackPointer`, offset `0x1a8`), inside `RtlFindActivationContextSectionString`. This floor's TEB32 builder (`nt_build_wow64_teb32`, `ntsvc.c`) never wired it — only `ImageBaseAddress`/`ProcessParameters` wired so far (C4-29/C4-37).
+
+**Fix (donor-exact, `wine/dlls/ntdll/unix/virtual.c:4010-4013`)**:
+```c
+teb32->ActivationContextStackPointer = PtrToUlong( &teb32->ActivationContextStack );
+teb32->ActivationContextStack.FrameListCache.Flink =
+    teb32->ActivationContextStack.FrameListCache.Blink =
+        PtrToUlong( &teb32->ActivationContextStack.FrameListCache );
+```
+The SAME real Wine function also wires the 64-bit TEB's `ActivationContextStackPointer` this way (`virtual.c:4027-4030`), the donor-exact precedent the earlier, independently-arrived-at C4-28 64-bit fix (separate heap allocation, same zeroed-`ActiveFrame` semantics) already established for THIS floor. `ACTIVATION_CONTEXT_STACK32` layout (`winternl.h:687-694`): `ActiveFrame`(ULONG)@0x00, `FrameListCache`(`LIST_ENTRY32`, `winternl.h:661-665`, Flink/Blink 4B each)@0x04, `Flags`(ULONG)@0x0C, `NextCookieSequenceNumber`(ULONG)@0x10, `StackId`(ULONG32)@0x14. `_TEB32` (`winternl.h:1084/1087`) embeds this struct in-place at offset `0x184`, with `ActivationContextStackPointer` at `0x1a8` pointing AT it (not a separate allocation) — this floor mirrors that exactly: `TEB32_ACTIVATIONCONTEXTSTACK_OFF=0x184`, wired to point at itself; `FrameListCache` self-linked (Flink==Blink==its own address); `ActiveFrame`/`Flags`/`NextCookieSequenceNumber`/`StackId` left `0` (teb32 is `nt_zalloc`'d, and the fault site's own disasm above only ever reads `ActiveFrame`, null-checking the RESULT — 0 satisfies the fast-path branch, same load-bearing-field-only precedent as C4-28).
+
+**`pe10 fex` re-run receipt** (`scratch/pe10_probe.py fex`, `zoneA/scratch/c4-43_pe10_fex_receipt.log`, 4313 lines): the C4-42 fault (`NtRaiseException addr=...+0xFF05`) is **GONE** (0 occurrences). Guest runs measurably deeper — syscall trace shows a SECOND `NtQueryInformationProcess` call (real syscall id `25`, confirmed via `wine-arm64-syscalls.txt`; the FIRST call, `ProcessWow64Information` class 26, is already-handled and logged early at transcript line 201 — this second call is silent, i.e. NOT class 0/26) immediately followed by `NtTerminateProcess` (id `44`) with **no intervening fault/exception trace of any kind** — a clean, deliberate guest-driven exit:
+```
+pe10 ret=3221225595   ; 0xC000007B STATUS_INVALID_IMAGE_FORMAT, NOT ret=42 (no crash — a controlled guest exit)
+```
+**NEW, DIFFERENT bug class, named via donor source (no ARM64 disasm needed — this is a clean exit, not a fault)**: the second, silent `NtQueryInformationProcess` call matches donor `build_main_module` (`wine/dlls/ntdll/loader.c` ~2895-2906) exactly:
+```c
+SECTION_IMAGE_INFORMATION info;   // NOTE: no `= {0}` -- unlike the sibling wow64/syscall.c copy
+NtQueryInformationProcess( GetCurrentProcess(), ProcessImageInformation /* class 37 */, &info, sizeof(info), NULL );
+if (info.ImageCharacteristics & IMAGE_FILE_DLL) {
+    MESSAGE( "wine: %s is a dll, not an executable\n", debugstr_us(&params->ImagePathName) );
+    NtTerminateProcess( GetCurrentProcess(), STATUS_INVALID_IMAGE_FORMAT );
+}
+```
+This floor's `NtQueryInformationProcess` (`ntsvc.c`) only implements class `0` (`ProcessBasicInformation`) and class `26` (`ProcessWow64Information`); class `37` (`ProcessImageInformation`, `winternl.h:1931`) falls through to a silent `return STATUS_NOT_IMPLEMENTED` WITHOUT touching the caller's buffer. Donor's own local is declared uninitialized (no `={0}`), so `info.ImageCharacteristics` is guest-stack garbage — if that garbage happens to have the `IMAGE_FILE_DLL` bit set, `build_main_module` wrongly believes the main image (`hello8_x86.exe`, genuinely an EXE) is a DLL and self-terminates. A genuinely different bug CLASS from every C4-18 through C4-42 gap chased so far (not a TEB/PEB null-pointer crash at all — a missing `NtQueryInformationProcess` class feeding a donor-uninitialized local).
+
+**Gates, no regression**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64`/`fex`, both `ret=0`) · `ramfb_gate.py` PASS 7/7 (`zoneA/scratch/c4-43_pe8_gate.log`/`c4-43_pe9_gate.log`/`c4-43_ramfb_gate.log`). **Commit**: source-only, `kernel-arm/zoneA/ntsvc.c` (`nt_build_wow64_teb32` + new `TEB32_ACTIVATIONCONTEXTSTACK*`/`TEB32_ACTIVATIONCONTEXTSTACKPOINTER_OFF` defines), commit `9104f4d`. Live 2026-07-23.
+
 ## C4-42 — FIX APPLIED, FRONTIER MOVED: named + fixed the zero field C4-41 pinned but couldn't source. Chain confirmed byte-for-byte against `stock/i386-windows/ntdll.dll` (`i686-w64-mingw32-objdump -d`, ImageBase `0x7bc00000`) + vendored `wine/dlls/ntdll/loader.c`:
 
 ```
