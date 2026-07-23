@@ -1096,6 +1096,114 @@ void nt_wow64_populate_init_block_if_ntdll32(const char *name, u64b base32, u64b
 }
 
 // =====================================================================
+// CHALICE C4-46 -- FEX InvalidationTracker notification for DYNAMICALLY
+// (post-BTCpuProcessInit) mapped guest x86 images.
+//
+// Root cause chain (pe10 fex postfix receipt, scratch/c4-45_pe10_fex_
+// receipt_postfix.log + /tmp/gaia-pe10-probe.log): once C4-45's DllPath
+// fix let kernel32.dll+kernelbase.dll genuinely load, the guest's very
+// first instruction fetch into kernelbase.dll -- its own PE entry point,
+// disasm-confirmed byte-for-byte against stock/i386-windows/kernelbase.dll
+// as `_DllMainCRTStartup@12` at RVA 0x68BD0 (objdump: `nop;push ebp;...`,
+// exactly matching the donor file, NOT a section-boundary/truncation
+// issue -- .text spans RVA [0x1000,0x69F15), entry sits comfortably
+// inside it) -- second-chance-terminates with `NtRaiseException
+// code=0xC0000005 addr=kernelbase.dll+0x68BD0`, `ExceptionInformation[0]=8`
+// (EXECUTE-type AV). LIVE-confirmed (not a stale nt_wow64_cpureserved_dbg
+// read, C4-45's own flagged staleness class -- ruled out here via TWO
+// independent fresh sources: the guest's own `NtSetInformationThread/
+// NtQueryInformationThread ThreadWow64Context` round-trips reporting
+// `eip=0x5E228BD0` moments before the raise, AND the ExceptionRecord's own
+// `ExceptionAddress` field, both agreeing byte-for-byte). The underlying
+// ARM64-side signature (kmain.c's C4-31 SynchronousFaultData dump:
+// `Signal=SIGSEGV(11) TrapNo=PF(14) si_code=2(SEGV_ACCERR)
+// err_code=0x15(Present|InstrFetch)`) byte-matches FEX's own documented
+// `NoExecOp` self-fault (FEX-MAP.md C4-31/32) -- FEX's frontend decoder
+// believes the fetch address is not executable.
+//
+// Donor-traced why (FEX-MAP.md C4-31/32, `FEX/Source/Windows/WOW64/
+// Module.cpp`): `InvalidationTracker::XIntervals` (the executable-range
+// interval tree `FEXCore::Frontend::Decoder::CheckRangeExecutable`
+// consults) is populated exactly THREE ways: (1) the tracker's own ctor
+// `VirtualQuery` sweep of whatever is ALREADY mapped/committed at
+// `BTCpuProcessInit` time (Module.cpp:520ish, one-shot, early); (2)
+// `BTCpuProcessInit`'s own two explicit `HandleImageMap` calls, for
+// `PEB.ImageBaseAddress` (the main EXE) and `LdrSystemDllInitBlock-
+// >ntdll_handle` (the 32-bit ntdll) -- both already wired+fixed on this
+// floor (C4-29); (3) the `BTCpuNotifyMapViewOfSection` export
+// (`Module.cpp:1009-1013`, real signature quoted FEX-MAP.md C4-32),
+// which on REAL Wine fires from `dlls/wow64/syscall.c`'s own
+// `NtMapViewOfSection` THUNK, immediately after the real 32-on-64
+// syscall returns for any image SUBSEQUENTLY mapped (i.e. anything
+// loaded after process-start via the guest's own `LdrLoadDll` --
+// kernel32.dll/kernelbase.dll here). This floor's `NtMapViewOfSection`
+// (below) is a DIRECT kernel-mode syscall implementation with no such
+// wow64-thunk layer in between (confirmed: grepped this whole tree for
+// any `BTCpuNotify*`/`HandleImageMap` call site outside doc/*.md files --
+// zero hits before this fix) -- every guest x86 DLL loaded via a REAL
+// runtime `NtMapViewOfSection` call (as opposed to this floor's own
+// Phase-0 C-direct exe/ntdll32 maps, which precede path (1)/(2) above)
+// NEVER reaches FEX's `InvalidationTracker` at all. wow64.dll/the CPU
+// backend itself are unaffected (native ARM64 code, called directly via
+// `BTCpu*` function pointers, never decoded by FEX's x86 frontend --
+// no `XIntervals` membership needed).
+//
+// Fix: replicate the (bypassed) real wow64.dll thunk's own post-map
+// notify call directly, from this floor's own `NtMapViewOfSection`, for
+// every DYNAMICALLY mapped GUEST X86 (Machine 0x14C) image other than
+// ntdll.dll (which already has its own dedicated, working path (2) above
+// -- avoiding a redundant/overlapping XIntervals insert, C4-31's own
+// flagged-but-unchased worry about duplicate-insert interval-tree
+// correctness). `BTCpuNotifyMapViewOfSection`'s address is resolved
+// lazily, the FIRST time `pe_find_named_export` finds it on ANY mapped
+// image (a cheap, harmless probe on every other image -- only the CPU
+// backend DLL itself, mapped earlier in boot under whichever name C4-12's
+// A/B override redirected it to, actually has this export) -- same
+// resolve-by-export-name idiom this floor already uses everywhere else
+// (C4-4/C4-26/C4-27/C4-29), no new mechanism invented. Per FEX-MAP.md's
+// own quoted decompile, the function only locks a mutex then calls
+// `HandleImageMap(Address)` (`MainImage` defaults false) -- a pure
+// `RtlImageNtHeader(Address)`-driven section walk needing no other
+// argument; `Unk1`/`Unk2`/`AllocType`/`Prot` are passed as harmless
+// placeholders, never read by the donor body quoted.
+// =====================================================================
+typedef long (*BTCpuNotifyMapViewOfSectionFn)(void *Unk1, void *Address, void *Unk2,
+                                               u64b Size, unsigned long AllocType,
+                                               unsigned long Prot);
+static u64b nt_btcpu_notify_map_addr;
+
+static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b size) {
+    // Lazily resolve BTCpuNotifyMapViewOfSection's address off whichever
+    // image is actually the CPU backend -- harmless no-op probe on every
+    // other image (export not found -> pe_find_named_export fails fast).
+    if (!nt_btcpu_notify_map_addr) {
+        u64b addr = 0;
+        if (pe_find_named_export(base, size, "BTCpuNotifyMapViewOfSection", &addr) == 0 && addr) {
+            nt_btcpu_notify_map_addr = addr;
+            puts("CHALICE C4-46: BTCpuNotifyMapViewOfSection resolved backend="); puts(name ? name : "?");
+            puts(" addr="); puthex(addr); puts("\n");
+        }
+    }
+    if (!nt_btcpu_notify_map_addr || !name) return;
+
+    // Only guest x86 (Machine 0x14C) images -- native ARM64 images
+    // (wow64.dll/the backend/win32u.dll/wow64win.dll) are never decoded by
+    // FEX's x86 frontend and don't need XIntervals membership. Skip
+    // ntdll.dll -- already covered by BTCpuProcessInit's own dedicated
+    // LdrSystemDllInitBlock-driven HandleImageMap call (C4-29).
+    u32b e_lfanew = rd32((const u8 *)(u64b)base + 0x3C);
+    u16b machine = (u16b)rd32((const u8 *)(u64b)base + e_lfanew + 4);
+    if (machine != 0x014C) return;
+    if (nt_streq_ci(name, "ntdll.dll")) return;
+
+    BTCpuNotifyMapViewOfSectionFn fn = (BTCpuNotifyMapViewOfSectionFn)(u64b)nt_btcpu_notify_map_addr;
+    long rc = fn(0, (void *)base, 0, size, 0, PAGE_EXECUTE_READWRITE);
+    puts("CHALICE C4-46: BTCpuNotifyMapViewOfSection name="); puts(name);
+    puts(" base="); puthex(base); puts(" size="); puthex(size);
+    puts(" rc="); puthex((u64b)rc); puts("\n");
+}
+
+// =====================================================================
 // NtMapViewOfSection -- runs PeMapImage (pemod.c) over the section's blob
 // at a fresh DLL-territory base, NO kernel-side DIR64 relocs (CHALICE
 // C3c-2q -- proven live: the stock Wine-built guest ntdll.dll's own
@@ -1131,6 +1239,7 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
     *ViewSize = (unsigned long)size;
     nt_image_register(sh->name, base, size, entry, 1);
     nt_wow64_populate_init_block_if_ntdll32(sh->name, base, size);   // CHALICE C4-26
+    nt_wow64_maybe_notify_map_view(sh->name, base, size);            // CHALICE C4-46
     return STATUS_SUCCESS;
 }
 
