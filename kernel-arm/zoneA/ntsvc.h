@@ -88,6 +88,22 @@ long nt_build_wow64_teb32(void *teb64, unsigned short native_machine,
 // NtQueryInformationProcess(ProcessWow64Information) to answer -- see
 // ntsvc.c receipt above NtQueryInformationProcess.
 void nt_wow64_set_peb32(void *peb32);
+// CHALICE C4-37: getter for the same stash -- ntboot.c's wow64_wire.peb32
+// is block-scoped where nt_build_wow64_teb32 runs, but PEB32.
+// ProcessParameters can only be wired later (once the ImagePathName/
+// CommandLine wide buffers exist); reuse this existing stash instead of
+// widening wow64_wire's scope.
+void *nt_wow64_get_peb32(void);
+// CHALICE C4-37: wire PEB32.ProcessParameters -- allocates+populates a
+// real 32-bit RTL_USER_PROCESS_PARAMETERS32 (CurrentDirectory/DllPath=
+// "C:\\", ImagePathName/CommandLine from the caller's already-built wide
+// buffers, Environment left empty/valid) and wires PEB32+0x10 to it. See
+// ntsvc.c for the full ntdll32 _init_user_process_params disasm receipt
+// this fixes. Called once by ntboot.c, wow64_mode only, after the wide
+// ImagePathName/CommandLine buffers are built.
+void nt_wow64_build_params32(void *peb32,
+                              const unsigned short *image_path, unsigned long image_path_chars,
+                              const unsigned short *command_line, unsigned long command_line_chars);
 // CHALICE C4-9: x86 guest thread's initial Eip/Esp, for NtQueryInformation-
 // Thread(ThreadWow64Context) to answer -- see ntsvc.c receipt. Set once by
 // ntboot.c right after nt_build_wow64_teb32 succeeds, same convention.

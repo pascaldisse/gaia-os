@@ -1059,6 +1059,8 @@ long NtAllocateVirtualMemoryEx(void *ProcessHandle, void **BaseAddress, unsigned
 // nt_build_wow64_teb32 succeeds (the SAME peb32 buffer that helper built).
 static void *nt_current_wow64_peb32;
 void nt_wow64_set_peb32(void *peb32) { nt_current_wow64_peb32 = peb32; }
+// CHALICE C4-37: getter, see ntsvc.h receipt.
+void *nt_wow64_get_peb32(void) { return nt_current_wow64_peb32; }
 
 long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInformationClass,
                                 void *ProcessInformation, unsigned long ProcessInformationLength,
@@ -1708,10 +1710,32 @@ void nt_service_tables_init(void) {
 
 // ---- PEB32 (winternl.h:833 _PEB32, C_ASSERT sizeof==0x480) ----
 #define PEB32_SIZE                    0x480
+#define PEB32_PROCESSPARAMETERS_OFF   0x10   // winternl.h:849 _PEB32.ProcessParameters -- CHALICE C4-37
 #define PEB32_NUMBEROFPROCESSORS_OFF  0x64
 #define PEB32_OSMAJORVERSION_OFF      0xa4
 #define PEB32_OSMINORVERSION_OFF      0xa8
 #define PEB32_OSBUILDNUMBER_OFF       0xac
+
+// ---- CHALICE C4-37: RTL_USER_PROCESS_PARAMETERS32 (wine include/
+// winternl.h:733-768) + CURDIR32/UNICODE_STRING32 (:673-678, :705-708).
+// Offsets confirmed against BOTH the donor header AND a live disasm of
+// stock/i386-windows/ntdll.dll's _init_user_process_params (RVA 0x1E8F0-
+// 0x1EA30): `movl 0x290(%ebx),%esi` (the fault site this atom fixes) is
+// EnvironmentSize, byte-exact with the struct's own field order (0x24
+// CurrentDirectory=12B CURDIR32 -> 0x30 DllPath -> 0x38 ImagePathName ->
+// 0x40 CommandLine -> 0x48 Environment(ptr) -> ... -> 0x90 DLCurrentDirectory
+// [0x20]*16B=0x200 -> 0x290 EnvironmentSize -> 0x29c ProcessGroupId, this
+// last one ALSO confirmed live: `movl 0x29c(%ebx),%eax` / `movl %eax,
+// 0x29c(%esi)` in the same function's field-copy loop). Only the fields
+// this atom actually wires get their own #define; the rest (dwX../
+// WindowTitle../ProcessGroupId) are read/copied by value at 0, safe.
+#define PARAMS32_CURRENTDIRECTORY_OFF 0x24   // CURDIR32: UNICODE_STRING32(8)+Handle(4)
+#define PARAMS32_DLLPATH_OFF          0x30   // UNICODE_STRING32
+#define PARAMS32_IMAGEPATHNAME_OFF    0x38   // UNICODE_STRING32
+#define PARAMS32_COMMANDLINE_OFF      0x40   // UNICODE_STRING32
+#define PARAMS32_SIZE                 0x2a4  // through LoaderThreads, rounded up
+#define US32_LENGTH_OFF                0x00  // UNICODE_STRING32.Length
+#define US32_MAXLENGTH_OFF             0x02  // UNICODE_STRING32.MaximumLength
 
 // ---- WOW64INFO (winternl.h:4395, C_ASSERT sizeof==40); stored
 // immediately after PEB32 (wine/dlls/wow64/syscall.c:1000 "wow64info =
@@ -1982,6 +2006,85 @@ long nt_build_wow64_teb32(void *teb64_v, unsigned short native_machine,
     out->crossproclist_entries = n_entries;
     out->cpureserved = cpureserved;
     return 0;
+}
+
+// =====================================================================
+// CHALICE C4-37: PEB32.ProcessParameters -- wires a real, non-NULL 32-bit
+// RTL_USER_PROCESS_PARAMETERS32 into PEB32 (PEB32_PROCESSPARAMETERS_OFF,
+// above). C4-36 reached ntdll32's own _init_user_process_params for the
+// first time and it faulted dereferencing this exact field (always 0
+// before this atom -- nt_build_wow64_teb32 only ever wired ImageBaseAddress).
+//
+// Disasm receipt (stock/i386-windows/ntdll.dll RVA 0x1E8F0-0x1EA30, this
+// atom, ImageBase 0x7BC00000): after `movl fs:0x18,%eax; movl 0x30(%eax),
+// %eax; movl 0x10(%eax),%ebx` (TEB32->PEB32->ProcessParameters == our
+// struct, %ebx), the function:
+//   - `movl 0x290(%ebx),%esi` -- EnvironmentSize, read UNCONDITIONALLY
+//     (the fault site: far=0x290 byte-matched this offset exactly).
+//   - `pushl 0x48(%ebx)` (Environment ptr) -- only reached if esi!=0
+//     (`testl %esi,%esi; je ...`) -- left 0/0 (empty env), never derefed.
+//   - `leal 0x24/0x30/0x38/0x40/0x70/0x78/0x80/0x88(%ebx),%e*` then a
+//     fastcall to an internal RtlCreateProcessParametersEx-shaped helper
+//     (`_alloc_process_params`, ecx=flags=1, edx=&ImagePathName@0x38,
+//     stack args DllPath@0x30/CurrentDirectory@0x24/CommandLine@0x40/
+//     WindowTitle@0x70/Desktop@0x78/ShellInfo@0x80/RuntimeInfo@0x88) --
+//     UNICODE_STRING32s copied BY VALUE; safe left-zeroed (Length=0) per
+//     Rtl's own `if (str->Length) memcpy(...)` idiom, EXCEPT
+//     CurrentDirectory: `RtlSetCurrentDirectory_U` (called right after,
+//     on the NEWLY built params' copy of this same field) and this
+//     floor's own C4-28 scar (get_full_path_helper) both proved some
+//     ntdll helpers deref DosPath.Buffer unconditionally -- given a real
+//     "C:\\" buffer here, never zeroed.
+//   - simple ULONG fields (DebugFlags/ConsoleHandle/ConsoleFlags/hStd*/
+//     dwX../ProcessGroupId@0x29c, also live-confirmed via its own
+//     `movl 0x29c(%ebx),%eax`/`movl %eax,0x29c(%esi)` copy) are copied by
+//     value only -- safe at 0.
+//
+// Minimal-but-real per this atom's brief: CurrentDirectory/DllPath get a
+// real "C:\\" UNICODE_STRING32 (own static buffer, guest-visible <4GB --
+// this file's whole heap is nt_zalloc/MAlloc-backed, HEAP_BASE 0x41000000,
+// mem.c); ImagePathName/CommandLine reuse the SAME wide buffers the
+// 64-bit PEB.ProcessParameters already uses (WOW64 FEX runs guest+host in
+// one address space -- C4-35 -- no duplication, no 64-bit-space pointer,
+// caller truncates to u32b); WindowTitle/Desktop/ShellInfo/RuntimeInfo/
+// Environment left zeroed (Length=0/EnvironmentSize=0 -- valid empty-
+// string state per the disasm above, never dereferenced).
+// =====================================================================
+void nt_wow64_build_params32(void *peb32_v,
+                              const unsigned short *image_path, unsigned long image_path_chars,
+                              const unsigned short *command_line, unsigned long command_line_chars) {
+    u8 *peb32 = (u8 *)peb32_v;
+    if (!peb32) return;
+
+    u8 *params32 = (u8 *)nt_zalloc(PARAMS32_SIZE);
+    if (!params32) return;
+
+    // CurrentDirectory (CURDIR32 @ 0x24) + DllPath (@ 0x30): real "C:\\",
+    // own static (persistent) buffer -- C4-28 scar law: some ntdll
+    // helpers deref DosPath.Buffer regardless of Length.
+    static const unsigned short curdir_w[3] = { 'C', ':', '\\' };
+    wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_LENGTH_OFF, 3 * 2);
+    wr16(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_MAXLENGTH_OFF, 4 * 2);
+    wr32(params32 + PARAMS32_CURRENTDIRECTORY_OFF + US32_BUFFER_OFF, (u32b)(u64b)curdir_w);
+    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_LENGTH_OFF, 3 * 2);
+    wr16(params32 + PARAMS32_DLLPATH_OFF + US32_MAXLENGTH_OFF, 4 * 2);
+    wr32(params32 + PARAMS32_DLLPATH_OFF + US32_BUFFER_OFF, (u32b)(u64b)curdir_w);
+
+    if (image_path && image_path_chars) {
+        wr16(params32 + PARAMS32_IMAGEPATHNAME_OFF + US32_LENGTH_OFF, (u16)(image_path_chars * 2));
+        wr16(params32 + PARAMS32_IMAGEPATHNAME_OFF + US32_MAXLENGTH_OFF, (u16)(image_path_chars * 2));
+        wr32(params32 + PARAMS32_IMAGEPATHNAME_OFF + US32_BUFFER_OFF, (u32b)(u64b)image_path);
+    }
+    if (command_line && command_line_chars) {
+        wr16(params32 + PARAMS32_COMMANDLINE_OFF + US32_LENGTH_OFF, (u16)(command_line_chars * 2));
+        wr16(params32 + PARAMS32_COMMANDLINE_OFF + US32_MAXLENGTH_OFF, (u16)(command_line_chars * 2));
+        wr32(params32 + PARAMS32_COMMANDLINE_OFF + US32_BUFFER_OFF, (u32b)(u64b)command_line);
+    }
+
+    wr32(peb32 + PEB32_PROCESSPARAMETERS_OFF, (u32b)(u64b)params32);
+    puts("CHALICE C4-37: PEB32.ProcessParameters=");
+    puthex((u64b)(*(volatile u32b *)(peb32 + PEB32_PROCESSPARAMETERS_OFF)));
+    puts("\n");
 }
 
 // CHALICE C3c-2l Atom A/B — nt_ldr_add_module: insert a SECOND (or Nth)

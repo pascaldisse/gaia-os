@@ -659,6 +659,18 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
         wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_LENGTH_OFF, (u16b)(fulllen * 2));
         wr16(params + PARAMS_IMAGEPATHNAME_OFF + US_MAXLENGTH_OFF, (u16b)(fulllen * 2));
         wr64(params + PARAMS_IMAGEPATHNAME_OFF + US_BUFFER_OFF, (u64b)wfull);
+
+        // CHALICE C4-37: PEB32.ProcessParameters -- wow64_wire (the struct
+        // holding wow64_wire.peb32) is scoped to the earlier wow64_mode
+        // block above; nt_wow64_set_peb32 already stashed the same address
+        // (C4-6) for NtQueryInformationProcess, reuse that stash via the
+        // new getter instead of widening wow64_wire's own scope. wfull/
+        // fulllen (this block, just above) and wname/namelen (this
+        // function's own bare-name buffer, built earlier) are exactly the
+        // SAME wide buffers the 64-bit PEB.ProcessParameters already uses
+        // -- see ntsvc.c's nt_wow64_build_params32 receipt for the full
+        // ntdll32 _init_user_process_params disasm this fixes.
+        nt_wow64_build_params32(nt_wow64_get_peb32(), wfull, fulllen, wname, namelen);
     }
 
     // ---- CHALICE C3c-2h: PEB.ApiSetMap, stock=1 only (Atom 3B's
