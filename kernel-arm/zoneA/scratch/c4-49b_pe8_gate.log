@@ -1,0 +1,254 @@
+transcript saved: /tmp/gaia-pe8-gate.log (98200 bytes)
+---- required-green ----
+OK   pe1 ret=42
+OK   CHALICE: the cup fills
+OK   pe2 ret=7
+OK   CHALICE: the cup speaks
+OK   CHALICE: continue lands
+OK   CHALICE: NT10 floor
+OK   pe3 ret=99
+OK   CHALICE: the cup links
+OK   pe4 ret=60
+OK   CHALICE: thunk enters
+OK   CHALICE: the chain speaks
+OK   pe5 ret=99
+OK   CHALICE: stock ntdll mapped
+OK   CHALICE: stock thunk enters
+OK   CHALICE: kernel32 speaks
+OK   pe7 ret=77
+OK   CHALICE: GetCommandLineA -> "hello7.exe"
+OK   CHALICE: GetModuleHandleA(NULL) ->
+OK   CHALICE: GetModuleHandleA(kernel32.dll) ->
+OK   CHALICE: GetProcAddress(WriteFile) ->
+OK   CHALICE: WriteFile-via-pointer speaks
+OK   CHALICE: GetProcessHeap ->
+OK   CHALICE: HeapAlloc(64) ->
+OK   CHALICE: heap payload readback -> "chalice-heap-payload"
+OK   CHALICE: HeapFree ->
+OK   CHALICE: GetCurrentProcessId ->
+OK   CHALICE: SetLastError(0x1234)/GetLastError ->
+OK   CHALICE: hello7 surface walk complete
+OK   pe8 ret=78
+---- pe8-specific / fault lines ----
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=54 (NtQuerySystemInformation)
+CHALICE: svc id=33 UNIMPLEMENTED
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=88 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=25 (NtQueryInformationProcess)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=35 (NtQueryVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=74 (NtCreateSection)
+CHALICE: svc id=81 (NtQuerySection)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=40 (NtMapViewOfSection)
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=33 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=54 (NtQuerySystemInformation)
+CHALICE: svc id=33 UNIMPLEMENTED
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=88 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=25 (NtQueryInformationProcess)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=35 (NtQueryVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=74 (NtCreateSection)
+CHALICE: svc id=81 (NtQuerySection)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=40 (NtMapViewOfSection)
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=33 UNIMPLEMENTED
+T:/> pe8
+CHALICE DEBUG: territory[pe8] next=0x0000000045015000 used_bytes=0x0000000000015000 high_next=0x0000000100200000 high_used_bytes=0x0000000000200000
+CHALICE IMAGE: name=hello7.exe base=0x0000000046670000 size=0x0000000000006000
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=54 (NtQuerySystemInformation)
+CHALICE: svc id=33 UNIMPLEMENTED
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=18 (NtOpenKey)
+CHALICE: svc id=88 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=25 (NtQueryInformationProcess)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=35 (NtQueryVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=51 (NtOpenFile)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=74 (NtCreateSection)
+CHALICE: svc id=81 (NtQuerySection)
+CHALICE: svc id=15 (NtClose)
+CHALICE: svc id=30 (NtFreeVirtualMemory)
+CHALICE: svc id=40 (NtMapViewOfSection)
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=24 (NtAllocateVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=80 (NtProtectVirtualMemory)
+CHALICE: svc id=57 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: svc id=108 UNIMPLEMENTED
+CHALICE: NtOpenFile hello7.exehello7.exe�.manifest dir=C:
+CHALICE: svc id=33 UNIMPLEMENTED
+CHALICE: GetCommandLineA -> "hello7.exe"
+CHALICE: GetModuleHandleA(NULL) -> 0x0000000046670000
+CHALICE: GetModuleHandleA(kernel32.dll) -> 0x000000004A6C0000
+CHALICE: GetLastError-after-GetModuleHandleA -> 0x0000000000000001
+CHALICE: GetProcAddress(WriteFile) -> 0x000000004A6FD2F8
+CHALICE: GetProcessHeap -> 0x0000000200010000
+CHALICE: HeapAlloc(64) -> 0x000000021DAC0040
+CHALICE: HeapFree -> 1
+CHALICE: GetCurrentProcessId -> 0
+CHALICE: SetLastError(0x1234)/GetLastError -> 0x0000000000001234
+CHALICE: hello7 surface walk complete
+CHALICE DEBUG: territory[pe8] next=0x0000000045015000 used_bytes=0x0000000000015000 high_next=0x0000000100200000 high_used_bytes=0x0000000000200000
+pe8 ret=78
+GATE PASS (required-green)
