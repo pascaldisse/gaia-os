@@ -734,10 +734,33 @@ static void nt_wow64_stub_write_if_ready(void) {
     if (nt_wow64_stub_written) return;
     if (!nt_wow64_stub_addr_valid || !nt_wow64_bop_valid) return;
 
+    // CHALICE C4-55: ONE extra dummy 4B slot (`push 0`) inserted here, right
+    // before `mov eax,id; call BOP` -- FIX for the C4-55-named arg-shift bug.
+    // Root cause (measured, not guessed, via a live ProcessHandle/ExitStatus/
+    // guest-stack receipt at NtTerminateProcess itself): FEX's own args_ptr
+    // formula (donor comment above, `poppedReturnRSP+4`) is calibrated for a
+    // REAL ntdll Nt* stub's stack shape, which ALWAYS has TWO return-address
+    // slots above the args at trap time -- (1) the external caller's own
+    // return address (present because a real ntdll function is always
+    // reached via a `call` instruction from outside) and (2) the stub's own
+    // `call [Wow64Transition]` return address. This floor's C4-27 stub is
+    // instead reached via PeMain's `ret` (no external `call`, so slot (1)
+    // never existed) and only ever pushed its own 2 args + slot (2) -- ONE
+    // slot short. Live receipt (`scratch/c4-55_pe10_fex_receipt_full.log`)
+    // confirmed the exact off-by-one-slot symptom predicted by this gap:
+    // ProcessHandle arrived as 0x2A (42 -- our ExitStatus push value, read
+    // one slot too shallow) and ExitStatus arrived as 0x0 (stale memory one
+    // slot past our real args, never written by this stub at all). Adding
+    // this one dummy slot (value never read by anything) restores the exact
+    // stack shape FEX's formula expects: args_ptr now lands on our REAL
+    // ProcessHandle(-1)/ExitStatus(eax) pair, matching every other syscall
+    // this floor already forwards correctly through real ntdll stubs (which
+    // naturally have this extra slot already).
     u8  *s = (u8 *)nt_wow64_stub_addr;
     u32b i = 0;
     s[i++] = 0x50;                    // push eax        (ExitStatus = PeMain's own return value)
     s[i++] = 0x6A; s[i++] = 0xFF;     // push -1         (hProcess = NtCurrentProcess() pseudo-handle)
+    s[i++] = 0x6A; s[i++] = 0x00;     // push 0          (C4-55 FIX: dummy external-caller-retaddr slot)
     s[i++] = 0xB8;                    // mov eax, imm32
     wr32(s + i, 0x2C); i += 4;        // NtTerminateProcess syscall id (table0, low 12 bits)
     s[i] = 0xE8;                       // call rel32 -> BOP
