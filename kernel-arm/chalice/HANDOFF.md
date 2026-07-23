@@ -1,5 +1,86 @@
 # CHALICE HANDOFF — Windows-ABI compatibility layer for GAIA-OS
 
+## C4-35 — MEASUREMENT ATOM, no fix: the producer of GuestCode/InstStream=0x0 is NAMED. `GenerateIR`'s `GuestCode` (Core.cpp:532-533) is a bare `reinterpret_cast<uint8_t*>(GuestRIP)` — no translation exists to fail. GuestRIP itself was 0 because FEXCore's `Thread->CurrentFrame->State.rip` was set to 0 by a REAL, live-caught `NtSetInformationThread(ThreadWow64Context, eip=0)` call — donor `wine/dlls/wow64/syscall.c:1069-1097 thread_init()`'s own `ctx.Eip = pLdrSystemDllInitBlock->pLdrInitializeThunk` — and `pLdrInitializeThunk` is 0 because THIS floor's own `pe_find_named_export` (pemod.c:320) misreads `NumberOfRvaAndSizes`/`DataDirectory[]` using hardcoded PE32+ (64-bit) optional-header offsets on the PE32 (32-bit) `syswow64/ntdll.dll` image, reading `num_dirs=0` and bailing via `if (num_dirs<1) return -3` before ever finding the export. The C4-25/26/30/33/34 "GUEST CTX Eip=exe_entry" receipt that anchored 5 prior legs is a STALE-MEMORY READ ARTIFACT: it reads the never-updated boot-seed bytes in `nt_wow64_cpureserved_dbg`, not FEXCore's live RIP (`NtSetInformationThread`'s floor implementation writes a separate stash, never that buffer). Zero source changes this pass (existing instrumentation reused, one standalone header-byte check); `pe10 ret=0xC0000005` unchanged. Live 2026-07-23.
+
+### (a) Call chain, source-quoted (donor, vendored locally)
+
+1. **`FEXCore/Source/Interface/Core/Core.cpp:530-538`** (`ContextImpl::GenerateIR`):
+   ```cpp
+   const uint8_t* GuestCode {};
+   GuestCode = reinterpret_cast<const uint8_t*>(GuestRIP);
+   ...
+   Thread->FrontendDecoder->DecodeInstructionsAtEntry(Thread, GuestCode, GuestRIP, MaxInst);
+   ```
+   `GuestCode` is a **literal cast of `GuestRIP` to a pointer** — WOW64 FEX runs guest and host in the SAME address space, so `GuestRIP` values ARE host-valid pointers directly. There is no lookup/translation step here that can independently "return null" — R1's framing in C4-34 ("host-side translation returned null") is corrected: **there is no translation; `GuestCode==0` iff `GuestRIP==0`.**
+
+2. **`GuestRIP`'s source, entry into the JIT**: `ContextImpl::CompileBlock(Frame, GuestRIP, MaxInst)` (Core.cpp:820) is reached from `Dispatcher::EmitDispatcher`'s JIT loop (`Dispatcher.cpp:100`): `ldr(RipReg, STATE_PTR(CpuStateFrame, State.rip));` — i.e. **`GuestRIP == Thread->CurrentFrame->State.rip`**, read directly out of FEXCore's own CPU-state struct at the top of every dispatch iteration (including the very first, driven by `BTCpuSimulateImpl`→`CTX->ExecuteThread`).
+
+3. **`State.rip`'s last writer before the fault**: `Source/Windows/WOW64/Module.cpp:202` (`Context::LoadStateFromWowContext`): `State.rip = Context->Eip;` — called from `BTCpuSetContext` (`Module.cpp:~705-722`) after it re-reads the just-set context back via `RtlWow64GetThreadContext`→**`NtQueryInformationThread(ThreadWow64Context)`** (a REAL NT syscall, this floor's own).
+
+4. **`BTCpuSetContext`'s caller, and what `Context->Eip` it wrote**: donor `wine/dlls/wow64/syscall.c:1069-1097 thread_init()`:
+   ```c
+   pBTCpuGetContext(GetCurrentThread(), GetCurrentProcess(), NULL, &ctx);   // ctx.Eip = exe_entry (correct, boot-seeded)
+   ctx_ptr = (I386_CONTEXT *)ULongToPtr(ctx.Esp) - 1;  *ctx_ptr = ctx;      // spill ctx to guest stack
+   stack = (ULONG *)ctx_ptr;
+   *(--stack)=0; *(--stack)=0; *(--stack)=0;
+   *(--stack) = PtrToUlong(ctx_ptr);  *(--stack) = 0xdeadbabe;
+   ctx.Esp = PtrToUlong(stack);
+   ctx.Eip = pLdrSystemDllInitBlock->pLdrInitializeThunk;                  // <-- OVERWRITES Eip
+   pBTCpuSetContext(GetCurrentThread(), GetCurrentProcess(), NULL, &ctx);
+   ```
+   Real WOW64 threads start at **ntdll32's `LdrInitializeThunk`**, not the exe's own entry point (LdrInitializeThunk does loader work first, then calls the exe). `pLdrSystemDllInitBlock->pLdrInitializeThunk` at offset `0x18` of the `SYSTEM_DLL_INIT_BLOCK` struct (wine `include/winternl.h:4422-4438`) is this floor's own `nt_wow64_populate_init_block_if_ntdll32` write target (`kernel-arm/zoneA/ntfile.c:1053-1094`, C4-26/29).
+
+5. **Why that field is 0**: `nt_wow64_populate_init_block_if_ntdll32` calls `pe_find_named_export(base32, size32, "LdrInitializeThunk", &thunk)` (`ntfile.c:1073`). `pe_find_named_export` (`pemod.c:320-349`) **unconditionally** uses the PE32+ (64-bit) optional-header offsets:
+   ```c
+   const u8 *opt = coff + COFF_HDR_SIZE;
+   u32b num_dirs = rd32(opt + OPT_NUMBER_OF_DIRS);   // 0x6C -- PE32+ offset, hardcoded
+   const u8 *dirs = opt + OPT_DATA_DIRS;              // 0x70 -- PE32+ offset, hardcoded
+   if (num_dirs < 1) return -3;
+   ```
+   with **no PE32-vs-PE32+ magic check** — unlike `PeMapImage` a few dozen lines earlier in the SAME FILE (`pemod.c:149-164`), which already correctly branches `is_pe32` between `OPT_NUMBER_OF_DIRS32=0x5C`/`OPT_DATA_DIRS32=0x60` (PE32) and `OPT_NUMBER_OF_DIRS=0x6C`/`OPT_DATA_DIRS=0x70` (PE32+). `syswow64/ntdll.dll` is genuinely PE32 (`OptionalHeader.Magic=0x10B`, Machine `0x14C`).
+
+### (b) Named step that produced 0 + live receipt values
+
+**Producer: `pe_find_named_export`'s missing PE32/PE32+ dispatch, misreading `NumberOfRvaAndSizes` as 0 for a 32-bit image, causing an early `return -3` before the export table is ever consulted.**
+
+Standalone header-byte check against the vendored `stock/i386-windows/ntdll.dll` (no floor/QEMU involved, pure arithmetic proof):
+```
+e_lfanew=0x78 magic=0x10b                                    (confirms PE32, not PE32+)
+PE32 correct:   num_dirs=16  exp_rva=0x7a8e8  exp_size=0xacbb  (real export dir, LdrInitializeThunk IS present, RVA 0x4e0a0 per llvm-readobj --coff-exports)
+BUGGY code reads: num_dirs=0  exp_rva=0x94000  exp_size=0x3c4  (opt+0x6C/opt+0x70 -- wrong entries entirely)
+```
+`num_dirs=0` on the buggy read → `pe_find_named_export` hits `if (num_dirs<1) return -3` immediately — `*out_addr` (`thunk`) is never written, stays at its caller-side initializer `0`.
+
+Live `pe10 fex` boot receipt (this pass, zero code changes, existing `nt_dispatch_log_enabled` traces):
+```
+CHALICE C4-26: LdrSystemDllInitBlock populated thunk=0x0 rtlstart=0x0 kuxd=0x0 kuad=0x0 kucd=0x0 ntdll32_base=0x48690000 owninit=0x0
+...
+CHALICE: NtQueryInformationThread ThreadWow64Context -> eip=0x47661000 esp=0x488CC000     (Step A: BTCpuGetContext's LockJITContext flush -- CORRECT, exe_entry)
+CHALICE: NtSetInformationThread   ThreadWow64Context <- eip=0x47661000 esp=0x488CC000     (BTCpuGetContext's own FlushThreadStateContext echo -- still correct)
+CHALICE: NtQueryInformationThread ThreadWow64Context -> eip=0x47661000 esp=0x488CC000
+CHALICE: NtSetInformationThread   ThreadWow64Context <- eip=0x47661000 esp=0x488CC000     (BTCpuSetContext's own FlushThreadStateContext echo)
+CHALICE: NtSetInformationThread   ThreadWow64Context <- eip=0x0        esp=0x488CBD20     (<-- thread_init's SECOND BTCpuSetContext: ctx.Eip=pLdrInitializeThunk=0)
+CHALICE: NtQueryInformationThread ThreadWow64Context -> eip=0x0        esp=0x488CBD20
+...
+CHALICE C4-34 ThreadState=0x270001000 Decoder=0x2300B0080 ... InstStream=0x0 InstructionSize=0x0
+ CHALICE C4-34 ByteAddress(queried)=0x0 enclosed=0x0 exe_entry(0x47661000) match=0x0
+```
+Esp arithmetic confirms this is exactly `thread_init`'s own stack-spill: `0x488CC000 − 0x488CBD20 = 0x2E0 = sizeof(I386_CONTEXT)(0x2CC) + 5×4(pushes)(0x14)` — byte-exact match to the donor code quoted in (a)/4, not a coincidence.
+
+**The C4-25/26/30/33/34 "GUEST CTX Eip=exe_entry" receipt is a measurement artifact**: `ntsvc.c`'s `NtRaiseException` RAISE#1 dump reads `nt_wow64_cpureserved_dbg` directly (raw guest memory, boot-seeded once by `nt_wow64_cpureserved_set_context` and NEVER written again — confirmed by reading `NtSetInformationThread`'s own body, `ntsvc.c:1241-1263`: it only updates the separate `nt_wow64_ctx_eip`/`nt_wow64_ctx_esp` static-global stash used to answer `NtQueryInformationThread`, never the `cpureserved` memory buffer). So that dump forever reads the stale boot-seed (`exe_entry`), regardless of what FEXCore's live internal `State.rip` actually holds. The REAL live value (0) is only visible via the `NtSetInformationThread`/`NtQueryInformationThread` trace lines above and the C4-33/34 Decoder dump — this reconciles the C4-33/34 "paradox" completely: `XIntervals` legitimately encloses `exe_entry` (C4-33 correct) because `exe_entry` really is a valid, mapped, executable image range — but the frontend was never asked to decode `exe_entry` at all. It was asked to decode RIP `0x0` (`LdrInitializeThunk`'s unresolved address), a wholly different, never-reached code path.
+
+### (c) Smallest-fix candidate (named, NOT applied — measurement atom only)
+
+**`pemod.c`'s `pe_find_named_export`**: add the identical `is_pe32` magic-check + dual-offset branch `PeMapImage` already implements a few lines above it in the same file (`pemod.c:149-164`) — read `OPT_NUMBER_OF_DIRS32`/`OPT_DATA_DIRS32` (`0x5C`/`0x60`) when `OptionalHeader.Magic==0x10B`, else the existing PE32+ offsets. A ~6-line, single-function, mechanically-proven change (no new donor research needed — the correct branch already exists verbatim elsewhere in this file for `PeMapImage`, and a third occurrence at `pemod.c:419-454` for another helper — `pe_find_named_export` is the ONE remaining PE-header reader in this file missing the dispatch). Expected effect: `thunk` resolves to the real `LdrInitializeThunk` RVA (`0x4e0a0` + `ntdll32_base`), `NtSetInformationThread`'s second call carries a real nonzero Eip, `State.rip` at first `ExecuteThread` becomes a valid ntdll32 code address instead of 0 — the NEXT atom after this fix would need to re-measure whether THAT address decodes/executes cleanly (a fresh, different frontier, not yet observed).
+
+### (d) Commits + gate outputs
+
+- **Zero source changes this pass** — `git status` on `kernel-arm/zoneA/` clean before/after (one build-artifact diff, `pehello_bin.c`, reverted per source-only-commits law). All findings came from (i) re-running the EXISTING `nt_dispatch_log_enabled` traces (`pe10 fex`, no new instrumentation needed — C4-26/9/11's own `NtQueryInformationThread`/`NtSetInformationThread` logging already prints every value needed) and (ii) a standalone, non-floor Python header-byte read of the vendored `stock/i386-windows/ntdll.dll` to confirm the PE32 magic + real vs. buggy-read data-directory offsets.
+- Build: `GAIA_NO_RUN=1 bash build.sh` clean (this pass, before the boot below). `pe10 fex` live boot (`scratch/pe10_probe.py fex`): `pe10 ret=3221225477` (`=0xC0000005`) — **identical** to C4-30/31/33/34's own baseline, confirming no behavior change (none was made). Gate suite not re-run this pass (no source diff to gate against — nothing changed); the fix candidate in (c) is unapplied and would require a full `pe8_gate`/`pe9_gate`/`ramfb_gate` re-run before being committed.
+- Full byte-level detail, donor citations, verdict → FEX-MAP.md § **C4-35**.
+
+---
+
 ## C4-34 — MEASUREMENT ATOM, no fix: the C4-33 NoExecOp-vs-enclosed paradox is NAMED — the failing `Decoder::CheckRangeExecutable` call queried `ByteAddress=0x0`, not `exe_entry`. **Verdict: R1** (InstStream/`GuestCode` is a host-address-space quantity, structurally decoupled from the guest linear address `XIntervals` stores — donor-proven, `Core.cpp:538`/`Frontend.cpp:1358-1446` — here the host-side translation itself returned null for `exe_entry`'s entry block). R2 (insert-timing race) explicitly excluded: queried addr ≠ exe_entry, and `XIntervals` was already fully populated+enclosing at this exact event (C4-33, same transcript). Runtime `c5e0b9c` (instrumentation checkpoint, pre-boot) + this pass's boot/gate receipts below; live 2026-07-23.
 
 - **resumed from disk** (prior lane's partial edit): `kmain.c` already had the C4-34 Decoder-state dumper written (offsets for `Decoder+0x68/0x70/0x78/0x79/0x80/0x88` derived from disassembling `CheckRangeExecutable`/`ReadByte`/`PeekByte` in the non-stripped libwow64fex.dll, chained off the live C4-33 `ThreadState`). Build-artifact churn (`.exe/.dll/.pdb`, `pehello_bin.c` regen) reverted per source-only-commits law; `kmain.c` diff checkpoint-committed (`c5e0b9c`) before building/booting.
