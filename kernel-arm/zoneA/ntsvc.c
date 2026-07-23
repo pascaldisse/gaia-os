@@ -130,11 +130,41 @@ long nt_exit_code;
 static int nt_c4_45_dumped;
 
 long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
+    // CHALICE C4-55: unconditional ProcessHandle + live guest Eax/Eip/Esp +
+    // guest-stack-window receipt (measure, not guess) -- distinguishes "this
+    // call genuinely is our own C4-27 stub's `push eax; push -1; mov
+    // eax,0x2C; call BOP`" (ProcessHandle would read back as the exact
+    // 0xFFFFFFFF the stub pushed, and the live CPURESERVED Eax field would
+    // still hold whatever PeMain's `ret` left there) from "this is a
+    // DIFFERENT, FEX/wow64-internal teardown call that never went through
+    // our stub at all" (ProcessHandle would NOT be 0xFFFFFFFF, or Eax would
+    // not match ExitStatus).
+    puts("CHALICE C4-55: NtTerminateProcess ProcessHandle="); puthex((u64b)(unsigned long)(unsigned int)(u64b)ProcessHandle);
+    puts(" ExitStatus="); puthex((u64b)(u32b)ExitStatus); puts("\n");
+    if (nt_wow64_cpureserved_dbg) {
+        u8 *ictx = nt_wow64_cpureserved_dbg + 4;
+        // literal offsets (CTX32_EIP_OFF/CTX32_ESP_OFF/CTX32_EAX_OFF's own
+        // #defines live later in this file, after C4-45's pre-existing code
+        // below which already duplicates this same pattern -- 0xB8/0xC4/0xB0,
+        // wine/include/winnt.h _I386_CONTEXT field order, Eax@0xB0/Eip@0xB8/
+        // Esp@0xC4).
+        u32b g_eip = rd32(ictx + 0xB8), g_esp = rd32(ictx + 0xC4), g_eax = rd32(ictx + 0xB0);
+        puts("CHALICE C4-55: live guest Eax="); puthex(g_eax);
+        puts(" Eip="); puthex(g_eip);
+        puts(" Esp="); puthex(g_esp); puts("\n");
+        puts("CHALICE C4-55 GUEST STACK @Esp..+16:");
+        for (int w = 0; w < 16; w += 4) {
+            u64b a = (u64b)(u32b)((u64b)g_esp + (u64b)w);
+            u32b word;
+            puts(" ");
+            if (nt_fault_read32(a, &word)) puthex(word);
+            else puts("????????");
+        }
+        puts("\n");
+    } else {
+        puts("CHALICE C4-55: nt_wow64_cpureserved_dbg NULL -- no live guest context available\n");
+    }
     (void)ProcessHandle;
-    // CHALICE C4-54: unconditional ExitStatus receipt (measure, not guess) --
-    // pins whether the C4-27 stub's own `push eax` genuinely carried
-    // PeMain's real return value (42, hello8_x86.c) through to this call.
-    puts("CHALICE C4-54: NtTerminateProcess ExitStatus="); puthex((u64b)(u32b)ExitStatus); puts("\n");
     if (!nt_c4_45_dumped &&
         (unsigned long)(unsigned int)ExitStatus == 0xC000007BUL /* STATUS_INVALID_IMAGE_FORMAT */ &&
         nt_wow64_cpureserved_dbg) {
