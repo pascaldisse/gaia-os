@@ -1,5 +1,71 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-39 — MEASUREMENT+RECON, no fix. Road 1: `FEX_TSOENABLED=0` (env, appended to `ntboot.c`'s existing `FEX_SILENTLOG=0` double-NUL block) — config key `FEX_CONFIG_OPT(TSOEnabled, TSOENABLED)` (`FEX/Source/Windows/Common/TSOHandlerConfig.h:39`), env-var name `FEX_TSOENABLED` (`FEX/Source/Common/Config.cpp` `EnvLoader::Load`: `GetVar(EnvMap, "FEX_" #enum)`), delivered via `BTCpuProcessInit` (`Module.cpp:514`) `FEX::Config::LoadConfig(name, _environ, ...)`. `IsMemcpyAtomicTSOEnabled() = Config.TSOEnabled && Config.MemcpySetTSOEnabled` (`Context.h:364`) — `TSOEnabled=0` alone suffices.
+
+**Receipt** (`scratch/pe10_probe.py fex`, `/tmp/gaia-pe10-probe.log`, this pass):
+```
+CHALICE ARENA: esr=0x96000061 ec=0x25 iss=0x61 elr=0x2968DD634 far=0x5A060A8E
+CHALICE C4-38 ESR: dfsc=0x21 wnr=0x1 (dfsc 0x21==ALIGNMENT FAULT per ARM ARM, not translation)
+CHALICE C4-38 PTE: ttbr0=0x4022A000 l1idx=0x1 l1desc=0x40000705 attrindx=0x1 mair_el1=0xFF00 mair_byte=0xFF (Normal WBWA)
+CHALICE C4-38 SCTLR: sctlr_el1=0xC5183D A-bit(alignment-check-enable)=0x0
+...
+pe10 ret=3221225477   ; 0xC0000005 STATUS_ACCESS_VIOLATION, NOT ret=42
+```
+Byte-for-byte IDENTICAL to C4-38's own receipt (same `esr`/`ec`/`dfsc`/`elr`/`far`/PTE/SCTLR values). Objdump of the fresh ELR window this run (`aarch64-elf-objdump -D -b binary -m aarch64`):
+```
+   0:	add	w20, w9, #0xc
+   4:	ldar	w11, [x20]
+   8:	nop
+   c:	add	w20, w11, w7
+  10:	ldar	w11, [x20]
+  14:	nop
+  18:	add	w20, w6, w7
+  1c:	nop
+  20:	stlr	w11, [x20]        ; <- ELR, same as C4-38
+  24:	mov	x11, x6
+  28:	add	w7, w7, #0x4
+  2c:	cmp	w4, w7
+  30:	b.ne	0x...
+```
+Identical mnemonics AND identical raw words to C4-38's own disasm — the JIT emitted the EXACT SAME `ldar`/`stlr` pair with `FEX_TSOENABLED=0` live in the guest environment block as without it. **Corroboration**: `FEX_SILENTLOG=0` sits in the SAME env block (C4-14) and STILL produced zero `LogMan`-prefixed lines this run (`grep -c "LogMan\|FEX:" transcript` → only the unconditional "starting FEX..." banner, a direct import, present) — two independent `FEX_*` keys, same block, both silently ignored. **Verdict: env-var delivery to `FEXCore::Config` is broken somewhere in this floor's native-process env plumbing** (not a FEX codegen limitation — `TSOEnabled` genuinely gates the emitted atomics per source, `Context.h:362-364`/`JIT/MemoryOps.cpp:1854`/`:2089`). Root cause NOT chased this atom (candidate: `_environ`, the MinGW/UCRT CRT global `BTCpuProcessInit` reads (`Module.cpp:514`), may never get populated for a plain LoadLibrary'd DLL the way it would for an EXE's own `mainCRTStartup` — needs a probe print inside the vendored source or a trace of `GetEnvironmentStringsW`/`WideCharToMultiByte` in stock `kernelbase.dll`).
+
+**Road 2 recon — the actual gate, found this atom**: `FEXCore`'s own alignment-fault self-heal IS reachable in principle; our floor simply never triggers it, for a reason independent of any FEX config. `kmain.c`'s `sync_try_guest_exception` (line ~483) has exactly one classification branch for Data Aborts:
+```c
+if (ec == 0x24 || ec == 0x25) {                 // data abort, lower/current EL
+    status = STATUS_ACCESS_VIOLATION;
+    params = 2;
+}
+```
+No `dfsc` check exists here at all (the `dfsc` decode a few lines away, C4-38's diagnostic, is print-only — it never feeds `status`). **Donor-grounded correct contract**, `wine/dlls/ntdll/unix/signal_arm64.c` `segv_handler` (lines ~1114-1130, the exact reference this floor's whole exception-delivery design already mirrors elsewhere):
+```c
+case ESR_ELx_EC_DABT_LOW:
+case ESR_ELx_EC_DABT_CUR:
+    if (ESR_ELx_ISS_DFSC(esr) == ESR_ELx_ISS_DFSC_ALIGN_FAULT)   // 0x21
+    {
+        rec.ExceptionCode = EXCEPTION_DATATYPE_MISALIGNMENT;    // STATUS_DATATYPE_MISALIGNMENT, 0x80000002
+        save_context(&context, sigcontext);
+        setup_raise_exception(data, sigcontext, &rec, &context);
+        return;                                                  // SKIPS virtual_handle_fault entirely
+    }
+    if (ESR_ELx_ISS_DABT_WNR(esr)) rec.ExceptionInformation[0] = EXCEPTION_WRITE_FAULT;
+    else rec.ExceptionInformation[0] = EXCEPTION_READ_FAULT;
+    break;
+```
+(`STATUS_DATATYPE_MISALIGNMENT`/`EXCEPTION_DATATYPE_MISALIGNMENT` = `0x80000002`, `wine/include/ntstatus.h:223`/`winnt.h:629`/`minwinbase.h:299` — a WARNING-severity code, categorically different from `0xC0000005`.) FEX's own consumer of this exact code, `BTCpuResetToConsistentStateImpl` (`FEX/Source/Windows/WOW64/Module.cpp:926`):
+```c
+if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT && Context::HandleUnalignedAccess(TLS, Context)) {
+    LogMan::Msg::DFmt("Handled unaligned atomic: new pc: {:X}", Context->Pc);
+    return true;   // consistent-state restored, exception SWALLOWED, execution continues
+}
+```
+`Context::HandleUnalignedAccess` → `FEXCore::ArchHelpers::Arm64::HandleUnalignedAccess` (`Arm64.cpp:1924`, dispatch table at `:2089`/`:1854`/etc keyed off `HandlerConfig->GetUnalignedHandlerType()`) decodes the actual faulting `ldar`/`stlr` bytes AT `Context->Pc` (read straight from the delivered `CONTEXT`), performs the single access non-atomically using the SAME `Context->X` register file, and BACKPATCHES the JIT code buffer in place (self-modifying code, `FEX_UNALIGN_ATOMIC_BACKPATCH`/`KernelUnalignedAtomicBackpatching`, `TSOHandlerConfig.h:27`) to a plain `ldr`/`str`+`dmb` sequence so this exact code never re-faults. Because our floor's classifier hands `BTCpuResetToConsistentStateImpl` `STATUS_ACCESS_VIOLATION` instead, the `EXCEPTION_DATATYPE_MISALIGNMENT` check at line 926 never matches — the fault instead falls through the earlier AV-shaped checks (`CallRetStack`/`OvercommitTracker`/suspend-interrupt/`JITGuardPage`/`InvalidationTracker`, none of which are this fault's actual cause, all no-op), `BTCpuResetToConsistentStateImpl` reconstructs a genuine `WOW64_CONTEXT` and forwards a REAL guest-visible exception instead of self-healing — exactly what the transcript already shows: `CHALICE: NtRaiseException code=0xC0000005` → `FirstChance=FALSE (second-chance, unhandled) -- terminating`.
+
+**Exact fix contract for next atom** (NOT applied this atom, recon-only per instructions): `sync_try_guest_exception` needs a THIRD status value, checked ahead of (or folded into) the existing Data-Abort branch: `if ((ec==0x24||ec==0x25) && ((esr&0x3f)==0x21)) status = 0x80000002 /* STATUS_DATATYPE_MISALIGNMENT */; else if (ec==0x24||ec==0x25) status = STATUS_ACCESS_VIOLATION;` — mirroring Wine's own early-return ordering exactly (alignment faults never reach the read/write-fault AV path at all). Everything downstream of `status` in this function (dispatcher resolution via `ki_user_exception_dispatcher`, `guest_exception_stack`, the eventual `NtRaiseException`-shaped delivery into `BTCpuResetToConsistentState`) is ALREADY the correct shape for ANY NT exception code — this genuinely is a small, well-scoped, single-branch fix, not a new mechanism.
+
+**Tradeoff, Pascal rules**: `pe10`'s guest (`hello8_x86.exe`) is single-threaded — the entire reason FEXCore emits `ldar`/`stlr` here (x86-TSO-on-ARM64 cross-thread memory-ordering preservation) has zero observable effect on a single-threaded guest. Road 1 (fix env delivery so `FEX_TSOENABLED=0` lands, FEXCore emits plain `ldr`/`str` at CODEGEN time, no exception path ever needed) may be the cheaper AND permanent seam choice for THIS floor — but Road 1's own blocker (env delivery, above) is presently unnamed/unlocated, while Road 2's fix (this section) is small, precisely named, and immediately implementable. Road 2 is also the durable, general-purpose answer needed the moment any future MP-guest workload actually depends on TSO correctness; Road 1 alone would silently produce WRONG (not just faulting) behavior under concurrency if ever revisited without also landing Road 2.
+
+**Gates, no regression**: `pe8_gate.py` `ret=78` PASS (`gaia-pe8-gate.log`) · `pe9_gate.py` PASS both backends (`wowbox64`/`fex`, both `ret=0`) · `ramfb_gate.py` PASS 7/7 (4 corners + 3 bars). **Commit**: source-only, `ntboot.c` (`FEX_TSOENABLED=0` appended to the env block — Road 1 measurement instrumentation only, no control-flow change; `029bed4`). No fix landed either road this atom. Live 2026-07-23.
+
 ## C4-38 — MEASUREMENT ATOM, no fix. MONAD correction to C4-37: `esr=0x96000061` → `EC=0x25` (Data Abort, lower EL), `ISS=0x61`, **`DFSC=ISS&0x3f=0x21`**. Per ARM ARM D17.2.28 (ESR_EL1 Data-Abort ISS[5:0] DFSC encoding): `0b000000-0b000011`=address-size, `0b000100-0b000111`=translation fault, `0b001001-0b001011`=access-flag, `0b001101-0b001111`=permission, `0b100001`=**Alignment fault**. `0x21 = 0b100001` → ALIGNMENT FAULT, not translation (C4-37's "DFSC=0x21, translation-fault-level-1" line was a misread — corrected here).
 
 **Rival theories, measured**:
