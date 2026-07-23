@@ -241,6 +241,24 @@
 // placed in the gap between cpsr(0x108) and id(0x120), 24 bytes free there.
 #define NT_FRAME_STUB_LR_OFF 0x110
 
+// ---- CHALICE C4-48: nested-syscall-safe frame chain. Donor's
+// syscall_frame is carved fresh from the thread stack on every dispatcher
+// entry (wine/dlls/ntdll/unix/signal_arm64.c) -- nesting falls out for
+// free since a nested entry's own sp is already lower than the enclosing
+// call's. This floor's Atom A frame instead lived at a single fixed TEB
+// slot, reused (not carved fresh) on re-entry -- C4-47 pinned this as
+// unsafe for a genuine nested syscall (the nested call would stomp the
+// still-live OUTER frame at the SAME address, then zero it on its own
+// return, corrupting the outer dispatch's unwind). Fix (ntdisp.S): ALWAYS
+// carve a fresh frame below the CURRENT sp (donor's own policy), and chain
+// frames via this slot -- the previously-live frame ptr (0 at top level,
+// or the enclosing OUTER frame's ptr if nested), restored (not zeroed) by
+// dispatch_return -- a minimal LIFO stack of depth == the C call nesting
+// depth. Placed in the last 8 free bytes between stub_lr(0x110, 8B) and
+// id(0x120) -- the "24 bytes free" gap NT_FRAME_STUB_LR_OFF's own comment
+// notes, minus the 8 stub_lr itself already claimed.
+#define NT_FRAME_PREV_OFF 0x118
+
 // ---- Atom B: KUSER_SHARED_DATA, fixed physical address (HANDOFF: "we ARE
 // the unix side"). Offsets receipted against reactos/sdk/include/ndk/
 // ketypes.h _KUSER_SHARED_DATA (has inline // 0x... comments per field,

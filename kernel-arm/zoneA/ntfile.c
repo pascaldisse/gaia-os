@@ -1172,7 +1172,20 @@ typedef long (*BTCpuNotifyMapViewOfSectionFn)(void *Unk1, void *Address, void *U
                                                unsigned long Prot);
 static u64b nt_btcpu_notify_map_addr;
 
-static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b size) {
+// CHALICE C4-48 bug1 fix: `teb` is the guest TEB captured by the CALLER
+// (NtMapViewOfSection, below) as its OWN first statement -- i.e. the SAME
+// x18 nt_dispatch installed for this syscall, read via the `mov %0,x18`
+// idiom already used elsewhere on this floor (ntsvc.c:589/1221/1331)
+// BEFORE any intervening kernel C (this function's own callee chain --
+// pe_find_named_export/nt_streq_ci/rd32 etc, all plain aarch64-elf C, free
+// to clobber x18 as scratch, no -ffixed-x18) can touch the register. It is
+// threaded down explicitly as a parameter (not re-read here) because BY
+// THE TIME this function runs, x18 itself may already be garbage (C4-47's
+// pinned root cause). Reinstalled right at the native-call boundary via
+// pe_enter6 (ntdisp.S) -- the same stash/restore bracket every other
+// native/PE crossing on this floor already uses (nt_dispatch x22/x24,
+// pe_enter/pe_enter1 x9), just extended to this 6-arg native callee.
+static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b size, u64b teb) {
     // Lazily resolve BTCpuNotifyMapViewOfSection's address off whichever
     // image is actually the CPU backend -- harmless no-op probe on every
     // other image (export not found -> pe_find_named_export fails fast).
@@ -1197,7 +1210,13 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
     if (nt_streq_ci(name, "ntdll.dll")) return;
 
     BTCpuNotifyMapViewOfSectionFn fn = (BTCpuNotifyMapViewOfSectionFn)(u64b)nt_btcpu_notify_map_addr;
-    long rc = fn(0, (void *)base, 0, size, 0, PAGE_EXECUTE_READWRITE);
+    // CHALICE C4-48: call through pe_enter6, not a raw C fn() call -- installs
+    // the caller-captured guest TEB into x18 right at this native boundary,
+    // regardless of whatever x18 currently holds (C4-47's pinned bug1: this
+    // raw call site had NO such bracket, so nested native code (e.g.
+    // GetSectionFilePath's own NtQueryVirtualMemory stub) read garbage TEB).
+    long rc = pe_enter6((long (*)(void *, void *, void *, unsigned long, unsigned long, unsigned long))fn,
+                         (void *)teb, 0, (void *)base, 0, size, 0, PAGE_EXECUTE_READWRITE);
     puts("CHALICE C4-46: BTCpuNotifyMapViewOfSection name="); puts(name);
     puts(" base="); puthex(base); puts(" size="); puthex(size);
     puts(" rc="); puthex((u64b)rc); puts("\n");
@@ -1222,6 +1241,16 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
                          unsigned long ZeroBits, unsigned long CommitSize, void *SectionOffset,
                          unsigned long *ViewSize, unsigned long InheritDisposition,
                          unsigned long AllocationType, unsigned long Win32Protect) {
+    // CHALICE C4-48: capture the guest TEB (x18, installed by nt_dispatch
+    // for this very syscall) as the ABSOLUTE FIRST statement of this
+    // function -- before any intervening kernel C below (PeMapImage/
+    // nt_image_register/etc, all plain aarch64-elf C, free to clobber x18,
+    // no -ffixed-x18) gets a chance to. Threaded down to
+    // nt_wow64_maybe_notify_map_view's native call site (pe_enter6) instead
+    // of re-reading x18 there, where it may already be garbage (C4-47's
+    // pinned root cause).
+    u64b nt_c4_48_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c4_48_teb));
+
     (void)ProcessHandle; (void)ZeroBits; (void)CommitSize; (void)SectionOffset;
     (void)InheritDisposition; (void)AllocationType; (void)Win32Protect;
     if (!BaseAddress || !ViewSize) return STATUS_INVALID_PARAMETER;
@@ -1239,7 +1268,7 @@ long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAdd
     *ViewSize = (unsigned long)size;
     nt_image_register(sh->name, base, size, entry, 1);
     nt_wow64_populate_init_block_if_ntdll32(sh->name, base, size);   // CHALICE C4-26
-    nt_wow64_maybe_notify_map_view(sh->name, base, size);            // CHALICE C4-46
+    nt_wow64_maybe_notify_map_view(sh->name, base, size, nt_c4_48_teb);  // C4-46/C4-48
     return STATUS_SUCCESS;
 }
 

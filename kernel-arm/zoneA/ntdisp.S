@@ -68,11 +68,30 @@ nt_dispatch:
                                      // already pushed them here per its own
                                      // C compiler's calling convention).
 
-    ldr  x10, [x18, #0x378]         // NT_TEB_SYSCALL_FRAME_OFF: reuse if set
-    cbnz x10, 1f
-    sub  x10, sp, #0x330            // carve sizeof(struct syscall_frame)
-    str  x10, [x18, #0x378]
-1:
+    // ---- CHALICE C4-48: nested-syscall-safe frame allocation (donor idiom:
+    // wine/dlls/ntdll/unix/signal_arm64.c's syscall_frame is carved fresh
+    // from the thread stack (frame = sp - frame_size) on EVERY dispatcher
+    // entry -- nesting is then automatic, since a nested call's own sp is
+    // already lower than the enclosing call's, so its fresh carve can never
+    // collide with the still-live outer frame). Replaces Atom A's one-shot
+    // `cbnz x10,1f` reuse-or-carve-once check (C4-47: unsafe for nesting --
+    // reused the STALE outer frame's address instead of carving fresh space
+    // below the current, now-lower, sp, corrupting the in-flight outer call).
+    // 0x330B layout is UNCHANGED -- only the allocation policy changes: we
+    // ALWAYS carve (never reuse), and chain to whatever frame was already
+    // live via a new prev-link slot (NT_FRAME_PREV_OFF, the 8 free bytes
+    // between stub_lr@0x110 and id@0x120), restored (not zeroed) on return
+    // -- a minimal LIFO chain. At top level [x18+0x378] is always 0 before
+    // entry, so frame->prev==0 and dispatch_return's restore writes back 0 --
+    // BIT-FOR-BIT identical to today's `str xzr,...` for the non-nested case.
+    ldr  x12, [x18, #0x378]         // x12 = currently-live frame ptr (0 at
+                                     // top level; the OUTER frame's ptr if
+                                     // this dispatch is nested inside it)
+    sub  x10, sp, #0x330            // fresh frame, always carved below THIS
+                                     // call's own (lower, if nested) sp
+    str  x12, [x10, #0x118]         // frame->prev (NT_FRAME_PREV_OFF) = the
+                                     // captured previous value -- LIFO link
+    str  x10, [x18, #0x378]         // publish new frame as current
     // ---- CHALICE C3c-2e p2: PE-side callee-saved x19-x28 preservation.
     // Root-caused via disasm (stock ntdll.dll allocate_region, heap.c):
     // real ARM64 `svc` leaves EVERY GPR except x0 exactly as the caller
@@ -220,8 +239,17 @@ dispatch_return:
     ldp  x23, x24, [x10, #0x150]
     ldp  x25, x26, [x10, #0x160]
     ldp  x27, x28, [x10, #0x170]
+    // CHALICE C4-48: pop the LIFO frame chain -- restore whatever frame
+    // ptr was live BEFORE this one (frame->prev, NT_FRAME_PREV_OFF) instead
+    // of unconditionally zeroing (Atom A's old one-shot-only behavior).
+    // At top level frame->prev is always 0 (nothing was live before us),
+    // so this restores 0 -- IDENTICAL to the old `str xzr,...` there. If
+    // this call was nested, frame->prev is the enclosing OUTER frame's
+    // still-valid ptr, correctly re-published so the OUTER dispatch's own
+    // eventual dispatch_return finds ITS frame intact, not zeroed early.
+    ldr  x11, [x10, #0x118]         // frame->prev
     mov  sp, x17
-    str  xzr, [x18, #0x378]         // Atom A: one-shot frame, no re-entrancy
+    str  x11, [x18, #0x378]
     ret  x16
 
 // ---- pe_enter: TEB-install shim (A4). long pe_enter(long (*entry)(void), void *teb) ----
@@ -257,6 +285,44 @@ pe_enter1:
     mov  x0, x2                     // x0 = arg (entry's own first param)
     blr  x10
     mov  x18, x9                    // restore kernel x18 (normal-return path)
+    ldp  x29, x30, [sp], #16
+    ret
+
+// ---- pe_enter6: CHALICE C4-48 bug1 fix -- x18(TEB) stash/restore bracket
+// around a native (non-syscall-stub) crossing into PE-ABI-respecting code,
+// extending the SAME pe_enter/pe_enter1 idiom (this floor's OWN existing
+// mechanism, not a new one) to a 6-argument callee. Needed because this
+// floor's own kernel C (aarch64-elf, no -ffixed-x18 -- confirmed via
+// build.sh grep) is free to clobber x18 as ordinary scratch between the
+// dispatcher's TEB install and any deep call site reached via plain C
+// function calls (unlike nt_dispatch's own x22/x24 bracket immediately
+// around ITS blr, or pe_enter/pe_enter1's x9 bracket) -- ntfile.c's
+// NtMapViewOfSection -> nt_wow64_maybe_notify_map_view -> raw fn() call
+// into BTCpuNotifyMapViewOfSection (native ARM64, Windows-ARM64-ABI-
+// respecting, expects x18==guest TEB) is exactly such a site (C4-47).
+// long pe_enter6(long (*entry)(...), void *teb, a0,a1,a2,a3,a4,a5) --
+// x0=entry fn ptr, x1=teb, x2..x7=six args (matches
+// BTCpuNotifyMapViewOfSectionFn's six-param shape exactly, all in
+// registers, no stack-arg marshal needed).
+.global pe_enter6
+pe_enter6:
+    stp  x29, x30, [sp, #-16]!
+    mov  x29, sp
+    mov  x9, x18                    // save kernel-side x18
+    mov  x10, x0                    // stash entry fn ptr (x0 about to be
+                                     // overwritten by the shifted args)
+    mov  x18, x1                    // x18 = TEB captured by the CALLER at
+                                     // its own entry (see ntfile.c), NOT
+                                     // whatever x18 happens to hold here --
+                                     // this is the actual bug1 fix.
+    mov  x0, x2
+    mov  x1, x3
+    mov  x2, x4
+    mov  x3, x5
+    mov  x4, x6
+    mov  x5, x7
+    blr  x10
+    mov  x18, x9                    // restore kernel x18
     ldp  x29, x30, [sp], #16
     ret
 

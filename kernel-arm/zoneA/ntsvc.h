@@ -27,6 +27,16 @@ long pe_enter(long (*entry)(void), void *teb);       // A4 TEB-install shim
 // verdict 2's "enter PE at LdrInitializeThunk with x0=&pushed_ctx" needs an
 // explicit argument; pe_enter's entry signature takes none).
 long pe_enter1(long (*entry)(void *arg), void *teb, void *arg);
+// CHALICE C4-48 bug1 fix: pe_enter6 -- same TEB-install/restore bracket,
+// extended to 6 explicit args (all still fit in registers x2..x7, matches
+// BTCpuNotifyMapViewOfSectionFn's shape exactly). Used for native crossings
+// reached deep inside plain kernel C (not immediately after a dispatcher
+// blr), where x18 may already have been clobbered as ordinary scratch by
+// intervening C code -- see ntfile.c C4-48 receipt.
+long pe_enter6(long (*entry)(void *a0, void *a1, void *a2, unsigned long a3,
+                              unsigned long a4, unsigned long a5),
+               void *teb, void *a0, void *a1, void *a2, unsigned long a3,
+               unsigned long a4, unsigned long a5);
 long nt_setjmp(unsigned long *buf);
 void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
 // Atom B slice-2 boss: full ARM64 CONTEXT restore, never returns to its
