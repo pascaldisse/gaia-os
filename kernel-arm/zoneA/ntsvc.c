@@ -1812,6 +1812,34 @@ void nt_service_tables_init(void) {
 #define TEB32_TIB_FIBERDATA_OFF        0x10
 #define TEB32_TIB_SELF_OFF             0x18   // winnt.h:2564 NT_TIB32.Self
 #define TEB32_PEB_OFF                  0x30
+// CHALICE C4-43 fix: TEB32.ActivationContextStackPointer, winternl.h:1087
+// (_TEB32 C_ASSERT-anchored offset 0x1a8) -- disasm-confirmed byte-exact
+// against stock/i386-windows/ntdll.dll (i686-w64-mingw32-objdump) at the
+// exact pe10 fault site (syswow64/ntdll.dll+0xFF05, C4-42's own named-but-
+// not-chased frontier): `mov %fs:0x18,%eax; mov 0x1a8(%eax),%eax; mov
+// (%eax),%eax` inside RtlFindActivationContextSectionString -- a NULL
+// TEB32.ActivationContextStackPointer deref (this floor's TEB32 builder,
+// nt_build_wow64_teb32, never wired it -- only ImageBaseAddress/
+// ProcessParameters wired so far, C4-29/C4-37). Donor-exact fix (wine/
+// dlls/ntdll/unix/virtual.c:4010-4013, the SAME real Wine function that
+// wires the 64-bit TEB's ActivationContextStackPointer the C4-28 fix below
+// mirrors): the field points at an EMBEDDED ACTIVATION_CONTEXT_STACK32
+// (winternl.h:687-694, _TEB32 C_ASSERT-anchored offset 0x184 IN-PLACE
+// inside TEB32 itself -- NOT a separate allocation, exactly as donor code
+// does it: `teb32->ActivationContextStackPointer = PtrToUlong(&teb32->
+// ActivationContextStack)`), with FrameListCache (a LIST_ENTRY32,
+// winternl.h:661-665) self-linked (Flink==Blink==&FrameListCache, donor
+// virtual.c:4011-4013) and ActiveFrame left 0 -- the ONLY field this
+// fault site's own disasm reads (`mov (%eax),%eax; test %eax,%eax; je
+// ...`, a null-check on the RESULT taking the fast empty-stack branch),
+// same load-bearing-field-only pattern as the C4-28 64-bit fix.
+#define TEB32_ACTIVATIONCONTEXTSTACK_OFF        0x184   // winternl.h:1084
+#define TEB32_ACTCTXSTACK32_ACTIVEFRAME_OFF     0x00
+#define TEB32_ACTCTXSTACK32_FRAMELISTCACHE_OFF  0x04    // LIST_ENTRY32 Flink(4)+Blink(4)
+#define TEB32_ACTCTXSTACK32_FLAGS_OFF           0x0C
+#define TEB32_ACTCTXSTACK32_NEXTCOOKIE_OFF      0x10
+#define TEB32_ACTCTXSTACK32_STACKID_OFF         0x14
+#define TEB32_ACTIVATIONCONTEXTSTACKPOINTER_OFF 0x1a8   // winternl.h:1087
 #define TEB32_STATICUNICODESTRING_OFF  0xbf8
 #define TEB32_STATICUNICODEBUFFER_OFF  0xc00
 #define TEB32_STATICUNICODEBUFFER_LEN  0x20a  // 261 WCHAR * 2 (winternl.h:1113 StaticUnicodeBuffer[261])
@@ -2055,6 +2083,20 @@ long nt_build_wow64_teb32(void *teb64_v, unsigned short native_machine,
          (u32b)(u64b)(teb32 + TEB32_STATICUNICODEBUFFER_OFF));
     wr32(teb32 + TEB32_GDIBATCHCOUNT_OFF, (u32b)(u64b)teb64);       // virtual.c:4016 GdiBatchCount = PtrToUlong(teb64)
     wr32(teb32 + TEB32_WOWTEBOFFSET_OFF, (u32b)(0UL - TEB_WOW64_VIEW_OFF));   // virtual.c:4017 WowTebOffset = -teb_offset
+
+    // ---- CHALICE C4-43 fix: TEB32.ActivationContextStackPointer -- points
+    // at the embedded ACTIVATION_CONTEXT_STACK32 IN-PLACE (donor virtual.c
+    // :4010, see offset comment above), FrameListCache self-linked (donor
+    // virtual.c:4011-4013), ActiveFrame/Flags/NextCookieSequenceNumber/
+    // StackId left 0 (teb32 is nt_zalloc'd -- only ActiveFrame is load-
+    // bearing on the fault site this atom fixes, and 0 satisfies its
+    // fast-empty-stack branch). ----
+    wr32(teb32 + TEB32_ACTIVATIONCONTEXTSTACKPOINTER_OFF,
+         (u32b)(u64b)(teb32 + TEB32_ACTIVATIONCONTEXTSTACK_OFF));
+    wr32(teb32 + TEB32_ACTIVATIONCONTEXTSTACK_OFF + TEB32_ACTCTXSTACK32_FRAMELISTCACHE_OFF + 0 /* Flink */,
+         (u32b)(u64b)(teb32 + TEB32_ACTIVATIONCONTEXTSTACK_OFF + TEB32_ACTCTXSTACK32_FRAMELISTCACHE_OFF));
+    wr32(teb32 + TEB32_ACTIVATIONCONTEXTSTACK_OFF + TEB32_ACTCTXSTACK32_FRAMELISTCACHE_OFF + 4 /* Blink */,
+         (u32b)(u64b)(teb32 + TEB32_ACTIVATIONCONTEXTSTACK_OFF + TEB32_ACTCTXSTACK32_FRAMELISTCACHE_OFF));
 
     // ---- cross-link on the 64-bit TEB (virtual.c:4018 "teb64->WowTebOffset = teb_offset") ----
     wr32(teb64 + TEB64_WOWTEBOFFSET_OFF, TEB_WOW64_VIEW_OFF);
