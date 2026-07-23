@@ -1,0 +1,1 @@
+pe10_probe.py fex -- full transcript is 4151 lines (vs C4-45's 4337 pre-fix / 62 post-fix), truncated because the raw ARM64 fault below never returns to shell (no 'pe10 ret=' line -- probe drains 45s then SIGTERMs qemu).
