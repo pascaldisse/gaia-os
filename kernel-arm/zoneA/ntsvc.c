@@ -131,6 +131,10 @@ static int nt_c4_45_dumped;
 
 long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
     (void)ProcessHandle;
+    // CHALICE C4-54: unconditional ExitStatus receipt (measure, not guess) --
+    // pins whether the C4-27 stub's own `push eax` genuinely carried
+    // PeMain's real return value (42, hello8_x86.c) through to this call.
+    puts("CHALICE C4-54: NtTerminateProcess ExitStatus="); puthex((u64b)(u32b)ExitStatus); puts("\n");
     if (!nt_c4_45_dumped &&
         (unsigned long)(unsigned int)ExitStatus == 0xC000007BUL /* STATUS_INVALID_IMAGE_FORMAT */ &&
         nt_wow64_cpureserved_dbg) {
