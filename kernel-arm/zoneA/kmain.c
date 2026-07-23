@@ -748,37 +748,34 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     // the root_key_names[] spot-check idiom below) to confirm which side of
     // the branch the blob actually takes for these two DLLs.
     {
-        static int c450_dumped;
-        if (!c450_dumped) {
-            const char *names[2] = {"syswow64/kernel32.dll", "syswow64/kernelbase.dll"};
-            int any = 0;
-            for (int di = 0; di < 2; di++) {
-                u64 dbase = 0, dsize = 0;
-                if (!nt_image_base_by_name(names[di], &dbase, &dsize)) continue;
-                any = 1;
-                puts("CHALICE C4-50 "); puts(names[di]); puts(" base="); puthex(dbase);
-    puts(" size="); puthex(dsize);
-                if (dbase < NT_RAM_BASE || dbase + 0x1000 >= NT_RAM_TOP) {
-                    puts(" -> base out of RAM range, not dereferenced\n");
-                    continue;
-                }
-                u32 mz = *(u32 *)dbase;
-                u32 e_lfanew = *(u32 *)(dbase + 0x3C);
-                puts(" mz="); puthex(mz); puts(" e_lfanew="); puthex(e_lfanew);
-                u64 nth = dbase + e_lfanew;
-                if (nth + 8 >= NT_RAM_TOP || e_lfanew > dsize) {
-                    puts(" -> NT header out of range, not dereferenced\n");
-                    continue;
-                }
-                u32 pesig = *(u32 *)nth;
-                u16 machine = *(u16 *)(nth + 4);
-                u16 nsections = *(u16 *)(nth + 6);
-                puts(" pesig="); puthex(pesig); puts(" machine="); puthex(machine);
-                puts(" NumberOfSections="); puthex(nsections);
-                puts(nsections == 0 ? " -> GATE TAKEN (skip, matches live XIntervals stall)\n"
-                                    : " -> GATE NOT TAKEN (insert should proceed)\n");
+        static int c450_dumped[2];
+        static const char *c450_names[2] = {"syswow64/kernel32.dll", "syswow64/kernelbase.dll"};
+        for (int di = 0; di < 2; di++) {
+            if (c450_dumped[di]) continue;
+            u64 dbase = 0, dsize = 0;
+            if (!nt_image_base_by_name(c450_names[di], &dbase, &dsize)) continue;
+            c450_dumped[di] = 1;
+            puts("CHALICE C4-50 "); puts(c450_names[di]); puts(" base="); puthex(dbase);
+            puts(" size="); puthex(dsize);
+            if (dbase < NT_RAM_BASE || dbase + 0x1000 >= NT_RAM_TOP) {
+                puts(" -> base out of RAM range, not dereferenced\n");
+                continue;
             }
-            if (any) c450_dumped = 1;
+            u32 mz = *(u32 *)dbase;
+            u32 e_lfanew = *(u32 *)(dbase + 0x3C);
+            puts(" mz="); puthex(mz); puts(" e_lfanew="); puthex(e_lfanew);
+            u64 nth = dbase + e_lfanew;
+            if (nth + 8 >= NT_RAM_TOP || e_lfanew > dsize) {
+                puts(" -> NT header out of range, not dereferenced\n");
+                continue;
+            }
+            u32 pesig = *(u32 *)nth;
+            u16 machine = *(u16 *)(nth + 4);
+            u16 nsections = *(u16 *)(nth + 6);
+            puts(" pesig="); puthex(pesig); puts(" machine="); puthex(machine);
+            puts(" NumberOfSections="); puthex(nsections);
+            puts(nsections == 0 ? " -> GATE TAKEN (skip, matches live XIntervals stall)\n"
+                                : " -> GATE NOT TAKEN (insert should proceed)\n");
         }
     }
 
