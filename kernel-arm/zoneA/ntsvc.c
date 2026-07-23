@@ -1333,11 +1333,56 @@ long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationC
 #define SBI_SIZE 0x40
 #define SBI_PAGESIZE_OFF 0x08
 #define SBI_NUMBEROFPHYSICALPAGES_OFF 0x0C
+#define SBI_MINUSERADDR_OFF 0x20
+#define SBI_MAXUSERADDR_OFF 0x28
 #define SBI_NUMBEROFPROCESSORS_OFF 0x38
+
+// CHALICE C4-42: the zero field feeding alloc_module, traced end to end.
+// wow64.dll's own process_init (donor wine/dlls/wow64/syscall.c:996-997)
+// calls NtQuerySystemInformation(SystemEmulationBasicInformation=62, &info,
+// sizeof(info), NULL) then UNCONDITIONALLY does
+// `highest_user_address = info.HighestUserAddress;` -- NO status check.
+// This floor's NtQuerySystemInformation only accepted class 0
+// (SystemBasicInformation), returning STATUS_NOT_IMPLEMENTED for class 62
+// -- info stayed untouched (host stack garbage/zero), so
+// wow64.dll's global `highest_user_address` (default 0x7ffeffff at
+// link time, syscall.c:40) got overwritten with a bogus ~0 value. Every
+// subsequent WOW64 NtQueryVirtualMemory(MemoryBasicInformation) call from
+// 32-bit guest code -- including build_ntdll_module's own
+// NtQueryVirtualMemory(-1, LdrInitializeThunk, MemoryBasicInformation, buf,
+// 0x1c, NULL), C4-41/C4-42's own disasm-traced call site -- then fails
+// wow64_NtQueryVirtualMemory's own `(ULONG_PTR)addr > highest_user_address`
+// gate (wine/dlls/wow64/virtual.c:585) and returns STATUS_INVALID_PARAMETER
+// WITHOUT EVER calling the native NtQueryVirtualMemory this floor
+// implements below (proof: zero NtQueryVirtualMemory ENTRY log lines this
+// boot ever show BaseAddress==LdrInitializeThunk, out of 61 total calls --
+// every one of the 61 is a HOST-side/FEX-internal probe, never a genuine
+// guest WOW64 VirtualQuery). loader_init's own build_ntdll_module does NOT
+// check that call's return status either (donor source, quoted HANDOFF
+// C4-42) -- it reads `meminfo.AllocationBase` regardless, which stayed at
+// its guest-stack zero-init value, feeding ecx=0 into alloc_module ->
+// RtlImageNtHeader(0) -> the NULL 'MZ' check AV C4-40 first named.
+// Donor-exact fix (wine/dlls/ntdll/unix/virtual.c:7249-7254): real Wine's
+// own unix NtQuerySystemInformation treats SystemEmulationBasicInformation
+// (62) as a PURE ALIAS of SystemBasicInformation (0), same struct, same
+// values -- `case SystemBasicInformation: case SystemEmulationBasicInformation:
+// ... return NtQuerySystemInformation(SystemBasicInformation, info, len, retlen);`.
+// Also fills the two fields this floor's writer never touched
+// (HighestUserAddress@0x28, the load-bearing one; LowestUserAddress@0x20,
+// same struct, donor-conventional 0x10000 null-page reservation) --
+// HighestUserAddress must be large enough to admit every real 32-bit guest
+// address (images/stack observed up to ~0x50030000 this boot); reuses
+// wow64.dll's OWN static pre-process_init default (0x7ffeffff,
+// syscall.c:40) -- the exact value a real Windows 32-bit process reports,
+// not a made-up constant.
+#define SBI_LOWUSERADDR_VALUE  0x10000ULL
+#define SBI_HIGHUSERADDR_VALUE 0x7ffeffffULL
 
 long NtQuerySystemInformation(unsigned long SystemInformationClass, void *SystemInformation,
                                unsigned long SystemInformationLength, unsigned long *ReturnLength) {
-    if (SystemInformationClass != 0 /* SystemBasicInformation */) return STATUS_NOT_IMPLEMENTED;
+    if (SystemInformationClass != 0 /* SystemBasicInformation */ &&
+        SystemInformationClass != 62 /* SystemEmulationBasicInformation -- donor alias, C4-42 */)
+        return STATUS_NOT_IMPLEMENTED;
     if (!SystemInformation) return STATUS_INVALID_PARAMETER;
     if (SystemInformationLength < SBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
 
@@ -1345,6 +1390,8 @@ long NtQuerySystemInformation(unsigned long SystemInformationClass, void *System
     for (int i = 0; i < SBI_SIZE; i++) out[i] = 0;
     wr32(out + SBI_PAGESIZE_OFF, (u32b)NT_PAGE_SIZE);
     wr32(out + SBI_NUMBEROFPHYSICALPAGES_OFF, NT_KUSER_NUM_PHYS_PAGES);
+    wr64(out + SBI_MINUSERADDR_OFF, SBI_LOWUSERADDR_VALUE);
+    wr64(out + SBI_MAXUSERADDR_OFF, SBI_HIGHUSERADDR_VALUE);
     out[SBI_NUMBEROFPROCESSORS_OFF] = 1;
 
     if (ReturnLength) *ReturnLength = SBI_SIZE;
