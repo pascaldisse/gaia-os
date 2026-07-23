@@ -300,6 +300,41 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
     puts("CHALICE ARENA: esr="); puthex(esr); puts(" ec="); puthex(ec);
     puts(" iss="); puthex(iss); puts(" elr="); puthex(elr);
     puts(" far="); puthex(far); puts("\n");
+    // CHALICE C4-38 measurement (no fix, diagnostic-only): decode DFSC/WnR,
+    // dump the actual L1 leaf descriptor covering `far` (TTBR0_EL1 walk,
+    // T0SZ=25 -> IA=39 bits -> L1 index = far[38:30], matches mmu_on()'s
+    // single-level 1GB block scheme, no L2/L3 involved for RAM), print
+    // MAIR_EL1 + the AttrIndx field's byte, and SCTLR_EL1.A (alignment
+    // check enable) -- ESR ec=0x25 iss=0x61 -> DFSC=iss&0x3f=0x21 which per
+    // ARM ARM D17.2.28 ESR_EL1 Data-Abort DFSC encoding is ALIGNMENT FAULT
+    // (0b100001), NOT a translation fault (those are 0b0001xx, DFSC 0x04-
+    // 0x07) -- C4-37's own framing of this as a translation-fault-vs-
+    // committed-memory gap was a misread of the ISS field; corrected here.
+    {
+        u64 dfsc = iss & 0x3f, wnr = (iss >> 6) & 1;
+        u64 ttbr0, mair, sctlr, l1idx, l1desc;
+        asm volatile("mrs %0, ttbr0_el1" : "=r"(ttbr0));
+        asm volatile("mrs %0, mair_el1"  : "=r"(mair));
+        asm volatile("mrs %0, sctlr_el1" : "=r"(sctlr));
+        l1idx = (far >> 30) & 0x1ff;
+        l1desc = *(volatile u64 *)((ttbr0 & ~0xfffULL) + l1idx * 8);
+        u64 attrindx = (l1desc >> 2) & 0x7;
+        u64 mair_byte = (mair >> (attrindx * 8)) & 0xff;
+        puts("CHALICE C4-38 ESR: dfsc="); puthex(dfsc);
+        puts(" wnr="); puthex(wnr);
+        puts(" (dfsc 0x21==ALIGNMENT FAULT per ARM ARM, not translation)\n");
+        puts("CHALICE C4-38 PTE: ttbr0="); puthex(ttbr0);
+        puts(" l1idx="); puthex(l1idx);
+        puts(" l1desc="); puthex(l1desc);
+        puts(" attrindx="); puthex(attrindx);
+        puts(" mair_el1="); puthex(mair);
+        puts(" mair_byte="); puthex(mair_byte);
+        puts(mair_byte == 0xff ? " (Normal WBWA)" : (mair_byte == 0x00 ? " (Device-nGnRnE)" : " (OTHER)"));
+        puts("\n");
+        puts("CHALICE C4-38 SCTLR: sctlr_el1="); puthex(sctlr);
+        puts(" A-bit(alignment-check-enable)="); puthex((sctlr >> 1) & 1);
+        puts("\n");
+    }
     nt_fault_region("elr", elr);
     nt_fault_region("far", far);
     if (ec != 0x24 && ec != 0x25) {

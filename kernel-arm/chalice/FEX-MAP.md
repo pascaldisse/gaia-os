@@ -1,5 +1,41 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-38 — MEASUREMENT ATOM, no fix. MONAD correction to C4-37: `esr=0x96000061` → `EC=0x25` (Data Abort, lower EL), `ISS=0x61`, **`DFSC=ISS&0x3f=0x21`**. Per ARM ARM D17.2.28 (ESR_EL1 Data-Abort ISS[5:0] DFSC encoding): `0b000000-0b000011`=address-size, `0b000100-0b000111`=translation fault, `0b001001-0b001011`=access-flag, `0b001101-0b001111`=permission, `0b100001`=**Alignment fault**. `0x21 = 0b100001` → ALIGNMENT FAULT, not translation (C4-37's "DFSC=0x21, translation-fault-level-1" line was a misread — corrected here).
+
+**Rival theories, measured**:
+- T1 (region's PTEs are Device memory, not Normal cacheable): REFUTED. Added a diagnostic-only TTBR0_EL1 walk + MAIR_EL1 decode to `sync_try_arena_demand_commit` (`kmain.c`, no control-flow change): `l1idx=(far>>30)&0x1ff` (T0SZ=25→IA=39 bits→L1-only block scheme, matches `mmu_on()`'s single-level identity map exactly, no L2/L3 involved for RAM), dereference `l1desc` directly off `ttbr0&~0xfff`, decode `attrindx=(l1desc>>2)&7`, look up that byte in `mair_el1`. Live receipt (`scratch/c4-38_pe10_fex.log`... see below): `l1desc=0x40000705 attrindx=1 mair_el1=0xFF00 mair_byte=0xFF` = **Normal, Outer/Inner Write-Back Non-transient, R/W-Allocate** — exactly `mmu_on()`'s own `l1_table[1]` RAM-block descriptor (`base|1<<2|3<<8|1<<10|1`, `far=0x5A060A8E` falls inside RAM block 0, `[0x40000000,0x80000000)`), NOT Device-nGnRnE (`mair_byte` would read `0x00`, `attrindx=0`, matching `l2_dev_table`'s own attribute instead). The page tables cover the address correctly as cacheable Normal memory — no drift between `NtAllocateVirtualMemory`'s committed-region bookkeeping and the actual mapping (C4-37's own candidate-next-atom framing is WRONG: there was never a missing PTE here, because this whole 0.75GB DLL-territory range is flat-identity-mapped by `mmu_on()`'s 1GB block descriptors at boot — `nt_territory_alloc`/`nt_vm_regions[]` are pure bump-allocator/bookkeeping over already-mapped memory, they never touch page tables at all).
+- SCTLR_EL1.A sub-theory of T2: REFUTED. Same diagnostic reads `sctlr_el1` live at fault time: `sctlr_el1=0xC5183D`, bit1 (`A`, alignment-check-enable) `= 0`. `mmu_on()` (`kmain.c`) only ever sets bits `M`(0)/`C`(2)/`I`(12) via read-modify-write; `A` was never set by this floor, and reads back 0 live — ordinary unaligned Normal-memory loads/stores are NOT alignment-checked here.
+- T2 (something else forces an alignment check): **CONFIRMED**. Disassembled the REAL host ARM64 instruction at `elr=0x2968DD634` — not the guest x86 code (that's `stock/i386-windows/ntdll.dll`'s own `memcpy`, already disasm'd in C4-37: `89 3c 0b movl %edi,(%ebx,%ecx)`), but FEXCore's JIT'd ARM64 translation of it, which is the thing that actually executes and faults. Reused the already-logged "CHALICE C4-30 ELR WINDOW @elr-32..+32" 16-word dump (`kmain.c`, pre-existing instrumentation, zero new code needed for this step): packed the 16 little-endian u32 words into a flat binary and ran `aarch64-elf-objdump -D -b binary -m aarch64 --adjust-vma=<elr-32>`:
+```
+2968dd614: add   w20, w9, #0xc
+2968dd618: ldar  w11, [x20]        ; ordered load, same x20 target 2 instrs before the store
+2968dd61c: nop
+2968dd620: add   w20, w11, w7
+2968dd624: ldar  w11, [x20]
+2968dd628: nop
+2968dd62c: add   w20, w6, w7
+2968dd630: nop
+2968dd634: stlr  w11, [x20]        ; <-- ELR, the FAULTING instruction: Store-Release
+2968dd638: mov   x11, x6
+2968dd63c: add   w7, w7, #0x4
+2968dd640: cmp   w4, w7
+2968dd644: b.ne  0x2968dd610       // loop back -- this IS the memcpy word-copy loop
+```
+`elr`'s instruction is **`stlr w11, [x20]`** — a Store-Release (ordered/atomic-release semantics). Per ARM ARM (Load-Acquire/Store-Release, and Load/Store-Exclusive instructions): **alignment checking for these is MANDATORY, performed regardless of `SCTLR_ELx.A`** — unlike plain `ldr`/`str`, which only alignment-fault when `SCTLR.A=1` (proven `=0` above). `x20` at the fault holds `far=0x5A060A8E` (`mod 4 == 2`, genuinely misaligned for a 4-byte access) — this is FEXCore's own JIT-compiled ARM64 code for the guest's word-copy `memcpy` loop, using `ldar`/`stlr` pairs (not plain `ldr`/`str`) on every iteration — almost certainly FEXCore's x86-TSO-on-weakly-ordered-ARM64 memory-model emulation, which conservatively promotes ordinary memory accesses to acquire/release pairs for correctness under concurrent/MP guest code. The guest's own access (`movl`, unlocked, non-atomic) never required any alignment on real x86; FEX's translation of it into `ldar`/`stlr` silently ADDS an alignment requirement the guest pointer was never guaranteed to satisfy.
+
+**Verdict: T2, producer = FEXCore's own JIT codegen** (the `ldar`/`stlr`-based lowering of ordinary x86 memory accesses inside its memcpy/word-copy translation), not any floor/kernel/mapping code. No PTE, MAIR, TCR, or SCTLR misconfiguration exists anywhere in this floor's own code for this address — confirmed by direct measurement, not inferred. **Not a one-liner floor-side attr fix** (the actual mechanism lives inside FEXCore's JIT, a vendored donor component, same category of out-of-floor-scope gap as C4-21's `EntryContext` handling and C4-31's `InvalidationTracker`) — per this atom's own instructions, **stopped at verdict, no fix applied**.
+
+**Live receipt** (`scratch/pe10_probe.py fex`, `/tmp/gaia-pe10-probe.log`):
+```
+CHALICE ARENA: esr=0x96000061 ec=0x25 iss=0x61 elr=0x2968DD634 far=0x5A060A8E
+CHALICE C4-38 ESR: dfsc=0x21 wnr=0x1 (dfsc 0x21==ALIGNMENT FAULT per ARM ARM, not translation)
+CHALICE C4-38 PTE: ttbr0=0x4022A000 l1idx=0x1 l1desc=0x40000705 attrindx=0x1 mair_el1=0xFF00 mair_byte=0xFF (Normal WBWA)
+CHALICE C4-38 SCTLR: sctlr_el1=0xC5183D A-bit(alignment-check-enable)=0x0
+```
+**Diff** (diagnostic-only, no control-flow change, `kmain.c`'s `sync_try_arena_demand_commit`): reads `ttbr0_el1`/`mair_el1`/`sctlr_el1`, walks the L1 leaf for `far`, decodes `AttrIndx`→MAIR byte, prints alongside the pre-existing ARENA/ESR trace lines.
+
+**Gates (all green, no regression)**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64` `ret=0`, `fex` `ret=0`) · `ramfb_gate.py` PASS 7/7 (`OK` all 4 corners + 3 bars). **Commit**: source-only `kmain.c` (diagnostic dump, `kernel-arm/zoneA/`). Live 2026-07-23.
+
 ## C4-37 — PEB32.ProcessParameters wired. Diff: `ntsvc.c` new `nt_wow64_build_params32` + `PEB32_PROCESSPARAMETERS_OFF`/`PARAMS32_*`/`US32_LENGTH_OFF`/`US32_MAXLENGTH_OFF` offset block, new `nt_wow64_get_peb32` getter; `ntboot.c` calls it once `wfull`/`wname` exist.
 
 **Struct layout, donor-confirmed** (`wine/include/winternl.h`): `_UNICODE_STRING32` (:673-678) `Length(u16)@0, MaximumLength(u16)@2, Buffer(u32)@4`. `_CURDIR32` (:705-708) `DosPath(UNICODE_STRING32)@0, Handle(u32)@8` (12B). `_PEB32` (:833-897) `ProcessParameters@0x10`. `_RTL_USER_PROCESS_PARAMETERS32` (:733-768): `AllocationSize@0,Size@4,Flags@8,DebugFlags@0xc,ConsoleHandle@0x10,ConsoleFlags@0x14,hStdInput@0x18,hStdOutput@0x1c,hStdError@0x20,CurrentDirectory@0x24(12B),DllPath@0x30(8B),ImagePathName@0x38(8B),CommandLine@0x40(8B),Environment@0x48(4B),dwX..wShowWindow@0x4c-0x6c,WindowTitle@0x70,Desktop@0x78,ShellInfo@0x80,RuntimeInfo@0x88(8B each),DLCurrentDirectory[0x20]@0x90(16B each=0x200),EnvironmentSize@0x290,EnvironmentVersion@0x294,PackageDependencyData@0x298,ProcessGroupId@0x29c,LoaderThreads@0x2a0`.
