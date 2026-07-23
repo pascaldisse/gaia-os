@@ -1,5 +1,48 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-40 — FIX APPLIED: `sync_try_guest_exception` (`kernel-arm/zoneA/kmain.c`) branch, exactly as C4-39's own recon named it:
+```c
+#define STATUS_DATATYPE_MISALIGNMENT 0x80000002U // wine/include/winnt.h:629
+#define ESR_DFSC_ALIGN_FAULT 0x21U
+...
+if ((ec == 0x24 || ec == 0x25) && (esr & 0x3f) == ESR_DFSC_ALIGN_FAULT) {
+    status = STATUS_DATATYPE_MISALIGNMENT;
+    params = 0;
+} else if (ec == 0x24 || ec == 0x25) {
+    status = STATUS_ACCESS_VIOLATION;
+    params = 2;
+} ...
+```
+Checked BEFORE the generic Data-Abort branch, mirroring donor `wine/dlls/ntdll/unix/signal_arm64.c` `segv_handler`'s own early-return `switch` order (`DFSC==ALIGN_FAULT` case sets `ExceptionCode` and calls `setup_raise_exception` directly, never reaching the `ExceptionInformation[0/1]=WnR/addr; NumberParameters=2;` lines a few lines further down in the SAME case — re-verified this atom against the live donor source, `signal_arm64.c:1123-1130`). `params=0` is therefore the DONOR-EXACT shape, not a simplification. Re-verified FEX's consumer, `BTCpuResetToConsistentStateImpl` (`FEX/Source/Windows/WOW64/Module.cpp:926`, live source, this atom): `if (Exception->ExceptionCode == EXCEPTION_DATATYPE_MISALIGNMENT && Context::HandleUnalignedAccess(TLS, Context)) return true;` — reads ONLY `ExceptionCode` for this branch (no `ExceptionInformation`/`NumberParameters` dependency), confirming the record-shape audit this atom's brief asked for needed no further change.
+
+**`pe10 fex` receipt** (`scratch/pe10_probe.py fex`, full transcript `chalice/scratch/c4-40_pe10_fex_receipt.log`, `3519` lines):
+
+Six alignment faults, all silently self-healed (zero `NtRaiseException` for any of them — grepped the entire transcript, confirmed):
+| # | esr | elr | far | wnr | status |
+|---|-----|-----|-----|-----|--------|
+| 1 | 0x96000061 | 0x2968DD634 | 0x5A060A8E | 1 | 0x80000002 (== C4-38/39's own named fault, byte-identical elr/far) |
+| 2 | 0x96000021 | 0x2968E2514 | 0x5A060A4E | 0 | 0x80000002 |
+| 3 | 0x96000061 | 0x2968E2524 | 0x488CB716 | 1 | 0x80000002 |
+| 4 | 0x96000021 | 0x2968DD624 | 0x486F9851 | 0 | 0x80000002 |
+| 5 | 0x96000061 | 0x2968ECE6C | 0x488CBA83 | 1 | 0x80000002 |
+| 6 | 0x96000061 | 0x2968F88A0 | 0x488CBA81 | 1 | 0x80000002 |
+
+Between each pair, real guest syscall activity happens (`NtOpenFile` etc, not a tight loop) — the memcpy loop genuinely runs forward through repeated backpatch-and-retry, exactly the mechanism `Module.cpp:926`/`Arm64.cpp:1924` implements. Guest then reaches REAL ntdll32 loader code for the first time in this project: `NtSetInformationThread(ThreadWow64Context, eip=0x486DE0A0)` — the same `LdrInitializeThunk` RVA C4-36 first resolved — with live forward progress confirmed by a matching `NtQueryInformationThread` readback (no stale-boot-seed artifact at this point, unlike the C4-25/35 identity).
+
+**New frontier (7th fault, NAMED not chased)**: `esr=0x96000006` `ec=0x25` `DFSC=0x06` (Translation fault level 2, ARM ARM D17.2.28 — genuinely not alignment; our new branch correctly falls through to the pre-existing `STATUS_ACCESS_VIOLATION` path, no regression), `far=0x0` (NULL pointer), `elr=0x2968EBC24` (same 16MB JIT reserve-commit-arena code-cache region as the six alignment sites, different offset). Disassembled (`aarch64-elf-objdump -D -b binary -m aarch64` on the live `elr-32..+32` window, transcript line 3492):
+```
+mov   w20, #0x5a4d      // 'MZ', IMAGE_DOS_SIGNATURE
+ldarh w21, [x4]         // <- ELR; faults, x4==far==0x0
+lsl   w0, w21, #16
+cmp   w0, w20, lsl #16
+b.ne  ...
+```
+**Named**: a JIT-compiled guest x86 `IMAGE_DOS_HEADER.e_magic`(`'MZ'`) validity check executed against a NULL module base, inside real `LdrInitializeThunk` loader code (first time reached, per the `eip=0x486DE0A0` progress immediately before it) — a DIFFERENT bug class from C4-37/38/39/40 (no TSO/alignment involved, a genuine translation fault on a literal null pointer; same DFSC family as C4-28/29's `RtlImageNtHeader(NULL)` gap, but a NEW, not-yet-identified call site: `x4`, reached from inside real loader code, not `_init_user_process_params`). Exact x86 RVA/source call site NOT resolved this atom — would require mapping a JIT code-cache address back to guest RVA via FEX's own translation-block metadata (`map-fex-offsets.sh` only resolves STATIC image/library addresses, not JIT'd guest code; out of this atom's scope). **STOPPED HERE per instruction, no further chase.**
+
+The resulting AV IS delivered end-to-end as a real guest exception this time (first time any of C4-18 through C4-31's architectural gaps produced a genuinely guest-driven termination rather than a kernel/FEX-internal marker): `NtSetInformationThread(eip=0x486BB34E)` → `NtRaiseException code=0xC0000005 addr=syswow64/ntdll.dll+0x2B34E` → `FirstChance=FALSE (second-chance, unhandled) -- terminating` → `pe10 ret=3221225477` (`0xC0000005`). **NOT `ret=42`** — no 32-bit/64-bit transition proof this atom.
+
+**Gates, no regression (pre-boot)**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64`/`fex`, both `ret=0`) · `ramfb_gate.py` PASS 7/7. **Commit**: source-only, `kmain.c` (one new classification branch + two `#define`s, `sync_try_guest_exception`). Live 2026-07-23.
+
 ## C4-39 — MEASUREMENT+RECON, no fix. Road 1: `FEX_TSOENABLED=0` (env, appended to `ntboot.c`'s existing `FEX_SILENTLOG=0` double-NUL block) — config key `FEX_CONFIG_OPT(TSOEnabled, TSOENABLED)` (`FEX/Source/Windows/Common/TSOHandlerConfig.h:39`), env-var name `FEX_TSOENABLED` (`FEX/Source/Common/Config.cpp` `EnvLoader::Load`: `GetVar(EnvMap, "FEX_" #enum)`), delivered via `BTCpuProcessInit` (`Module.cpp:514`) `FEX::Config::LoadConfig(name, _environ, ...)`. `IsMemcpyAtomicTSOEnabled() = Config.TSOEnabled && Config.MemcpySetTSOEnabled` (`Context.h:364`) — `TSOEnabled=0` alone suffices.
 
 **Receipt** (`scratch/pe10_probe.py fex`, `/tmp/gaia-pe10-probe.log`, this pass):
