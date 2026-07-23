@@ -1,5 +1,46 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-37 — PEB32.ProcessParameters wired. Diff: `ntsvc.c` new `nt_wow64_build_params32` + `PEB32_PROCESSPARAMETERS_OFF`/`PARAMS32_*`/`US32_LENGTH_OFF`/`US32_MAXLENGTH_OFF` offset block, new `nt_wow64_get_peb32` getter; `ntboot.c` calls it once `wfull`/`wname` exist.
+
+**Struct layout, donor-confirmed** (`wine/include/winternl.h`): `_UNICODE_STRING32` (:673-678) `Length(u16)@0, MaximumLength(u16)@2, Buffer(u32)@4`. `_CURDIR32` (:705-708) `DosPath(UNICODE_STRING32)@0, Handle(u32)@8` (12B). `_PEB32` (:833-897) `ProcessParameters@0x10`. `_RTL_USER_PROCESS_PARAMETERS32` (:733-768): `AllocationSize@0,Size@4,Flags@8,DebugFlags@0xc,ConsoleHandle@0x10,ConsoleFlags@0x14,hStdInput@0x18,hStdOutput@0x1c,hStdError@0x20,CurrentDirectory@0x24(12B),DllPath@0x30(8B),ImagePathName@0x38(8B),CommandLine@0x40(8B),Environment@0x48(4B),dwX..wShowWindow@0x4c-0x6c,WindowTitle@0x70,Desktop@0x78,ShellInfo@0x80,RuntimeInfo@0x88(8B each),DLCurrentDirectory[0x20]@0x90(16B each=0x200),EnvironmentSize@0x290,EnvironmentVersion@0x294,PackageDependencyData@0x298,ProcessGroupId@0x29c,LoaderThreads@0x2a0`.
+
+**Live disasm cross-check** (`stock/i386-windows/ntdll.dll`, ImageBase `0x7BC00000`, `_init_user_process_params` RVA `0x1E8F0-0x1EA30`, `llvm-objdump`): `movl fs:0x18,%eax; movl 0x30(%eax),%eax; movl 0x10(%eax),%ebx` = TEB32→PEB32→ProcessParameters (`%ebx`, our struct). Then:
+```
+7bc1e914: movl 0x290(%ebx),%esi      ; EnvironmentSize -- THE C4-36 FAULT SITE (far=0x290 byte-exact)
+7bc1e944-953: pushl %esi / pushl 0x48(%ebx) / calll memcpy   ; Environment ptr, ONLY if esi(EnvironmentSize)!=0
+7bc1e958-984: leal 0x88/0x80/0x78/0x70/0x40/0x24/0x30(%ebx),%e**  ; RuntimeInfo/ShellInfo/Desktop/WindowTitle/CommandLine/CurrentDirectory/DllPath
+              ecx=1 (flags), edx=&ebx+0x38 (ImagePathName)         ; fastcall args 1/2
+              calll _alloc_process_params                          ; RtlCreateProcessParametersEx-shaped internal helper
+7bc1e9f3-9f9: movl 0x29c(%ebx),%eax; movl %eax,0x29c(%esi)         ; ProcessGroupId copy -- cross-check anchor
+7bc1ea08: movl %esi,0x10(%eax)      ; PEB32->ProcessParameters = newly-built copy
+7bc1ea1f-a2a: calll RtlSetCurrentDirectory_U(&new_params+0x24)     ; validates the copied CurrentDirectory
+```
+Confirms the wine header's field order byte-for-byte (`0x290`/`0x29c` both independently verified live). `_alloc_process_params`'s UNICODE_STRING32 args are copied BY VALUE (safe zeroed when `Length==0`, standard Rtl idiom) EXCEPT `CurrentDirectory` — `RtlSetCurrentDirectory_U` (called right after, C4-28 scar law) and the native-side `get_full_path_helper` (C4-28) both deref `DosPath.Buffer` unconditionally.
+
+**Fix**: real `"C:\\"` for `CurrentDirectory`/`DllPath` (heap-backed, see self-bug below); `ImagePathName`/`CommandLine` reuse the 64-bit `wfull`/`wname` buffers verbatim (same address space, C4-35); rest zeroed.
+
+**Live self-bug, same pass**: first version stored `"C:\\"` in `static const unsigned short curdir_w[3]` (kernel `.rodata`). `pe10 fex` faulted inside `memcpy` (`stock/i386-windows/ntdll.dll` RVA `0x4E260-0x4E4xx`) reading `far=0x402204F6`; `llvm-nm gaia-os.elf` → `00000000402204f6 r nt_wow64_build_params32.curdir_w` (exact match). Root cause: kernel `.rodata` pages are EL1-only, not mapped into the FEX-JIT/guest execution context — unlike `mem.c`'s `HEAP_BASE 0x41000000` heap (proven guest-accessible by every other wide buffer this codebase already uses, e.g. `ntboot.c`'s `wcurdir`/`wname`/`wfull`/`wenv`). Fixed: `nt_zalloc`-backed `curdir_w` (4 x `u16`, `'C',':','\\',0`, matching `MaximumLength=8`).
+
+**pe10 fex transcript, post-fixup** (`scratch/c4-37_pe10_fex_v2.log`):
+```
+CHALICE ARENA: esr=0x96000061 ec=0x25 iss=0x61 elr=0x2968DD634 far=0x5A060A8E
+CHALICE REGION far=0x5A060A8E -> vm-region base=0x5A060000 size=0x10000
+CHALICE ARENA: refused not-arena
+CHALICE C4-30 ORIGINAL FAULT: ... status=0xC0000005 elr=0x2968DD634 far=0x5A060A8E wnr=1
+CHALICE: NtRaiseException code=0xC0000005 addr=0x486DE478 (syswow64/ntdll.dll+0x4E478)
+CHALICE: NtRaiseException FirstChance=FALSE (second-chance, unhandled) -- terminating
+pe10 ret=3221225477
+```
+The C4-36 fault site (`0x1E914`) is CONFIRMED GONE (grepped the transcript — zero hits). New fault RVA `0x4E478` — 3 bytes past the `0x4E475` memcpy-source-read this pass's own fixup repaired — is `memcpy`'s destination-write instruction (`89 3c 0b movl %edi,(%ebx,%ecx)`, disasm below), `wnr=1`, `far=0x5A060A8E`, inside a region this SAME transcript shows really going through `NtAllocateVirtualMemory(MEM_RESERVE)`→`NtAllocateVirtualMemory(MEM_COMMIT)` (both `AVM` lines present, `status=0` both) yet still taking a translation fault (`DFSC=0x21`, not a permission fault) on write. **Named, not chased** (out of this atom's scope: `PEB32.ProcessParameters` itself proven correctly wired by the fault moving past its own site) — candidate next atom: audit whether the 0.75GB identity-mapped territory (`0x45000000→0x7ff00000`) is fully covered by real L1/L2 descriptors at boot, or whether ranges like `0x5A060000` need the ARENA demand-pager's own coverage extended (currently `refused not-arena` for this address).
+```
+7bc4e470: movl %edi,%ebx
+7bc4e472: movl 0xc(%ebp),%edi
+7bc4e475: movl (%edi,%ecx),%edi   ; source read -- FIXED this pass (was misdirected at kernel .rodata)
+7bc4e478: movl %edi,(%ebx,%ecx)  ; dest write -- NEW fault site, far=0x5A060A8E
+```
+
+**Gates (all green, no regression)**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64` `ret=0`, `fex` `ret=0`) · `ramfb_gate.py` PASS 7/7. **Commits**: `9f872fa` (PEB32.ProcessParameters wiring), `5082e8f` (heap-backed `curdir_w` fixup). Both source-only (`kernel-arm/zoneA/`). Live 2026-07-23.
+
 ## C4-36 — FIX + downstream receipt. Diff: `pemod.c`'s `pe_find_named_export`:
 ```c
     u16b magic = rd16(opt + OPT_MAGIC);
