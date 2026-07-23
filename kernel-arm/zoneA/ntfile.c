@@ -1220,6 +1220,97 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
     puts("CHALICE C4-46: BTCpuNotifyMapViewOfSection name="); puts(name);
     puts(" base="); puthex(base); puts(" size="); puthex(size);
     puts(" rc="); puthex((u64b)rc); puts("\n");
+
+    // =====================================================================
+    // CHALICE C4-52 decisive experiment: call
+    // FEX::Windows::InvalidationTracker::HandleImageMap DIRECTLY, bypassing
+    // BTCpuNotifyMapViewOfSection's own wrapper/catch entirely (C4-51's sole
+    // surviving candidate: a C++ exception thrown inside the section-walk,
+    // silently swallowed by the wrapper's own landing pad, `rc=0` hardcoded
+    // regardless). Only for kernelbase.dll, once.
+    //
+    // Signature/ABI verified THIS atom by disassembling the REAL blob
+    // (objdump -d kernel-arm/chalice/stock/wow64-chain/libwow64fex.dll --
+    // NOT the vendored source, NOT inferred): symbol
+    // `_ZN3FEX7Windows19InvalidationTracker14HandleImageMapE...` sits at VMA
+    // 0x180169b10 (C4-50's own quoted COFF-symtab RVA `0x168b10` is the RAW
+    // symtab value; per C4-50's own toolchain note VMA=ImageBase+0x1000+
+    // symtab -- 0x180001000+0x168b10=0x180169b10, same address, just the
+    // section-relative RVA differs: 0x169b10). Prologue:
+    //   `mov x20,x0`        -- x0 = `this` (InvalidationTracker*)
+    //   `mov x0,x3; mov x19,x3` -- x3 = `Address` (4th/last arg)
+    //   `stp x1,x2,[sp]`    -- x1/x2 = name string_view {ptr,len}
+    // i.e. `HandleImageMap(this=x0, name_ptr=x1, name_len=x2, Address=x3)`
+    // -- confirms C4-50's own citation (4-arg shape matching vendored
+    // `Common/InvalidationTracker.cpp`'s signature) byte-for-byte.
+    //
+    // Mutex: the ONLY lock HandleImageMap itself takes is a shared_mutex at
+    // `this+0x30` (disasm-confirmed: the loop's lock/unlock call sites both
+    // compute `x23 = x20(this)+0x30` and pass x23 as the shared_mutex
+    // `this` to `__shared_mutex_base::lock/unlock`) -- acquired/released
+    // INTERNALLY, once per executable section, entirely inside the
+    // function body. We do NOT pre-acquire it ourselves: single-threaded
+    // boot, no concurrent caller, and HandleImageMap's own lock/unlock
+    // pair is self-contained (matches the ACTUAL BTCpuNotifyMapViewOfSection
+    // wrapper's own behavior, which likewise never touches this specific
+    // mutex itself -- only its OWN separate global mutex at 0x18034c398,
+    // a different, outer lock guarding the whole notify call, orthogonal to
+    // this one).
+    //
+    // `this` (InvalidationTracker instance) = fex_base+0x34c430, the SAME
+    // fixed global object C4-49/50/51's own XIntervals dumper reads and
+    // C4-51 proved is the ONE AND ONLY container the decode-time
+    // executable-range query consults -- no "wrong tank" possibility.
+    static int c452_fired;
+    if (!c452_fired && nt_streq_ci(name, "syswow64/kernelbase.dll")) {
+        c452_fired = 1;
+        u64b fex_base = 0, fex_size = 0;
+        if (nt_image_base_by_name("libwow64fex.dll", &fex_base, &fex_size)) {
+            u64b ivt_this = fex_base + 0x34c430;         // InvalidationTracker global
+            u64b handle_image_map = fex_base + 0x169b10; // real section-RVA, disasm-verified
+            static const char c452_name[] = "kernelbase.dll"; // Name unused by any gate
+                                                              // in this fn per C4-49 source
+                                                              // read (MonoHacks-only use) --
+                                                              // any valid string is safe.
+            puts("CHALICE C4-52: direct HandleImageMap call this="); puthex(ivt_this);
+            puts(" fn="); puthex(handle_image_map); puts(" Address="); puthex(base); puts("\n");
+            long hrc = pe_enter6(
+                (long (*)(void *, void *, void *, unsigned long, unsigned long, unsigned long))
+                    handle_image_map,
+                (void *)teb, (void *)ivt_this, (void *)c452_name,
+                (void *)(u64b)(sizeof(c452_name) - 1), base, 0, 0);
+            puts("CHALICE C4-52: direct HandleImageMap RETURNED rc="); puthex((u64b)hrc); puts("\n");
+
+            // Immediate post-call dump of XIntervals (same read formula as
+            // kmain.c's own C4-49 dumper) -- did THIS call succeed where
+            // the wrapper-routed one (above) didn't?
+            u32b b_lo = 0, b_hi = 0, e_lo = 0, e_hi = 0;
+            if (nt_fault_read32(ivt_this + 0, &b_lo) && nt_fault_read32(ivt_this + 4, &b_hi) &&
+                nt_fault_read32(ivt_this + 8, &e_lo) && nt_fault_read32(ivt_this + 12, &e_hi)) {
+                u64b xbeg = ((u64b)b_hi << 32) | b_lo;
+                u64b xend = ((u64b)e_hi << 32) | e_lo;
+                u64b n = (xend >= xbeg && xbeg) ? (xend - xbeg) / 16 : 0;
+                puts("CHALICE C4-52 post-call XIntervals begin="); puthex(xbeg);
+                puts(" end="); puthex(xend); puts(" count="); puthex(n); puts("\n");
+                int enclosed = 0;
+                for (u64b i = 0; i < n && i < 64; i++) {
+                    u32b o_lo = 0, o_hi = 0, d_lo = 0, d_hi = 0;
+                    u64b ep = xbeg + i * 16;
+                    if (nt_fault_read32(ep + 0, &o_lo) && nt_fault_read32(ep + 4, &o_hi) &&
+                        nt_fault_read32(ep + 8, &d_lo) && nt_fault_read32(ep + 12, &d_hi)) {
+                        u64b off = ((u64b)o_hi << 32) | o_lo;
+                        u64b end = ((u64b)d_hi << 32) | d_lo;
+                        if (base >= off && base < end) enclosed = 1;
+                    }
+                }
+                puts("CHALICE C4-52 post-call kernelbase_base_enclosed="); puthex((u64b)enclosed); puts("\n");
+            } else {
+                puts("CHALICE C4-52 post-call XIntervals unreadable\n");
+            }
+        } else {
+            puts("CHALICE C4-52: libwow64fex.dll base not found, skipping direct call\n");
+        }
+    }
 }
 
 // =====================================================================
