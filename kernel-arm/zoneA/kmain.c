@@ -750,7 +750,7 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     {
         static int c450_dumped;
         if (!c450_dumped) {
-            const char *names[2] = {"kernel32.dll", "kernelbase.dll"};
+            const char *names[2] = {"syswow64/kernel32.dll", "syswow64/kernelbase.dll"};
             int any = 0;
             for (int di = 0; di < 2; di++) {
                 u64 dbase = 0, dsize = 0;
