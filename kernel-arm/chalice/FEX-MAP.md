@@ -1,5 +1,67 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-42 — FIX APPLIED, FRONTIER MOVED: named + fixed the zero field C4-41 pinned but couldn't source. Chain confirmed byte-for-byte against `stock/i386-windows/ntdll.dll` (`i686-w64-mingw32-objdump -d`, ImageBase `0x7bc00000`) + vendored `wine/dlls/ntdll/loader.c`:
+
+```
+7bc2ee90 <_alloc_module>:
+7bc2eea1: call 7bc2b310 <_RtlImageNtHeader@4>   ; ecx(hModule) passed straight through
+7bc2eea6: mov %eax,%esi                          ; <- retaddr, matches live caller=+0x2EEA6 exactly
+```
+`alloc_module(HMODULE hModule, ...)`'s first fastcall arg (`ecx`) feeds `RtlImageNtHeader(hModule)` directly (donor `loader.c:1531-1537`). Its own caller, disasm-confirmed at `syswow64/ntdll.dll+0x2BB06` (matches C4-41's live retaddr byte-for-byte):
+```
+7bc2bacc: xor %esi,%esi          ; <- build_ntdll_module's own body starts here (reached via a
+                                  ;    backward jmp from build_main_module's success path, +0x2c14b)
+7bc2badb..bb01:
+  push $0x0            ; ReturnLength=NULL
+  push $0x1c           ; MemoryInformationLength=sizeof(MEMORY_BASIC_INFORMATION32)
+  lea -0xd4(%ebp),%eax; push %eax   ; &meminfo
+  push $0x0            ; MemoryBasicInformation
+  push $0x7bc4e0a0     ; <-- LdrInitializeThunk's OWN address (symbol-confirmed below)
+  push $0xffffffff     ; NtCurrentProcess()
+  call NtQueryVirtualMemory@24
+7bc2baf4: mov -0xd0(%ebp),%ebx   ; ebx = meminfo.AllocationBase (offset+4, MBI32 layout)
+7bc2bafd: mov %ebx,%ecx         ; ecx(hModule arg to alloc_module) = AllocationBase
+7bc2bb01: call 7bc2ee90 <_alloc_module>
+7bc2bb06: <- retaddr, matches live alloc_module's-own-retaddr=+0x2BB06 exactly
+```
+`push $0x7bc4e0a0` confirmed via symbol lookup to be `_LdrInitializeThunk@16`'s own address exactly. This is `build_ntdll_module()` (donor `loader.c:2312-2325`, confirmed identical: `NtQueryVirtualMemory(GetCurrentProcess(), LdrInitializeThunk, MemoryBasicInformation, &meminfo, sizeof(meminfo), NULL); module = meminfo.AllocationBase; wm = alloc_module(module, &nt_name, TRUE);`) — INLINED into `loader_init` by the compiler (no separate symbol), reached unconditionally right after `build_main_module()` succeeds (donor `loader.c:4489-4490`: `wm = build_main_module(); build_ntdll_module();` — confirmed via the `je 7bc2c13c` (build_main_module success) → `jmp 7bc2bace` (build_ntdll_module body) jump pair, disasm-traced).
+
+**Root cause, one level earlier than C4-41's own MBI32-shaping hypothesis**: grepped C4-41's own 3542-line receipt for `BaseAddress==LdrInitializeThunk (0x486DE0A0)` in ANY of the 61 `NtQueryVirtualMemory ENTRY` lines — **zero matches, in any shape** (neither the raw 32-bit `0x1c` length nor a WOW64-thunked native `0x30` length). The genuine guest call, disasm-proven above to execute unconditionally, never reaches this floor's C `NtQueryVirtualMemory` at all. Traced why: `wow64.dll` here is a REAL, vendored, PE32+ AArch64 binary (`stock/wow64-chain/wow64.dll`) executing as genuine host-native code (not FEX-internal) — its exported `Wow64SystemServiceEx` (`wine/dlls/wow64/syscall.c:1202`, called by FEX's `WowSyscallHandler::HandleSyscallImpl`, `FEX/Source/Windows/WOW64/Module.cpp:449`) dispatches guest syscall id 35 (`NtQueryVirtualMemory`, `wine-arm64-syscalls.txt:27`, confirmed matching this floor's own `NT_SVC_NTQUERYVIRTUALMEMORY=35`, `ntids.h:50` — the syscall NUMBER mapping is correct, ruling out a table-index mismatch) to `wow64_NtQueryVirtualMemory` (`wine/dlls/wow64/virtual.c:568-604`). That thunk gates `MemoryBasicInformation` queries on `(ULONG_PTR)addr > highest_user_address` (`virtual.c:585`) BEFORE ever calling the native `NtQueryVirtualMemory` this floor implements — an early `STATUS_INVALID_PARAMETER` return with the caller's buffer never touched.
+
+`highest_user_address` (`wow64.dll`'s own global, `syscall.c:40`, static default `0x7ffeffff`) is (re)populated exactly once, in `wow64.dll`'s own `process_init` (`syscall.c:996-997`):
+```c
+NtQuerySystemInformation( SystemEmulationBasicInformation, &info, sizeof(info), NULL );
+highest_user_address = (ULONG_PTR)info.HighestUserAddress;   // NO status check
+```
+This floor's `NtQuerySystemInformation` (`kernel-arm/zoneA/ntsvc.c`) hard-rejected every class except `0` (`SystemBasicInformation`) — `SystemEmulationBasicInformation` is class `62` (`wine/include/winternl.h:2094`) — returning `STATUS_NOT_IMPLEMENTED` and leaving `info` untouched (host stack, effectively zero at this point in `wow64.dll`'s own init). `highest_user_address` therefore collapsed toward `~0`, and `(ULONG_PTR)addr > highest_user_address` is TRUE for essentially every real 32-bit guest address ever queried afterward — silently starving EVERY WOW64 `NtQueryVirtualMemory(MemoryBasicInformation)` guest call this boot, including `build_ntdll_module`'s own (which, per the donor source quoted above, never checks the call's return status either) — `meminfo.AllocationBase` stays at its guest-stack zero-init value, feeding `ecx=0` into `alloc_module` → `RtlImageNtHeader(0)` → the exact NULL `'MZ'`-check AV C4-40/C4-41 pinned.
+
+**Fix, donor-exact** (`wine/dlls/ntdll/unix/virtual.c:7249-7254` — real Wine's own unix-side `NtQuerySystemInformation` treats `SystemEmulationBasicInformation`(62) as a PURE ALIAS of `SystemBasicInformation`(0): `case SystemBasicInformation: case SystemEmulationBasicInformation: ... return NtQuerySystemInformation( SystemBasicInformation, info, len, retlen );`): accept class `62` as class `0` in this floor's `NtQuerySystemInformation`. Also discovered + fixed, same struct writer: `HighestUserAddress@0x28` and `LowestUserAddress@0x20` (`SYSTEM_BASIC_INFORMATION`, `winternl.h:2860-2872`) were NEVER written even for the already-accepted class `0` (buffer zeroed, only `PageSize`/`NumberOfPhysicalPages`/`NumberOfProcessors` filled) — filled `HighestUserAddress=0x7ffeffff` (`wow64.dll`'s own static pre-`process_init` default, the exact value a real Windows 32-bit process reports — not a made-up constant) and `LowestUserAddress=0x10000` (donor-conventional null-page reservation).
+
+Build/gate clean: `pe8` ret=78, `pe9` both backends ret=0, `ramfb` 7/7. Commit `4789ee0` (source-only, `ntsvc.c`).
+
+`pe10 fex` re-run (`scratch/pe10_probe.py fex`, transcript `/tmp/gaia-pe10-probe.log`, 3745 lines, archived `chalice/scratch/c4-42_pe10_fex_receipt.log`): **the fix engages exactly as diagnosed**:
+```
+CHALICE: NtQueryVirtualMemory ENTRY base=0x486DE0A0 class=0x0 buf=0x4116B390 len=0x30
+CHALICE: NtQueryVirtualMemory addr=0x486DE0A0 branch=image allocbase=0x48690000 regionsize=0x1DEF60 state=0x1000 type=0x1000000
+```
+`build_ntdll_module`'s own call now reaches this floor's native implementation for the first time and answers correctly (`allocbase=0x48690000`, ntdll32's real base). The C4-40/41 terminal fault (`RtlImageNtHeader(NULL)` at `ntdll+0x2B34E`) is **GONE — 0 occurrences** in the new transcript (was the ONLY/terminal fault in C4-40/41).
+
+**NEW, DIFFERENT, FURTHER-FORWARD frontier** (named, NOT chased, per instruction — a genuinely different field/struct from anything this atom touched): boot now runs measurably deeper (past `build_ntdll_module`, into real `kernel32.dll`/`load_dll`-era loader code) before terminating:
+```
+CHALICE: NtRaiseException code=0xC0000005 addr=syswow64/ntdll.dll+0xFF05
+CHALICE: NtRaiseException FirstChance=FALSE (second-chance, unhandled) -- terminating
+pe10 ret=3221225477
+```
+Disasm (`i686-w64-mingw32-objdump`, `stock/i386-windows/ntdll.dll+0xFF05`, near `_RtlFindActivationContextSectionString@20`):
+```
+7bc0fef9: mov %fs:0x18,%eax        ; TEB
+7bc0feff: mov 0x1a8(%eax),%eax     ; TEB32.ActivationContextStackPointer
+7bc0ff05: mov (%eax),%eax          ; <- FAULTS: dereferences a NULL ActivationContextStackPointer
+```
+`0x1a8` matches `ACTIVATION_CONTEXT_STACK *ActivationContextStackPointer` in the 32-bit `_TEB32` layout byte-exact (`wine/include/winternl.h:1087`, `/* 01a8 */` comment in the donor struct itself). This floor's TEB32 builder (C4-29/C4-37) has only ever wired `ImageBaseAddress`/`ProcessParameters` on the PEB32 side — `ActivationContextStackPointer` on the TEB32 side is a DIFFERENT struct, DIFFERENT field, never touched by any prior atom. Candidate next atom: wire a real (or donor-correct empty-sentinel) `ACTIVATION_CONTEXT_STACK` and point `TEB32.ActivationContextStackPointer@0x1a8` at it — NOT chased this atom (out of scope, per instruction: name + stop on a new fault).
+
+**Gates, no regression**: `pe8_gate.py` `ret=78` PASS · `pe9_gate.py` PASS both backends (`wowbox64`/`fex`, both `ret=0`) · `ramfb_gate.py` PASS 7/7 (4 corners + 3 bars).
+
 ## C4-41 — HYPOTHESIS TESTED, DISPROVEN: resumed C4-40's 7th-fault frontier (`RtlImageNtHeader(NULL)` at `syswow64/ntdll.dll+0x2B34E`). Implemented WOW64 `MEMORY_BASIC_INFORMATION32` shaping in `NtQueryVirtualMemory` (`kernel-arm/zoneA/ntfile.c`, gated on `nt_wow64_get_peb32()!=0 && MemoryInformationLength < 0x30`) plus a one-shot `NtSetInformationThread` diagnostic (`ntsvc.c`) that traps `eip==ntdll32+0x2B34E` and dumps `Eax`/`Ebp`/guest-stack `[ebp+4]`(retaddr)/`[ebp+8]`(arg0), plus one more frame up to `alloc_module`'s own caller.
 
 Build/gate clean: `pe8` ret=78, `pe9` both backends ret=0, `ramfb` 7/7. Commit `775c513` (source-only, `ntfile.c`+`ntsvc.c`).
