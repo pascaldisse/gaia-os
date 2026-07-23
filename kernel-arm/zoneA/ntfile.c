@@ -1270,6 +1270,29 @@ long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned lo
 #define MBI_PROTECT_OFF        0x24
 #define MBI_TYPE_OFF           0x28
 
+// CHALICE C4-41: WOW64 32-bit callers (e.g. syswow64/ntdll.dll's
+// loader_init -> NtQueryVirtualMemory(-1, LdrInitializeThunk,
+// MemoryBasicInformation, buf, 0x1c, NULL), disasm-confirmed this atom)
+// pass MEMORY_BASIC_INFORMATION32 (wine/include/winternl.h: seven
+// consecutive 4-byte fields, NO padding -- unlike the 64-bit struct's
+// 8-align pads) and Length==0x1c(28), not 0x30(48). Our old fixed
+// MBI_SIZE/wr64 write shape rejected every WOW64 caller with
+// STATUS_INFO_LENGTH_MISMATCH and NEVER touched the buffer; loader_init
+// does not check the return status, reads AllocationBase out of
+// (uninitialized-zero) stack memory regardless -- feeding a NULL module
+// base into alloc_module -> RtlImageNtHeader(NULL) -> the 7th-fault NULL
+// 'MZ' check C4-40 named. Fix: detect WOW64 (nt_wow64_get_peb32() != 0,
+// set once at process boot in ntboot.c before loader_init ever runs) and
+// serve the donor-exact 28-byte 32-bit layout/size instead.
+#define MBI32_SIZE               0x1c
+#define MBI32_BASEADDRESS_OFF    0x00
+#define MBI32_ALLOCATIONBASE_OFF 0x04
+#define MBI32_ALLOCPROTECT_OFF   0x08
+#define MBI32_REGIONSIZE_OFF     0x0C
+#define MBI32_STATE_OFF          0x10
+#define MBI32_PROTECT_OFF        0x14
+#define MBI32_TYPE_OFF           0x18
+
 long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long MemoryInformationClass,
                            void *MemoryInformation, unsigned long MemoryInformationLength,
                            unsigned long *ReturnLength) {
@@ -1286,10 +1309,36 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
     }
     if (MemoryInformationClass != 0 /* MemoryBasicInformation */) return STATUS_INVALID_INFO_CLASS;
     if (!MemoryInformation) return STATUS_INVALID_PARAMETER;
-    if (MemoryInformationLength < MBI_SIZE) return STATUS_INFO_LENGTH_MISMATCH;
+    // CHALICE C4-41 (2nd pass): nt_wow64_get_peb32()!=0 is a PROCESS-wide
+    // "this process is running a wow64 32-bit thread" flag (set once at
+    // process boot, ntboot.c), NOT a per-call bitness tag -- ntboot.c's OWN
+    // internal build_ntdll_module-mirroring probe (nt_boot_process,
+    // "CHALICE PROBE") calls this SAME NtQueryVirtualMemory directly
+    // (ProcessHandle=0 sentinel, host-side helper, not a guest syscall)
+    // with a real 0x30-byte 64-bit buffer even while wow64 is already wired
+    // for an earlier-booted module -- gating on the flag alone regressed
+    // that caller into a 20-byte OOB-adjacent host stack fault (elr landed
+    // in pe_find_named_export with a garbage module-base arg, this atom's
+    // receipt). The actual, donor-accurate discriminator NT itself uses is
+    // the CALLER's OWN buffer size (32-bit callers allocate exactly
+    // sizeof(MEMORY_BASIC_INFORMATION32)==0x1c on their stack, disasm-
+    // confirmed this atom; this host-side probe deliberately over-allocates
+    // 0x30) -- so use32 only when wow64 AND the caller didn't pass a full
+    // 64-bit-sized buffer.
+    int wow64 = nt_wow64_get_peb32() != 0;
+    int use32 = wow64 && MemoryInformationLength < MBI_SIZE;
+    u64b mbi_min = use32 ? MBI32_SIZE : MBI_SIZE;
+    if (MemoryInformationLength < mbi_min) return STATUS_INFO_LENGTH_MISMATCH;
 
-    u8 *out = (u8 *)MemoryInformation;
-    for (int i = 0; i < MBI_SIZE; i++) out[i] = 0;
+    // CHALICE C4-41: all branches below still write the 64-bit MBI_* shape
+    // (single source of truth for field VALUES) into a local staging
+    // buffer, NEVER directly into the caller's `out` -- a WOW64 caller's
+    // buffer is only guaranteed MBI32_SIZE(0x1c) bytes (its own stack
+    // slot), and the 64-bit shape spans up to 0x2C: writing it straight
+    // into `out` would overrun a 32-bit caller's stack by 20 bytes.
+    u8 stage[MBI_SIZE];
+    for (u64b i = 0; i < MBI_SIZE; i++) stage[i] = 0;
+    u8 *out = stage;
 
     u64b addr = (u64b)BaseAddress;
     // FEX's finite VirtualQuery address-space walk terminates when the
@@ -1372,15 +1421,52 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
     // for this BaseAddress -- this IS what build_ntdll_module's
     // NtQueryVirtualMemory(LdrInitializeThunk) call reads to learn its own
     // module base (donor: wine/dlls/ntdll/loader.c build_ntdll_module).
+    // CHALICE C4-41: re-pack the just-written 64-bit-shaped fields into the
+    // donor-exact 32-bit layout for WOW64 callers -- every branch above
+    // still writes via the wr64/wr32 MBI_* (64-bit) offsets unconditionally
+    // (single source of truth for the field VALUES, no duplicated branch
+    // logic); this final step is the only bitness-aware part, matching the
+    // CTX32-conversion pattern already used elsewhere in this file (ntsvc.c).
+    u8 *realout = (u8 *)MemoryInformation;
+    if (use32) {
+        u64b base64 = rd64(stage + MBI_BASEADDRESS_OFF);
+        u64b allocbase64 = rd64(stage + MBI_ALLOCATIONBASE_OFF);
+        u32b allocprot = rd32(stage + MBI_ALLOCPROTECT_OFF);
+        u64b regionsize64 = rd64(stage + MBI_REGIONSIZE_OFF);
+        u32b state = rd32(stage + MBI_STATE_OFF);
+        u32b protect = rd32(stage + MBI_PROTECT_OFF);
+        u32b type = rd32(stage + MBI_TYPE_OFF);
+        for (u64b i = 0; i < MBI32_SIZE; i++) realout[i] = 0;
+        wr32(realout + MBI32_BASEADDRESS_OFF, (u32b)base64);
+        wr32(realout + MBI32_ALLOCATIONBASE_OFF, (u32b)allocbase64);
+        wr32(realout + MBI32_ALLOCPROTECT_OFF, allocprot);
+        wr32(realout + MBI32_REGIONSIZE_OFF, (u32b)regionsize64);
+        wr32(realout + MBI32_STATE_OFF, state);
+        wr32(realout + MBI32_PROTECT_OFF, protect);
+        wr32(realout + MBI32_TYPE_OFF, type);
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE C4-41: NtQueryVirtualMemory(wow64) addr="); puthex(addr);
+            puts(" branch="); puts(img ? "image" : "fallback");
+            puts(" allocbase32="); puthex((u64b)(u32b)allocbase64);
+            puts(" regionsize32="); puthex((u64b)(u32b)regionsize64);
+            puts(" state="); puthex((u64b)state);
+            puts(" type="); puthex((u64b)type); puts("\n");
+        }
+        if (ReturnLength) *ReturnLength = MBI32_SIZE;
+        return STATUS_SUCCESS;
+    }
+
+    for (u64b i = 0; i < MBI_SIZE; i++) realout[i] = stage[i];
+
     if (nt_dispatch_log_enabled) {
-        u32b state = (u32b)out[MBI_STATE_OFF] | ((u32b)out[MBI_STATE_OFF+1]<<8) |
-                     ((u32b)out[MBI_STATE_OFF+2]<<16) | ((u32b)out[MBI_STATE_OFF+3]<<24);
-        u32b type  = (u32b)out[MBI_TYPE_OFF]  | ((u32b)out[MBI_TYPE_OFF+1]<<8) |
-                     ((u32b)out[MBI_TYPE_OFF+2]<<16) | ((u32b)out[MBI_TYPE_OFF+3]<<24);
+        u32b state = (u32b)stage[MBI_STATE_OFF] | ((u32b)stage[MBI_STATE_OFF+1]<<8) |
+                     ((u32b)stage[MBI_STATE_OFF+2]<<16) | ((u32b)stage[MBI_STATE_OFF+3]<<24);
+        u32b type  = (u32b)stage[MBI_TYPE_OFF]  | ((u32b)stage[MBI_TYPE_OFF+1]<<8) |
+                     ((u32b)stage[MBI_TYPE_OFF+2]<<16) | ((u32b)stage[MBI_TYPE_OFF+3]<<24);
         puts("CHALICE: NtQueryVirtualMemory addr="); puthex(addr);
         puts(" branch="); puts(img ? "image" : "fallback");
-        puts(" allocbase="); puthex(rd64(out + MBI_ALLOCATIONBASE_OFF));
-        puts(" regionsize="); puthex(rd64(out + MBI_REGIONSIZE_OFF));
+        puts(" allocbase="); puthex(rd64(stage + MBI_ALLOCATIONBASE_OFF));
+        puts(" regionsize="); puthex(rd64(stage + MBI_REGIONSIZE_OFF));
         puts(" state="); puthex((u64b)state);
         puts(" type="); puthex((u64b)type); puts("\n");
     }

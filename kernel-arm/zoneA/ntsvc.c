@@ -1133,6 +1133,11 @@ long NtQueryInformationProcess(void *ProcessHandle, unsigned long ProcessInforma
 #define CTX32_EFLAGS_OFF 0xC0
 #define CTX32_ESP_OFF    0xC4
 #define CTX32_SEGSS_OFF  0xC8
+// CHALICE C4-41: wine/include/winnt.h _CONTEXT (i386) field order -- Eax
+// sits 4 bytes before Ebp (Edi@0x9C,Esi@0xA0,Ebx@0xA4,Edx@0xA8,Ecx@0xAC,
+// Eax@0xB0,Ebp@0xB4 -- matches this file's own EBP_OFF=0xB4 exactly, one
+// ULONG per field, no gap).
+#define CTX32_EAX_OFF    0xB0
 // Real WOW64 flat usermode selectors (donor-known constants, x86 Windows
 // ABI -- CS=0x1B, SS=0x23 under the flat 32-bit code/data/stack segments
 // WOW64 sets up for every 32-bit thread); EFlags=0x202 (IF set + the
@@ -1255,6 +1260,65 @@ long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationC
     if (nt_dispatch_log_enabled) {
         puts("CHALICE: NtSetInformationThread ThreadWow64Context <- eip=");
         puthex(nt_wow64_ctx_eip); puts(" esp="); puthex(nt_wow64_ctx_esp); puts("\n");
+    }
+
+    // CHALICE C4-41: this SET call is exactly how FEX reflects the guest
+    // 32-bit CPU state at the moment of the C4-40-named 7th-fault NULL
+    // IMAGE_DOS_SIGNATURE check (syswow64/ntdll.dll+0x2B34E, inside
+    // _RtlImageNtHeader@4, RVA 0x2B310-0x2B37F, donor stock/i386-windows/
+    // ntdll.dll disasm this atom) -- catch it the FIRST time eip lands on
+    // that exact RVA and dump the live incoming CONTEXT's Eax (the NULL
+    // BaseAddress argument RtlImageNtHeader received) + Ebp (frame
+    // pointer), then walk the GUEST stack directly (this floor's one-
+    // address-space model, C4-35 -- guest memory is host-dereferenceable)
+    // to read [Ebp+4]=return address (the caller, i.e. who pushed the NULL
+    // pointer) and [Ebp+8]=the argument slot itself (should mirror Eax).
+    // No control-flow change -- diagnostic only, same doctrine as C4-38's
+    // PTE dump.
+    {
+        static int c4_41_dumped;
+        u64b ntdll_base = 0, ntdll_size = 0;
+        if (!c4_41_dumped &&
+            nt_image_base_by_name("syswow64/ntdll.dll", &ntdll_base, &ntdll_size) &&
+            nt_wow64_ctx_eip == ntdll_base + 0x2B34EUL) {
+            c4_41_dumped = 1;
+            u32b eax = rd32(in + CTX32_EAX_OFF);
+            u32b ebp = rd32(in + CTX32_EBP_OFF);
+            u32b ret_addr = 0, arg0 = 0;
+            const u8 *ebp_p = (const u8 *)(u64b)ebp;
+            if (ebp) { ret_addr = rd32(ebp_p + 4); arg0 = rd32(ebp_p + 8); }
+            puts("CHALICE C4-41: fault-site eip=ntdll.dll+0x2B34E (RtlImageNtHeader cmpw MZ) eax(BaseAddress)=");
+            puthex(eax); puts(" ebp="); puthex(ebp);
+            puts(" [ebp+4](retaddr)="); puthex(ret_addr);
+            puts(" [ebp+8](arg0)="); puthex(arg0); puts("\n");
+            char name[64]; u64b off = 0;
+            if (ret_addr && nt_image_resolve(ret_addr, name, sizeof(name), &off)) {
+                puts("CHALICE C4-41: caller = "); puts(name); puts("+"); puthex(off); puts("\n");
+            } else {
+                puts("CHALICE C4-41: caller unresolved (not in any mapped image)\n");
+            }
+            void *peb32 = nt_wow64_get_peb32();
+            if (peb32) {
+                u32b imagebase32 = rd32((const u8 *)peb32 + 0x08);
+                puts("CHALICE C4-41: live PEB32.ImageBaseAddress="); puthex(imagebase32); puts("\n");
+            }
+            // CHALICE C4-41 (2nd pass): walk ONE more frame up -- ebp here is
+            // RtlImageNtHeader's OWN frame ptr; [ebp+0] is the SAVED ebp,
+            // i.e. alloc_module's frame ptr, so [[ebp+0]+4] is alloc_module's
+            // OWN return address = whoever called alloc_module (disambiguates
+            // the two static call sites this atom's disasm found: loader_init
+            // main-image bootstrap vs build_module's DLL-dependency walk).
+            u32b alloc_module_ebp = rd32(ebp_p + 0);
+            u32b alloc_module_retaddr = 0;
+            if (alloc_module_ebp) alloc_module_retaddr = rd32((const u8 *)(u64b)alloc_module_ebp + 4);
+            puts("CHALICE C4-41: alloc_module ebp="); puthex(alloc_module_ebp);
+            puts(" alloc_module's own retaddr="); puthex(alloc_module_retaddr);
+            char name2[64]; u64b off2 = 0;
+            if (alloc_module_retaddr && nt_image_resolve(alloc_module_retaddr, name2, sizeof(name2), &off2)) {
+                puts(" -> "); puts(name2); puts("+"); puthex(off2);
+            }
+            puts("\n");
+        }
     }
     return STATUS_SUCCESS;
 }
