@@ -1433,8 +1433,68 @@ long NtQueryVirtualMemory(void *ProcessHandle, void *BaseAddress, unsigned long 
         puts(" len="); puthex((u64b)MemoryInformationLength);
         puts("\n");
     }
-    if (MemoryInformationClass != 0 /* MemoryBasicInformation */) return STATUS_INVALID_INFO_CLASS;
-    if (!MemoryInformation) return STATUS_INVALID_PARAMETER;
+    // CHALICE C4-49: MemorySectionName (class 2 / MemoryMappedFilenameInformation)
+    // -- this floor previously fell straight to the generic
+    // "class!=0 -> STATUS_INVALID_INFO_CLASS" reject below for EVERY other
+    // class, including this one. Live receipt (scratch/c4-48_pe10_fex_receipt_full.log,
+    // scratch/c4-49_pe10_fex_receipt_full.log) proved FEX::Windows::
+    // GetSectionFilePath (FEX/Source/Windows/Common/Module.h) calls exactly
+    // this class/addr pair (class=0x2, len=0x218 == sizeof(MEMORY_SECTION_NAME)
+    // (16B) + array<WCHAR,PATH_MAX>(260*2=520B)) right before every
+    // BTCpuNotifyMapViewOfSection/HandleImageMap invocation -- and always got
+    // STATUS_INVALID_INFO_CLASS back (unimplemented), forcing GetSectionFilePath
+    // to return {} (empty path/name) on every call, silently, no crash. C4-49's
+    // own re-armed XIntervals dumper then proved, empirically (not inferred):
+    // XIntervals NEVER gains kernel32.dll's or kernelbase.dll's ranges despite
+    // BOTH notify calls completing rc=0x0 -- confirming this empty-path gap is
+    // load-bearing for FEX's real (donor-vendored, Hangover-11.9-adjacent)
+    // HandleImageMap body (even though the SOURCE this floor vendors,
+    // FEX/Source/Windows/WOW64/Module.cpp:174-179, reads only Address for the
+    // interval-tree insert itself -- the ACTUAL shipped libwow64fex.dll blob is
+    // a separate prebuilt Hangover-11.9 binary, not built from this source
+    // tree, and evidently needs more). Answers honestly from this floor's own
+    // image registry (nt_image_find_containing), donor-exact shape/semantics
+    // (wine/dlls/ntdll/unix/virtual.c:6079-6104 get_memory_section_name):
+    // SectionFileName.Buffer points at the caller's OWN buffer tail (info+1,
+    // i.e. MemoryInformation+16 -- FEX's own PathW array sits exactly there),
+    // Length/MaximumLength in bytes (Length excludes, MaximumLength includes,
+    // the trailing NUL), NUL-terminated. Path synthesized as a real NT-style
+    // path ("C:\windows\" + the registry's own registered name, '/' -> '\\')
+    // so FEX's BaseName() (Common/Module.h) still extracts the correct real
+    // basename (e.g. "kernelbase.dll") regardless of the synthetic prefix.
+    if (MemoryInformationClass == 2 /* MemorySectionName */) {
+        if (!MemoryInformation) return STATUS_INVALID_PARAMETER;
+        if (MemoryInformationLength < 16) return STATUS_INFO_LENGTH_MISMATCH;
+        u64b addr2 = (u64b)BaseAddress;
+        NtImageEntry *img2 = nt_image_find_containing(addr2);
+        if (!img2) return STATUS_INVALID_PARAMETER;
+        char path[128]; u64b pi = 0;
+        const char *prefix = "C:\\windows\\";
+        for (; prefix[pi]; pi++) path[pi] = prefix[pi];
+        for (u64b j = 0; img2->name[j] && pi < 126; j++, pi++)
+            path[pi] = (img2->name[j] == '/') ? '\\' : img2->name[j];
+        path[pi] = 0;
+        u64b name_chars = pi;
+        u64b avail_for_name = MemoryInformationLength - 16; // bytes after the UNICODE_STRING header
+        u64b copy_chars = name_chars;
+        int truncated = 0;
+        if (copy_chars * 2 + 2 > avail_for_name) {
+            copy_chars = avail_for_name >= 2 ? (avail_for_name - 2) / 2 : 0;
+            truncated = 1;
+        }
+        u8 *out2 = (u8 *)MemoryInformation;
+        wr16(out2 + 0, (u16b)(copy_chars * 2));       // Length (bytes, excl NUL)
+        wr16(out2 + 2, (u16b)(copy_chars * 2 + 2));   // MaximumLength (incl NUL)
+        wr64(out2 + 8, (u64b)(out2 + 16));            // Buffer -> caller's own buffer tail (info+1)
+        for (u64b k = 0; k < copy_chars; k++) wr16(out2 + 16 + k * 2, (u16b)(unsigned char)path[k]);
+        wr16(out2 + 16 + copy_chars * 2, 0);          // NUL terminator
+        if (ReturnLength) *ReturnLength = 16 + name_chars * 2 + 2;
+        if (nt_dispatch_log_enabled) {
+            puts("CHALICE C4-49: NtQueryVirtualMemory MemorySectionName addr="); puthex(addr2);
+            puts(" name="); puts(path); puts(truncated ? " (truncated)\n" : "\n");
+        }
+        return truncated ? STATUS_INFO_LENGTH_MISMATCH : STATUS_SUCCESS;
+    }
     // CHALICE C4-41 (2nd pass): nt_wow64_get_peb32()!=0 is a PROCESS-wide
     // "this process is running a wow64 32-bit thread" flag (set once at
     // process boot, ntboot.c), NOT a per-call bitness tag -- ntboot.c's OWN
