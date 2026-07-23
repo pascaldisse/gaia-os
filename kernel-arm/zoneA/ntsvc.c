@@ -111,8 +111,66 @@ long NtDuplicateObject(void *SourceProcessHandle, void *SourceHandle, void *Targ
 unsigned long *nt_exit_jmpbuf;
 long nt_exit_code;
 
+// CHALICE C4-45: one-shot LR-capturing diagnostic -- pin the SECOND
+// STATUS_INVALID_IMAGE_FORMAT (0xC000007B) call site C4-44 named but left
+// unpinned ("the CONTEXT-AT-SVC trace's pc is always the shared
+// __wine_syscall_dispatcher trampoline address, not a caller return
+// address"). Reuses the EXACT mechanism C4-25's RAISE#1 receipt proved
+// live for this floor's WOW64 boot: nt_wow64_cpureserved_dbg points at the
+// WOW64_CPURESERVED block FEX keeps as the guest's real I386_CONTEXT
+// (BTCpuSetContext writes it in place, no NtSetInformationThread round-
+// trip needed to read a fresh copy -- same struct, same offsets, same
+// static already declared file-scope above for RAISE#1's own use). If
+// this floor's guest-side call to ZwTerminateProcess(hProcess,
+// STATUS_INVALID_IMAGE_FORMAT) is itself a genuine WOW64 guest syscall
+// (not this floor's OWN synthetic C4-27 stub, which never passes this
+// status), the live Eip/Esp this dumps IS the call site -- resolved
+// against the image registry (nt_image_resolve) exactly like every other
+// caller-pinning receipt this thread has produced.
+static int nt_c4_45_dumped;
+
 long NtTerminateProcess(void *ProcessHandle, long ExitStatus) {
     (void)ProcessHandle;
+    if (!nt_c4_45_dumped &&
+        (unsigned long)(unsigned int)ExitStatus == 0xC000007BUL /* STATUS_INVALID_IMAGE_FORMAT */ &&
+        nt_wow64_cpureserved_dbg) {
+        nt_c4_45_dumped = 1;
+        u8 *ictx = nt_wow64_cpureserved_dbg + 4;   // +4 == WOW64_CPURESERVED_HDR_SIZE (Flags+Machine)
+        u32b g_eip = rd32(ictx + 0xB8), g_esp = rd32(ictx + 0xC4), g_ebp = rd32(ictx + 0xB4);
+        puts("CHALICE C4-45: NtTerminateProcess(STATUS_INVALID_IMAGE_FORMAT) live guest Eip=");
+        puthex(g_eip);
+        char name[64]; u64b off = 0;
+        if (g_eip && nt_image_resolve((u64b)g_eip, name, sizeof(name), &off)) {
+            puts(" ("); puts(name); puts("+"); puthex(off); puts(")");
+        } else {
+            puts(" (unresolved -- not in any mapped image)");
+        }
+        puts(" Esp="); puthex(g_esp); puts(" Ebp="); puthex(g_ebp); puts("\n");
+        // Guest-memory hexdump [Eip-16,Eip+32) -- same safe classified read
+        // C4-25's own receipt used, lets a disasm confirm/refute the resolve.
+        puts("CHALICE C4-45 GUEST BYTES @Eip-16..+32:");
+        for (long w = -16; w < 32; w += 4) {
+            u64b a = (u64b)(u32b)((long)g_eip + w);
+            u32b word;
+            puts(" ");
+            if (nt_fault_read32(a, &word)) puthex(word);
+            else puts("????????");
+        }
+        puts("\n");
+        // One frame up the guest C stack, same [ebp+0]/[ebp+4] walk C4-41 used.
+        if (g_ebp) {
+            u32b ret_addr = 0, saved_ebp = 0;
+            const u8 *ebp_p = (const u8 *)(u64b)g_ebp;
+            ret_addr = rd32(ebp_p + 4);
+            saved_ebp = rd32(ebp_p + 0);
+            puts("CHALICE C4-45: [ebp+4](retaddr)="); puthex(ret_addr);
+            char rname[64]; u64b roff = 0;
+            if (ret_addr && nt_image_resolve(ret_addr, rname, sizeof(rname), &roff)) {
+                puts(" ("); puts(rname); puts("+"); puthex(roff); puts(")");
+            }
+            puts(" saved_ebp="); puthex(saved_ebp); puts("\n");
+        }
+    }
     nt_exit_code = ExitStatus;
     if (nt_exit_jmpbuf) nt_longjmp(nt_exit_jmpbuf, 1);
     return STATUS_SUCCESS;   // unreachable
