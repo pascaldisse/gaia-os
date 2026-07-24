@@ -337,6 +337,44 @@ long nt_boot_process(const char *exe_name, const char *ntdll_name, int stock, co
     // NtQueryInformationProcess(ProcessImageInformation) -- ntsvc.c.
     nt_set_main_image_info(&exe_info, exe_entry);
 
+    // CHALICE C4-65: DIAGNOSTIC ONLY (measurement, no functional change) --
+    // settles whether PeMapImage's own apply_relocs=1 HIGHLOW pass (above,
+    // this exact call) genuinely patches an i386 boot exe's own code, and
+    // whether C4-57's IAT binder (ntfile.c, fires later from a real guest-
+    // triggered NtMapViewOfSection once kernel32/kernelbase map) lands a
+    // real resolved VA. Three reads, all cited straight from C4-64's own
+    // already-committed static disassembly of hello9_x86.exe (HANDOFF/
+    // FEX-MAP C4-64) -- NOT re-derived, NOT hardcoded for any *fix* (this
+    // is a one-shot hello9-specific probe, gated on wow64_mode so it is a
+    // silent no-op for every non-i386 boot target, hello1-8/pe1-9 unaffected):
+    //   1) preferred_base_dword@0x40205c -- this exe's own file-encoded
+    //      FF15 call-operand VALUE (preferred-base-absolute, C4-64 static
+    //      disasm), i.e. what CURRENTLY lives at that literal guest address
+    //      right now, regardless of where the image itself got mapped.
+    //   2) call_operand_live@exe_entry+0x17 -- the ACTUAL in-memory bytes
+    //      at the exe's own FF15 instruction's 4-byte operand, post-map:
+    //      still 0x40205c (reloc never touched it) or delta-shifted to
+    //      exe_base+0x205c (reloc applied correctly)?
+    //   3) iat_slot_live@exe_base+0x205c -- the CORRECT/expected IAT slot
+    //      address for THIS boot's actual mapped base: does it hold a real
+    //      resolved kernel32/kernelbase export VA, or still the file's raw
+    //      unbound thunk RVA (0x2068)?
+    // All three addresses are known-mapped (device-nGnRnE identity window
+    // for #1 -- kmain.c mmu_on's own l2_dev_table covers all of
+    // [0x200000,0x40000000) except the explicitly-guarded null page at
+    // index 0; DLL-territory for #2/#3, this exe's own just-mapped image) --
+    // plain volatile reads, no fault risk, same address space the guest's
+    // own JIT'd code will touch.
+    if (wow64_mode) {
+        u32b c465_pref = *(volatile u32b *)(u64b)0x40205cULL;
+        u32b c465_live_op = *(volatile u32b *)(exe_entry + 0x17);
+        u32b c465_live_iat = *(volatile u32b *)(exe_base + 0x205c);
+        puts("CHALICE C4-65: preferred_base_dword@0x40205c="); puthex(c465_pref);
+        puts(" call_operand_live@exe_entry+0x17="); puthex(c465_live_op);
+        puts(" iat_slot_live@exe_base+0x205c="); puthex(c465_live_iat);
+        puts("\n");
+    }
+
     // ---- required ntdll exports (Architecture verdict 3 required-name
     // set; kernel only needs to LOOK UP the four it directly consumes --
     // the rest (KiUser*, DbgUiRemoteBreakin, __wine_ctrl_routine,
