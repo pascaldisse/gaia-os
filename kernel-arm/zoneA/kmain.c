@@ -499,6 +499,8 @@ static u64 c468b_ring_filled; // min(ring_head, CAP)
 // from there through the crash.
 void nt_dbg_arm_stepwindow(void) {
     if (!c468_watch_addr) return; // CurrentFrame not known yet -- nothing to sample
+    static u64 arm_count;
+    arm_count++;
     c468b_step_window_active = 1;
     c468b_step_count = 0;
     c468b_ring_head = 0;
@@ -508,6 +510,9 @@ void nt_dbg_arm_stepwindow(void) {
     mdscr |= (1ULL << 0); // MDSCR_EL1.SS -- global step-enable for the window
     asm volatile("msr mdscr_el1, %0" :: "r"(mdscr));
     asm volatile("isb");
+    if (arm_count <= 3 || (arm_count % 50) == 0) {
+        puts("CHALICE C4-68B WINDOW (RE)ARMED #"); puthex(arm_count); puts("\n");
+    }
 }
 
 // Called from EVERY eret site this floor has (boot.S sync_entry, once,
@@ -639,6 +644,14 @@ int sync_try_watchpoint(u64 esr, u64 elr, u64 far, u64 *regs) {
         c468b_ring_head++;
         if (c468b_ring_filled < C468B_RING_CAP) c468b_ring_filled++;
         c468b_step_count++;
+        if (c468b_step_count == 1) {
+            // First-ever step confirmation -- unconditional, proves PSTATE.
+            // SS is actually taking effect (vs. the DBGWCR watchpoint,
+            // proven NOT delivered by this QEMU/TCG build).
+            puts("CHALICE C4-68B FIRST STEP elr="); puthex(elr);
+            puts(" val="); if (v_ok) puthex(v); else puts("UNREADABLE");
+            puts("\n");
+        }
 
         int hit_target = (elr == C468B_TARGET_ELR);
         int cap_hit = (c468b_step_count >= C468B_STEP_CAP);
