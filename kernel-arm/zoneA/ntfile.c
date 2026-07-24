@@ -1533,6 +1533,65 @@ int nt_find_boot_exe(u64b *base_out, u64b *size_out) {
     return 0;
 }
 
+// =====================================================================
+// CHALICE C4-66: DIAGNOSTIC ONLY (measurement, no functional change) --
+// C4-65 already proved hello9's OWN IAT slot (the one C4-57's binder
+// above writes) is correctly bound and durably stable through the fatal
+// call. This atom's task names a DIFFERENT, still-unchecked slot: real
+// wine kernel32.dll's own exported GetStdHandle/WriteFile are THEMSELVES
+// thin thunks (`8bff 55 8bec 5d ff25 <imm32>` -- hotpatch prologue then
+// `jmp dword ptr [imm32]`, monad-disasm-confirmed this atom against
+// chalice/stock/i386-windows/kernel32.dll, rva=0xd7ac/0xf9bc, byte-
+// identical) that tail-jump through kernel32.dll's OWN Import Directory
+// slot for kernelbase.dll's real GetStdHandle -- a slot NOTHING on this
+// floor's own C code binds (nt_iat_bind_walk above only ever walks the
+// BOOT EXE's Import Directory; grep-confirmed, this file, no second call
+// site). If that slot is unbound, a guest call that correctly reaches
+// kernel32's thunk (decodes fine, real code) would still branch to
+// 0/garbage at the SECOND indirection -- same fault signature as C4-58
+// through C4-65's own already-documented zero-rip crash, undetectable by
+// C4-65's probe (which only ever watched the boot exe's OWN slot).
+// Fires once, at the SAME bind event C4-57's binder already gates on
+// (both syswow64 kernel32/kernelbase mapped) -- plain volatile reads,
+// DLL territory, known-mapped, no fault risk, no control-flow change.
+// =====================================================================
+static void nt_c466_diag(u64b k32base, u64b k32size, u64b kbbase) {
+    const u8 *thunk = (const u8 *)(u64b)(k32base + 0xd7ac);
+    puts("CHALICE C4-66: k32_thunk_bytes@k32base+0xd7ac=");
+    for (int w = 0; w < 16; w += 4) { puts(" "); puthex((u64b)rd32(thunk + w)); }
+    puts("\n");
+
+    // `ff25 <imm32>` operand sits at byte offset 8 of the 12-byte thunk
+    // (8bff=2, 55=1, 8bec=2, 5d=1, ff25=2 -> 8), holding the ABSOLUTE VA
+    // of kernel32.dll's own IAT slot for kernelbase!GetStdHandle.
+    u32b slot_addr = rd32(thunk + 8);
+    puts("CHALICE C4-66: k32_own_iat_slot_addr="); puthex((u64b)slot_addr);
+
+    // CHALICE C4-66 HARDENING: kernel32's own IAT necessarily lives INSIDE
+    // its own mapped image (the PE loader places the Import Directory's
+    // Thunk array as part of the image's own sections) -- an operand that
+    // reads OUTSIDE [k32base, k32base+k32size) means this address was never
+    // relocated (still the raw file's preferred-base value, 0x7b800000 by
+    // convention) and MUST NOT be dereferenced: this floor's device-memory
+    // mapping guards only a narrow identity range (see C4-65's own
+    // l2_dev_table analysis), so an unrelocated slot address can land on
+    // genuinely unmapped/faulting territory -- skip the deref, don't guess.
+    if (slot_addr < k32base || (u64b)slot_addr >= k32base + k32size) {
+        puts(" k32_own_iat_slot_addr OUTSIDE k32 image (relocs NOT applied?) addr=");
+        puthex((u64b)slot_addr); puts("\n");
+        return;
+    }
+
+    const u8 *slotp = (const u8 *)(u64b)slot_addr;
+    u32b slot_val = rd32(slotp);
+    puts(" k32_own_iat_slot_live_value="); puthex((u64b)slot_val); puts("\n");
+
+    const u8 *kbcode = (const u8 *)(u64b)(kbbase + 0x4acb0);
+    puts("CHALICE C4-66: kernelbase_GetStdHandle_code@kbbase+0x4acb0=");
+    for (int w = 0; w < 16; w += 4) { puts(" "); puthex((u64b)rd32(kbcode + w)); }
+    puts("\n");
+}
+
 static void nt_iat_bind_maybe(void) {
     if (nt_iat_bind_done) return;
     u64b k32base = 0, k32size = 0, kbbase = 0, kbsize = 0, exebase = 0, exesize = 0;
@@ -1542,6 +1601,7 @@ static void nt_iat_bind_maybe(void) {
     nt_iat_bind_done = 1;   // one-shot regardless of outcome below
     puts("CHALICE C4-57: both syswow64 kernel32/kernelbase mapped -- binding boot exe IAT\n");
     nt_iat_bind_walk(exebase, exesize, k32base, k32size, kbbase, kbsize);
+    nt_c466_diag(k32base, k32size, kbbase);   // CHALICE C4-66: diagnostic, see above
 }
 
 long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAddress,
