@@ -1,0 +1,4 @@
+# CHALICE C4-68C2 watch hits -- addr=0x270001158 size=8 late-armed at marker BaseAddress=0x47661000
+# non-watchpoint stop reason=5 pc=0x000000004020c778
+# TOTAL HITS: 0
+# LAST 10 VALUES: []

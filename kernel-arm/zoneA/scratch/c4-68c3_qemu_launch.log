@@ -1,0 +1,30 @@
+hello1.exe: 2560 bytes
+hello2.exe: 4096 bytes
+hello3.exe: 4608 bytes
+hello4.exe: 4608 bytes
+mini.dll:   3072 bytes
+hello5.exe: 3072 bytes
+fake-ntdll.dll: 3584 bytes
+hello6.exe: 3072 bytes
+hello7.exe: 5120 bytes
+aarch64-elf-ld: warning: gaia-os.elf has a LOAD segment with RWX permissions
+built: 197784 bytes
+mkdisk: existing FS found (next_free=90390) -- preserving
+mkdisk: ntdll.dll          6946816 bytes @sec 19 (13568 secs)
+mkdisk: kernel32.dll       3538944 bytes @sec 13587 (6912 secs)
+mkdisk: kernelbase.dll     9437184 bytes @sec 20499 (18432 secs)
+mkdisk: apisetschema.dll    196608 bytes @sec 38931 (384 secs)
+mkdisk: locale.nls          794914 bytes @sec 39315 (1553 secs)
+mkdisk: sortdefault.nls    3394804 bytes @sec 40868 (6631 secs)
+mkdisk: l_intl.nls            5564 bytes @sec 47499 (11 secs)
+mkdisk: hello8_x86.exe        3584 bytes @sec 84207 (7 secs)
+mkdisk: hello9c_x86.exe       4608 bytes @sec 90373 (9 secs)
+mkdisk: wow64.dll          1245184 bytes @sec 47510 (2432 secs)
+mkdisk: wowbox64.dll       4641280 bytes @sec 49942 (9065 secs)
+mkdisk: libwow64fex.dll    4177920 bytes @sec 59007 (8160 secs)
+mkdisk: wow64win.dll       1441792 bytes @sec 84214 (2816 secs)
+mkdisk: win32u.dll         1703936 bytes @sec 87030 (3328 secs)
+mkdisk: syswow64/ntdll.dll   2535424 bytes @sec 67167 (4952 secs)
+mkdisk: syswow64/kernel32.dll   1372160 bytes @sec 72119 (2680 secs)
+mkdisk: syswow64/kernelbase.dll   4816896 bytes @sec 74799 (9408 secs)
+mkdisk: OK -- total_secs=131072 next_free=90390
