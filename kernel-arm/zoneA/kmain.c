@@ -600,6 +600,33 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     move_bytes(regs_snap, (unsigned char *)regs, SYNC_FRAME_SIZE);
     u64 *regs_safe = (u64 *)regs_snap;
 
+    // CHALICE C4-61: narrow, one-address-only full x0-x30 dump + a 64-byte
+    // instruction hexdump at elr, gated strictly to the single fixed host
+    // address C4-58/59 named as hello9's fatal, first-ever-occurrence fault
+    // (elr=0x26D0C02B0) -- never fires on the ~20 unrelated shared self-heal
+    // cycles (those sit at 20 DIFFERENT elr values, C4-59) or on the
+    // canonical hello8 boot (which never reaches this address at all).
+    // Measurement-only, no control-flow change.
+    if (elr == 0x26D0C02B0ULL) {
+        puts("CHALICE C4-61 FULL REGS @elr=0x26D0C02B0:\n");
+        for (int i = 0; i <= 28; i += 4) {
+            puts("  x"); putdec(i);  puts("=");  puthex(regs_safe[i]);
+            if (i + 1 <= 28) { puts(" x"); putdec(i+1); puts("="); puthex(regs_safe[i+1]); }
+            if (i + 2 <= 28) { puts(" x"); putdec(i+2); puts("="); puthex(regs_safe[i+2]); }
+            if (i + 3 <= 28) { puts(" x"); putdec(i+3); puts("="); puthex(regs_safe[i+3]); }
+            puts("\n");
+        }
+        puts("  x29(fp)="); puthex(regs_safe[29]); puts(" x30(lr)="); puthex(regs_safe[30]); puts("\n");
+        puts("CHALICE C4-61 ELR BYTES @elr..+64:");
+        for (long w = 0; w < 64; w += 4) {
+            u64 a = elr + w; u32 word;
+            puts(" ");
+            if (nt_fault_read32(a, &word)) puthex(word);
+            else puts("????????");
+        }
+        puts("\n");
+    }
+
     // CHALICE C4-22: donor-grounded TLS probe -- FEX TEB64.TlsSlots @ 0x1480
     // (wine/include/winternl.h:1238); WOW64_TLS_MAX_NUMBER=19 (FEX
     // Source/Windows/include/winternl.h:29) -> THREAD_STATE slot 16,
