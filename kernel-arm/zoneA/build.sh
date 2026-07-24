@@ -204,7 +204,14 @@ QEMU_CPU="${GAIA_QEMU_CPU:-cortex-a72}"
 # and adds no QEMU argument, preserving every normal gate's behavior.
 # `-S` pauses vCPUs until the harness sends RSP `c`; wait=off keeps the
 # socket's protocol server responsive immediately after accept.
-if [ -n "${GAIA_GDB_SOCKET:-}" ]; then
+# C4-68C: GAIA_GDB_PORT is a TCP alternative to GAIA_GDB_SOCKET (mutually
+# exclusive, GDB_PORT wins if both set) -- lets a real debugger (lldb's
+# native `gdb-remote host:port`/SBTarget.ConnectRemote transport, more
+# reliably tested than a unix-socket URL) attach for write-watchpoint work
+# (C4-68C). No default/hardcoded port (IRON LAW) -- caller picks a free one.
+if [ -n "${GAIA_GDB_PORT:-}" ]; then
+    set -- "$@" -S -gdb "tcp::${GAIA_GDB_PORT}"
+elif [ -n "${GAIA_GDB_SOCKET:-}" ]; then
     set -- "$@" -S -gdb "unix:${GAIA_GDB_SOCKET},server=on,wait=off"
 fi
 # GAIA_NO_RUN=1 -> build-only mode (ghoul-safe: the exec below wedges any
