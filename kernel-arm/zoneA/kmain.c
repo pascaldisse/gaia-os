@@ -460,6 +460,79 @@ static void c468_full_dump(void) {
     puts("\n");
 }
 
+// CHALICE C4-68 FALLBACK — verify-early result: canonical hello8 AND the
+// V2 (hello9c) repro both show the watchpoint correctly configured
+// (WRPs=3, every debug-reg write reads back exactly as written) yet ZERO
+// EC 0x34/0x35 deliveries across a full boot -- including through the
+// known window where State.rip is proven (C4-64) to already read 0 at 19
+// consecutive syscall probes, i.e. QEMU's TCG backend is not delivering
+// this floor's ARMv8 self-hosted watchpoint at all (scratch/c4-68_v2_
+// receipt_full.log). Per this atom's own design step 3: windowed single-
+// step instead. PSTATE.SS can only be SET via an exception return (ARM
+// ARM D2.12.3) -- there is no direct MSR for it -- so this floor's own
+// "no user/kernel split, syscalls are a plain BLR into nt_dispatch" design
+// (HANDOFF.md "What's implemented") means there is no ERET at syscall
+// entry/exit to hook. Instead: arm a WINDOW flag at the id=80
+// (NtProtectVirtualMemory) dispatch (ntsvc.c's nt_dispatch_log, same
+// "last-protect gate" the task names), then inject PSTATE.SS=1 into
+// EVERY eret this floor already performs while the window stays active --
+// sync_entry's own two (boot.S, one shared insertion point covers both)
+// AND NtContinue's own independent eret (ntdisp.S, FEX's self-heal resume
+// path, exercised constantly right in this exact window per C4-58/59's
+// own "20 self-heal cycles") -- so stepping continues seamlessly across
+// every kind of resume this floor has, not just one path.
+#define C468B_RING_CAP  512
+#define C468B_STEP_CAP  50000
+#define C468B_TARGET_ELR 0x26D0C02B0ULL // the established C4-58..67 fault site
+static volatile int c468b_step_window_active;
+static u64 c468b_step_count;
+static u64 c468b_ring_pc[C468B_RING_CAP];
+static u64 c468b_ring_val[C468B_RING_CAP];
+static u64 c468b_ring_head;   // monotonic write count (mod CAP for slot)
+static u64 c468b_ring_filled; // min(ring_head, CAP)
+
+// Called from ntsvc.c's nt_dispatch_log at every id==NT_SVC_
+// NTPROTECTVIRTUALMEMORY (80) dispatch -- resets/(re)starts the window so
+// it always tracks the MOST RECENT such call without needing foreknowledge
+// of which one is "last"; by the time the real last call (C4-64's own
+// exe.text-page protect) fires, the ring naturally captures the window
+// from there through the crash.
+void nt_dbg_arm_stepwindow(void) {
+    if (!c468_watch_addr) return; // CurrentFrame not known yet -- nothing to sample
+    c468b_step_window_active = 1;
+    c468b_step_count = 0;
+    c468b_ring_head = 0;
+    c468b_ring_filled = 0;
+    u64 mdscr;
+    asm volatile("mrs %0, mdscr_el1" : "=r"(mdscr));
+    mdscr |= (1ULL << 0); // MDSCR_EL1.SS -- global step-enable for the window
+    asm volatile("msr mdscr_el1, %0" :: "r"(mdscr));
+    asm volatile("isb");
+}
+
+// Called from EVERY eret site this floor has (boot.S sync_entry, once,
+// covering both its own erets; ntdisp.S NtContinue, once) -- pure side
+// effect, no args/return, so it is safe to `bl` from asm as long as the
+// caller protects anything AAPCS-volatile it still needs afterward (both
+// call sites do). A no-op unless the window is currently active.
+void c468_maybe_arm_step(void) {
+    if (!c468b_step_window_active) return;
+    u64 spsr;
+    asm volatile("mrs %0, spsr_el1" : "=r"(spsr));
+    spsr |= (1ULL << 21); // PSTATE.SS
+    asm volatile("msr spsr_el1, %0" :: "r"(spsr));
+}
+
+static void c468b_dump_ring(void) {
+    u64 n = c468b_ring_filled;
+    puts("CHALICE C4-68B RING DUMP oldest..newest n="); puthex(n); puts(":\n");
+    for (u64 i = 0; i < n; i++) {
+        u64 idx = (c468b_ring_head - n + i) % C468B_RING_CAP;
+        puts("  ["); putdec(i); puts("] pc="); puthex(c468b_ring_pc[idx]);
+        puts(" val="); puthex(c468b_ring_val[idx]); puts("\n");
+    }
+}
+
 // CHALICE C4-68 — the watchpoint (EC 0x34/0x35) + software-step (EC 0x32/
 // 0x33) synchronous-exception handler. Called FIRST in sync_entry (boot.S),
 // ahead of every other sync_try_* triage function -- these two ESR classes
@@ -546,6 +619,58 @@ int sync_try_watchpoint(u64 esr, u64 elr, u64 far, u64 *regs) {
         mdscr2 &= ~(1ULL << 0); // clear MDSCR_EL1.SS
         asm volatile("msr mdscr_el1, %0" :: "r"(mdscr2));
         asm volatile("isb");
+        return 1;
+    }
+    if ((ec == 0x32 || ec == 0x33) && c468b_step_window_active) {
+        // CHALICE C4-68 FALLBACK: one windowed-single-step tick. Record
+        // (elr, live watched-addr value) into the ring, then decide
+        // whether to stop (target elr reached, or the step budget is
+        // exhausted) or keep going -- c468_maybe_arm_step (called from
+        // every eret site while the window stays active) re-arms
+        // PSTATE.SS for the NEXT instruction automatically; nothing here
+        // needs to touch SPSR itself.
+        unsigned int v_lo = 0, v_hi = 0;
+        int v_ok = c468_watch_addr && nt_fault_read32(c468_watch_addr, &v_lo) &&
+                   nt_fault_read32(c468_watch_addr + 4, &v_hi);
+        u64 v = v_ok ? (((u64)v_hi << 32) | v_lo) : ~0ULL;
+        u64 slot = c468b_ring_head % C468B_RING_CAP;
+        c468b_ring_pc[slot] = elr;
+        c468b_ring_val[slot] = v;
+        c468b_ring_head++;
+        if (c468b_ring_filled < C468B_RING_CAP) c468b_ring_filled++;
+        c468b_step_count++;
+
+        int hit_target = (elr == C468B_TARGET_ELR);
+        int cap_hit = (c468b_step_count >= C468B_STEP_CAP);
+        if (hit_target || cap_hit) {
+            c468b_step_window_active = 0; // stop re-arming -- next eret won't step
+            u64 mdscr3;
+            asm volatile("mrs %0, mdscr_el1" : "=r"(mdscr3));
+            mdscr3 &= ~(1ULL << 0);
+            asm volatile("msr mdscr_el1, %0" :: "r"(mdscr3));
+            puts("CHALICE C4-68B STEPWINDOW STOP: reason=");
+            puts(hit_target ? "target-elr" : "step-cap");
+            puts(" steps="); puthex(c468b_step_count);
+            puts(" elr="); puthex(elr);
+            puts(" val="); if (v_ok) puthex(v); else puts("UNREADABLE");
+            puts("\n");
+            // Same deliverable as the primary watchpoint path: stash this
+            // exact tick's own elr/regs (the culprit-adjacent PC) and dump
+            // full detail, then the ring trail leading up to it.
+            c468_saved_elr = elr;
+            for (int i = 0; i < 31; i++) c468_saved_regs[i] = regs[i];
+            c468_full_dump();
+            c468b_dump_ring();
+        }
+        return 1;
+    }
+    if (ec == 0x32 || ec == 0x33) {
+        // Defensive catch-all: a step exception with neither mechanism
+        // armed should never happen (nothing else on this floor enables
+        // MDSCR_EL1.SS) -- swallow it harmlessly rather than let it fall
+        // through to the fatal sync_handler path. PSTATE.SS is already 0
+        // again (hardware auto-clears it on taking this very exception),
+        // so no further stepping occurs.
         return 1;
     }
     return 0;

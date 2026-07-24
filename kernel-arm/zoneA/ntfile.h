@@ -271,3 +271,9 @@ unsigned long nt_wow64_live_state_probe(unsigned long teb,
 // Defined kmain.c (owns all ARM64 debug-register/exception-vector
 // plumbing); see kmain.c's own C4-68 block for the full design writeup.
 void nt_dbg_arm_watchpoint(unsigned long current_frame);
+
+// CHALICE C4-68 FALLBACK: (re)starts the windowed-single-step ring-buffer
+// trace -- called by ntsvc.c's nt_dispatch_log at every id==80
+// (NtProtectVirtualMemory) dispatch, the task's own "last-protect gate".
+// A no-op if CurrentFrame isn't known yet. Defined kmain.c.
+void nt_dbg_arm_stepwindow(void);

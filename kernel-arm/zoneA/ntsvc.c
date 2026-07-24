@@ -1878,6 +1878,14 @@ void nt_dispatch_log(unsigned long id_arg, void *handler) {
     }
     if (!nt_dispatch_log_enabled) return;
 
+    // CHALICE C4-68 FALLBACK: (re)arm the windowed-single-step trace at
+    // every id=80 (NtProtectVirtualMemory) dispatch -- the task's own
+    // "last-protect gate", C4-60/64's own established address family for
+    // the shared pre-crash call. Always the MOST RECENT such call wins
+    // (nt_dbg_arm_stepwindow resets the ring each time), so by the actual
+    // last one before the crash the ring naturally covers the right window.
+    if (id == NT_SVC_NTPROTECTVIRTUALMEMORY) nt_dbg_arm_stepwindow();
+
     // CHALICE C4-64: candidate #8 live syscall-window probe (HANDOFF/FEX-MAP
     // §C4-64) -- one line per svc dispatch, UNCAPPED (placed BEFORE the
     // NT_DISPATCH_LOG_FIRST_N cap below on purpose, same reasoning C4-59's

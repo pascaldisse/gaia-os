@@ -390,6 +390,16 @@ NtContinue:
     stp  x0, x18, [sp, #-16]!
     mov  x1, x18
     bl   nt_continue_trace
+    // CHALICE C4-68 FALLBACK: this is a THIRD independent eret site (NOT
+    // sync_entry's -- FEX's own self-heal resume, exercised constantly in
+    // exactly the window this atom windows around, C4-58/59's "20 self-
+    // heal cycles") -- give the windowed-single-step mechanism a chance
+    // to inject PSTATE.SS here too, or continuous stepping would silently
+    // skip every resume that happens to go through NtContinue instead of
+    // sync_entry. x0/x18 are already stack-protected by the surrounding
+    // stp/ldp pair; nothing else live yet (x9/context-pointer setup is
+    // further down, after the ldp below).
+    bl   c468_maybe_arm_step
     ldp  x0, x18, [sp], #16
     str  xzr, [x18, #0x378]          // clear syscall-frame while old TEB lives
     mov  x9, x0                      // ContextRecord; retained until final load

@@ -182,6 +182,13 @@ sync_entry:
     mov     x21, sp
     ldr     x20, =sync_exception_stack
     add     sp, x20, #4, lsl #12
+    // CHALICE C4-68 FALLBACK: unconditionally give the windowed-single-
+    // step mechanism a chance to inject PSTATE.SS=1 into THIS exception's
+    // own SPSR_EL1 (a no-op unless the window is active) -- covers BOTH
+    // of this function's own eret sites (2f/1f below) with one call, since
+    // it always runs before either is reached. Nothing live in x0-x17 yet
+    // (x19-x28 are callee-saved, safe across any AAPCS bl) -- safe here.
+    bl      c468_maybe_arm_step
     // CHALICE C4-68: watchpoint (EC 0x34/0x35) + software-step (EC 0x32/
     // 0x33) -- native ARM64 debug-exception classes, disjoint from every
     // other ec this function checks (SVC=0x15, data-abort=0x24/0x25), so
