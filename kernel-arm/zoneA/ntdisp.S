@@ -382,7 +382,13 @@ nt_longjmp:
 NtContinue:
     // C4-18 receipt: trace the first continuations; save x0/x18 because this
     // is entered from a PE syscall stub and kernel C may treat x18 as scratch.
+    // CHALICE C4-59: pass x18 (the CALLER's own live guest TEB, FEX-internal
+    // native code, preserved per ARM64 ABI convention across its own calls
+    // into this floor) as nt_continue_trace's 2nd arg (x1) -- lets it read
+    // live FEXCore State.rip at every single self-heal resume, not just an
+    // address dump.
     stp  x0, x18, [sp, #-16]!
+    mov  x1, x18
     bl   nt_continue_trace
     ldp  x0, x18, [sp], #16
     str  xzr, [x18, #0x378]          // clear syscall-frame while old TEB lives

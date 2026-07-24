@@ -419,7 +419,28 @@ extern long nt_exit_code;
 void nt_longjmp(unsigned long *buf, long val) __attribute__((noreturn));
 void nt_exception_enter(void *stack, void *dispatcher) __attribute__((noreturn));
 
-void nt_continue_trace(void *context) {
+void nt_continue_trace(void *context, u64 teb) {
+    // CHALICE C4-59: uncapped -- fires every NtContinue call (FEX's own
+    // internal self-heal resume for every 0x26D0C02B0-class cycle, C4-58's
+    // own "12x CHALICE CONTINUE" count was an ARTIFACT of the pre-existing
+    // 12-call print cap below, not the true call count). `teb` is the
+    // CALLER's (FEX-internal native code's) OWN live x18 at NtContinue's
+    // entry, passed in from ntdisp.S BEFORE this floor's CONTEXT restore
+    // touches x18 -- same ABI convention (x18==guest TEB, preserved across
+    // FEX's own internal calls) every other syscall-side reader in this
+    // codebase already relies on. Logged UNCONDITIONALLY, ahead of the old
+    // capped print below, so this floor can see live State.rip at every
+    // single self-heal resume, not just the first 12.
+    {
+        static u64 c459_count;
+        unsigned long state_rip = ~0UL;
+        int ok = nt_wow64_live_state_rip((unsigned long)teb, &state_rip);
+        c459_count++;
+        puts("CHALICE C4-59: NtContinue #"); puthex((u64)c459_count);
+        puts(" teb="); puthex(teb);
+        puts(" live-State.rip="); puts(ok ? "" : "(unreadable)"); if (ok) puthex((u64)state_rip);
+        puts("\n");
+    }
     static u64 count;
     if (count++ >= 12 || !context) return;
     unsigned char *ctx = (unsigned char *)context;
