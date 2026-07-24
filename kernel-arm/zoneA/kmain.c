@@ -201,6 +201,10 @@ int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned lon
 int nt_arena_commit(unsigned long base, unsigned long size);
 void nt_fault_region(const char *label, unsigned long addr);
 int nt_fault_read32(unsigned long addr, unsigned int *word_out);
+// CHALICE C4-59: shared State.rip reader + cycle counter (ntfile.c/h) --
+// same file-local-prototype convention as the declarations right above.
+int nt_wow64_live_state_rip(unsigned long teb, unsigned long *rip_out);
+extern unsigned long nt_c459_cycle;
 
 // CHALICE C3c Atom 3C-2b: IRQ-driven PC-sampling profiler. Armed only
 // around a specific call (shell.c pe6) so it never fires during normal
@@ -937,6 +941,22 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
     }
     puts("CHALICE EXCEPTION: code="); puthex(status);
     puts(" elr="); puthex(elr); puts(" dispatch="); puthex(dispatcher); puts("\n");
+    // CHALICE C4-59: cycle counter + live FEXCore State.rip, tagged at every
+    // guest-exception DELIVERY this function performs (superset of the
+    // 0x26D0C02B0 self-fault class C4-58 named -- grep this floor's own
+    // "elr=0x26D0C02B0" cycles out of the full timeline below). teb =
+    // regs_safe[18] (interrupted guest's own x18/TEB, same C4-22-grounded
+    // read the TLS PROBE block above already performs) -- see ntfile.h/.c
+    // for the full State.rip pointer-chain receipt.
+    {
+        unsigned long state_rip = ~0UL;
+        int ok = nt_wow64_live_state_rip((unsigned long)regs_safe[18], &state_rip);
+        nt_c459_cycle++;
+        puts("CHALICE C4-59: cycle="); puthex((u64)nt_c459_cycle);
+        puts(" elr="); puthex(elr);
+        puts(" State.rip="); puts(ok ? "" : "(unreadable)"); if (ok) puthex((u64)state_rip);
+        puts("\n");
+    }
     // CHALICE C4-29 MEASURE step 1: who called the faulting code -- x30/LR
     // as captured by SAVEALL_SYNC (regs_safe[30], the pre-fault caller
     // return address, not a stack scan) resolved the same way sync_handler's

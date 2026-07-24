@@ -188,3 +188,28 @@ int nt_image_base_by_name(const char *name, unsigned long *base_out, unsigned lo
 // between is plain aarch64-elf C, free to clobber x18 as scratch).
 void nt_wow64_maybe_notify_protect(unsigned long base, unsigned long size,
                                     unsigned long new_protect, unsigned long teb);
+
+// CHALICE C4-59: shared live-State.rip reader -- TEB(x18) -> TlsSlots[16]
+// (WOW64_TLS_THREAD_STATE, InternalThreadState*) -> CurrentFrame (FIRST
+// member of InternalThreadState, offset 0, FEXCore/include/FEXCore/Debug/
+// InternalThreadState.h:91 "CpuStateFrame* const CurrentFrame = &BaseFrame
+// State;") -> CpuStateFrame::State (FIRST member of CpuStateFrame, offset 0,
+// CoreState.h:393-394) -> CPUState::rip (offset 0x18: InlineJITBlockHeader
+// u64@0 + DeferredSignalRefCount u64@8 + pf_raw u32@16 + af_raw u32@20 ->
+// rip u64, 8-aligned, @24=0x18; offsets independently re-derived AND
+// compile-checked against the real FEX/FEXCore/include/FEXCore/Core/
+// CoreState.h header this atom, not hand-guessed -- see HANDOFF.md C4-59).
+// Returns 1 + *rip_out on a fully-readable chain, 0 (■ *rip_out untouched)
+// on any unreadable/out-of-range link -- same nt_fault_read32 safe-probe
+// discipline as every other arena/territory-aware reader in this file.
+int nt_wow64_live_state_rip(unsigned long teb, unsigned long *rip_out);
+
+// CHALICE C4-59: shared cycle counter -- incremented once per guest
+// exception DELIVERY in kmain.c's sync_try_guest_exception (every self-
+// fault/AV cycle this floor forwards to the guest, including the
+// elr=0x26D0C02B0 dispatcher-marker self-fault class C4-58 named), read
+// (never incremented) by ntsvc.c's NtSetInformationThread(ThreadWow64
+// Context) to tag its own eip<-write receipts with "which cycle" they
+// landed in -- correlates the two instrumentation sites into one ordered
+// timeline without a shared call path between the two translation units.
+extern unsigned long nt_c459_cycle;

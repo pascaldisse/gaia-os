@@ -1479,6 +1479,13 @@ long NtQueryInformationThread(void *ThreadHandle, unsigned long ThreadInformatio
 // =====================================================================
 long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationClass,
                              const void *ThreadInformation, unsigned long ThreadInformationLength) {
+    // CHALICE C4-59: capture the caller's guest TEB (x18) as this function's
+    // OWN absolute first statement -- same x18-clobber-safety idiom C4-48/
+    // 53/54 already established (every callee below, rd32/puts/puthex/
+    // nt_wow64_live_state_rip itself, is plain aarch64-elf C, free to
+    // clobber x18 as scratch -- a read anywhere later than this first line
+    // would silently read garbage, not the guest TEB).
+    u64b nt_c459_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c459_teb));
     (void)ThreadHandle;
     if (ThreadInformationClass != 29 /* ThreadWow64Context */) return STATUS_NOT_IMPLEMENTED;
     if (!ThreadInformation) return STATUS_INVALID_PARAMETER;
@@ -1492,6 +1499,20 @@ long NtSetInformationThread(void *ThreadHandle, unsigned long ThreadInformationC
     if (nt_dispatch_log_enabled) {
         puts("CHALICE: NtSetInformationThread ThreadWow64Context <- eip=");
         puthex(nt_wow64_ctx_eip); puts(" esp="); puthex(nt_wow64_ctx_esp); puts("\n");
+    }
+
+    // CHALICE C4-59: tag this write with the SAME cycle counter kmain.c's
+    // sync_try_guest_exception increments per guest-exception delivery
+    // (nt_c459_cycle, ntfile.c/h -- read-only here, cross-TU correlation),
+    // plus this syscall's OWN live FEXCore State.rip reading (nt_c459_teb
+    // captured at function entry, above, before anything could clobber x18).
+    {
+        u64b state_rip = ~0ULL;
+        int ok = nt_wow64_live_state_rip(nt_c459_teb, &state_rip);
+        puts("CHALICE C4-59: NtSetInformationThread at cycle="); puthex(nt_c459_cycle);
+        puts(" incoming-eip="); puthex(nt_wow64_ctx_eip);
+        puts(" live-State.rip="); puts(ok ? "" : "(unreadable)"); if (ok) puthex(state_rip);
+        puts("\n");
     }
 
     // CHALICE C4-41: this SET call is exactly how FEX reflects the guest

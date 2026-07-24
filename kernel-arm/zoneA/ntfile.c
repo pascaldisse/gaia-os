@@ -610,6 +610,39 @@ int nt_fault_read32(unsigned long addr, unsigned int *word_out) {
     return 1;
 }
 
+// CHALICE C4-59: shared cycle counter, see ntfile.h for the full receipt.
+unsigned long nt_c459_cycle;
+
+// CHALICE C4-59: shared live-State.rip reader, see ntfile.h for the full
+// donor-derived offset receipt (TEB -> TlsSlots[16] -> CurrentFrame -> State
+// -> rip, offsets independently re-derived AND compile-checked against the
+// real FEX/FEXCore/include/FEXCore/Core/CoreState.h +
+// FEXCore/include/FEXCore/Debug/InternalThreadState.h headers this atom).
+// Reuses nt_fault_read32's arena/territory/vm-region-aware safe-probe --
+// this pointer chain lives in the reserve-commit ARENA (>=4GB), never the
+// plain NT_RAM_BASE..NT_RAM_TOP identity window (same reasoning C4-31's own
+// SynchronousFaultData reader already established for this exact chain).
+int nt_wow64_live_state_rip(unsigned long teb, unsigned long *rip_out) {
+    // teb (x18) is the kernel's own territory-allocated TEB once a guest
+    // thread is running (ntsvc.c's TlsSlots wiring writes it unchecked the
+    // same way, ~line 2375) -- non-null is the only precondition needed;
+    // the pointer chain PAST this raw TlsSlots read goes through
+    // nt_fault_read32's arena/territory-aware safe probe below.
+    if (!teb) return 0;
+    unsigned long thread_state = *(volatile unsigned long *)(teb + 0x1480 + 16 * 8);
+    if (!thread_state) return 0;
+    unsigned int cf_lo = 0, cf_hi = 0;
+    if (!nt_fault_read32(thread_state + 0, &cf_lo) ||
+        !nt_fault_read32(thread_state + 4, &cf_hi)) return 0;
+    unsigned long current_frame = ((unsigned long)cf_hi << 32) | cf_lo;
+    if (!current_frame) return 0;
+    unsigned int r_lo = 0, r_hi = 0;
+    if (!nt_fault_read32(current_frame + 0x18, &r_lo) ||
+        !nt_fault_read32(current_frame + 0x1c, &r_hi)) return 0;
+    *rip_out = ((unsigned long)r_hi << 32) | r_lo;
+    return 1;
+}
+
 // RESERVE: carve `size` bytes of VA from the arena -- bump-only, zero
 // physical cost (no window touched, no L2 entry written). NULL on arena
 // VA exhaustion (bump-only per-boot; wholesale reset below is the reclaim,
