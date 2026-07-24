@@ -1728,6 +1728,19 @@ long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned lo
     // (every callee below is plain aarch64-elf C, free to clobber x18).
     u64b nt_c453_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c453_teb));
 
+    // CHALICE C4-60: unconditional raw-argument receipt, printed BEFORE the
+    // null/zero-size early return below and BEFORE nt_wow64_maybe_notify_protect
+    // is ever reached -- unlike that function's own "HandleMemoryProtectionNotification"
+    // print (which only fires once base/size are both proven nonzero), this
+    // fires on EVERY NtProtectVirtualMemory call, so a call that early-returns
+    // STATUS_INVALID_PARAMETER (null BaseAddress/RegionSize or zero *RegionSize)
+    // is still visible in the transcript. Measurement-only, no control-flow change.
+    puts("CHALICE C4-60: NtProtectVirtualMemory BaseAddress_ptr="); puthex((u64b)BaseAddress);
+    puts(" *BaseAddress="); puthex(BaseAddress ? (u64b)*BaseAddress : 0xFFFFFFFFFFFFFFFFULL);
+    puts(" RegionSize_ptr="); puthex((u64b)RegionSize);
+    puts(" *RegionSize="); puthex(RegionSize ? (u64b)*RegionSize : 0xFFFFFFFFFFFFFFFFULL);
+    puts(" NewProtect="); puthex((u64b)NewProtect); puts("\n");
+
     (void)ProcessHandle;
     if (!BaseAddress || !*BaseAddress || !RegionSize || *RegionSize == 0) return STATUS_INVALID_PARAMETER;
     if (OldProtect) {
