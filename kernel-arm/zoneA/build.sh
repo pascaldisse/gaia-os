@@ -162,9 +162,6 @@ if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$S
         sortdefault.nls="$STOCK_DIR/sortdefault.nls" \
         l_intl.nls="$STOCK_DIR/l_intl.nls" \
         hello8_x86.exe="../chalice/hello8_x86.exe" \
-        hello9d_x86.exe="../chalice/hello9d_x86.exe" \
-        hello9c_x86.exe="../chalice/hello9c_x86.exe" \
-        hello9b_x86.exe="../chalice/hello9b_x86.exe" \
         $WOW64_ARGS
 elif [ ! -f disk.img ]; then
     dd if=/dev/zero of=disk.img bs=1m count=4 2>/dev/null
