@@ -417,6 +417,24 @@ void nt_dbg_arm_watchpoint(unsigned long current_frame) {
     asm volatile("isb");
     puts("CHALICE C4-68: watchpoint ARMED addr="); puthex(c468_watch_addr);
     puts(" (CurrentFrame="); puthex(current_frame); puts(")\n");
+    // C4-68 verify-early: confirm the CPU model exposes >=1 watchpoint
+    // (ID_AA64DFR0_EL1.WRPs, bits[23:20], count-1 encoded) and that our
+    // writes actually latch (read every debug reg straight back) -- rules
+    // out "register not implemented"/"write silently ignored" before
+    // trusting a zero-hit result as "TCG doesn't deliver".
+    {
+        u64 dfr0, rb_wvr, rb_wcr, rb_mdscr;
+        asm volatile("mrs %0, id_aa64dfr0_el1" : "=r"(dfr0));
+        asm volatile("mrs %0, dbgwvr0_el1" : "=r"(rb_wvr));
+        asm volatile("mrs %0, dbgwcr0_el1" : "=r"(rb_wcr));
+        asm volatile("mrs %0, mdscr_el1" : "=r"(rb_mdscr));
+        puts("CHALICE C4-68 VERIFY: id_aa64dfr0_el1="); puthex(dfr0);
+        puts(" WRPs(bits23:20)="); puthex((dfr0 >> 20) & 0xf);
+        puts(" readback dbgwvr0="); puthex(rb_wvr);
+        puts(" dbgwcr0="); puthex(rb_wcr);
+        puts(" mdscr_el1="); puthex(rb_mdscr);
+        puts("\n");
+    }
 }
 
 // Full x0-x30 + 64-byte code-window dump at the SAVED culprit elr/regs --
