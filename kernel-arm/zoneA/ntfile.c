@@ -643,6 +643,55 @@ int nt_wow64_live_state_rip(unsigned long teb, unsigned long *rip_out) {
     return 1;
 }
 
+// CHALICE C4-64: shared live State.gregs[REG_RSP]/[guest-stack] probe, see
+// ntfile.h for the full gregs[]-offset derivation receipt (CoreState.h/
+// X86Enums.h direct field reads, CurrentFrame+0x40). Same TEB->TlsSlots[16]
+// ->CurrentFrame chain as nt_wow64_live_state_rip above (deliberately NOT
+// factored to share code with it -- this floor's established convention,
+// same reasoning nt_wow64_live_state_rip's own header comment gives, is one
+// self-contained guarded-probe function per reader, no shared internal
+// helper to keep each one auditable in isolation). Returns CurrentFrame (0
+// if not yet known -- caller's own "CurrentFrame known" gate). Each of
+// rip/rsp/stackword is validated independently; stackword additionally
+// requires rsp itself to be nonzero and mapped (GUARDED -- nt_fault_read32's
+// arena/territory/vm-region-aware check -- never derefs an unmapped guest
+// address, never faults the floor).
+unsigned long nt_wow64_live_state_probe(unsigned long teb,
+                                         unsigned long *rip_out, int *rip_valid,
+                                         unsigned long *rsp_out, int *rsp_valid,
+                                         unsigned int *stackword_out, int *stackword_valid) {
+    *rip_valid = 0; *rsp_valid = 0; *stackword_valid = 0;
+    if (!teb) return 0;
+    unsigned long thread_state = *(volatile unsigned long *)(teb + 0x1480 + 16 * 8);
+    if (!thread_state) return 0;
+    unsigned int cf_lo = 0, cf_hi = 0;
+    if (!nt_fault_read32(thread_state + 0, &cf_lo) ||
+        !nt_fault_read32(thread_state + 4, &cf_hi)) return 0;
+    unsigned long current_frame = ((unsigned long)cf_hi << 32) | cf_lo;
+    if (!current_frame) return 0;
+
+    unsigned int r_lo = 0, r_hi = 0;
+    if (nt_fault_read32(current_frame + 0x18, &r_lo) &&
+        nt_fault_read32(current_frame + 0x1c, &r_hi)) {
+        *rip_out = ((unsigned long)r_hi << 32) | r_lo;
+        *rip_valid = 1;
+    }
+
+    unsigned int sp_lo = 0, sp_hi = 0;
+    if (nt_fault_read32(current_frame + 0x40, &sp_lo) &&
+        nt_fault_read32(current_frame + 0x44, &sp_hi)) {
+        unsigned long rsp = ((unsigned long)sp_hi << 32) | sp_lo;
+        *rsp_out = rsp;
+        *rsp_valid = 1;
+        unsigned int word = 0;
+        if (rsp && nt_fault_read32(rsp, &word)) {
+            *stackword_out = word;
+            *stackword_valid = 1;
+        }
+    }
+    return current_frame;
+}
+
 // RESERVE: carve `size` bytes of VA from the arena -- bump-only, zero
 // physical cost (no window touched, no L2 entry written). NULL on arena
 // VA exhaustion (bump-only per-boot; wholesale reset below is the reclaim,
@@ -1205,7 +1254,10 @@ typedef long (*BTCpuNotifyMapViewOfSectionFn)(void *Unk1, void *Address, void *U
                                                u64b Size, unsigned long AllocType,
                                                unsigned long Prot);
 static u64b nt_btcpu_notify_map_addr;
-static int nt_wow64_ready;   // CHALICE C4-53 -- see set-site in nt_wow64_maybe_notify_map_view
+int nt_wow64_ready;   // CHALICE C4-53 -- see set-site in nt_wow64_maybe_notify_map_view.
+                      // WAS file-static; widened to extern (ntfile.h) this
+                      // atom (C4-64) so ntsvc.c's svc-entry dispatch log can
+                      // gate its own probe on it -- no other file touches it.
 
 // CHALICE C4-48 bug1 fix: `teb` is the guest TEB captured by the CALLER
 // (NtMapViewOfSection, below) as its OWN first statement -- i.e. the SAME

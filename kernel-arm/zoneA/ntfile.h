@@ -213,3 +213,48 @@ int nt_wow64_live_state_rip(unsigned long teb, unsigned long *rip_out);
 // landed in -- correlates the two instrumentation sites into one ordered
 // timeline without a shared call path between the two translation units.
 extern unsigned long nt_c459_cycle;
+
+// CHALICE C4-53: FEX WOW64 runtime (InvalidationTracker et al.) proven
+// constructed -- set once, ntfile.c's nt_wow64_maybe_notify_map_view, the
+// FIRST time a real guest x86 (Machine 0x14C) image other than ntdll.dll is
+// mapped (only reachable after BTCpuProcessInit has already run). WAS
+// file-static; widened to extern this atom so ntsvc.c's svc-entry dispatch
+// log (nt_dispatch_log) can gate its own CHALICE C4-64 probe on it without
+// inventing a second flag.
+extern int nt_wow64_ready;
+
+// CHALICE C4-64: extends C4-59's nt_wow64_live_state_rip reader (same TEB->
+// TlsSlots[16]->CurrentFrame chain, same nt_fault_read32 guarded-probe
+// discipline) to ALSO read CpuStateFrame::State.gregs[REG_RSP] and the 4
+// bytes AT that guest-stack address -- the exact two quantities candidate #8
+// (WowSyscallHandler::HandleSyscallImpl, FEX/Source/Windows/WOW64/Module.cpp:
+// 434-435/464) reads/writes on every real Nt* syscall dispatch:
+//   ReturnRIP = *(uint32_t*)(Frame->State.gregs[REG_RSP])   (Module.cpp:434)
+//   Frame->State.rip = ReturnRIP                            (Module.cpp:464)
+// gregs[] offset within CPUState, derived this atom by direct field-order
+// reading of FEX/FEXCore/include/FEXCore/Core/CoreState.h (no compile, same
+// method C4-63's own bonus section used for the rip offset): InlineJIT
+// BlockHeader u64@0 (CoreState.h:91) + DeferredSignalRefCount u64@8
+// (CoreState.h:94, sizeof==8 per its own static_assert) + pf_raw u32@0x10 +
+// af_raw u32@0x14 (CoreState.h:101-102) + rip u64@0x18 (CoreState.h:104,
+// C4-59/63-confirmed) -> gregs[16] u64[] @0x20 (CoreState.h:106). Cross-
+// checked against the header's OWN static_assert: offsetof(CPUState,
+// gregs[0]) % 16 == 0 -- 0x20 % 16 == 0, consistent. REG_RSP = 4 (FEXCore/
+// include/FEXCore/Core/X86Enums.h:15, enum X86Reg). gregs[REG_RSP] absolute
+// byte offset = 0x20 (gregs base) + 4*8 (REG_RSP index * 8B/slot) = 0x40.
+// Since CpuStateFrame::State is asserted offsetof==0 (CoreState.h, same
+// static_assert C4-59 cited for rip), CurrentFrame+0x40 IS Frame->State.
+// gregs[REG_RSP] -- the guest ESP value, zero/sign-extended into the 64-bit
+// slot, used verbatim by HandleSyscallImpl as a GUEST MEMORY ADDRESS to
+// dereference.
+// Returns CurrentFrame (0 if TEB/thread_state/CurrentFrame not yet known --
+// caller's own gate for "CurrentFrame known", never guesses). On a nonzero
+// return, *rip_valid/*rsp_valid/*stackword_valid are each independently set
+// 1 only if that specific guarded read succeeded (matches nt_fault_read32's
+// arena/territory/vm-region-aware mapped check) -- *stackword_valid==0 means
+// the guest stack address itself is UNMAPPED, caller prints that verbatim,
+// never dereferences further (never faults the floor).
+unsigned long nt_wow64_live_state_probe(unsigned long teb,
+                                         unsigned long *rip_out, int *rip_valid,
+                                         unsigned long *rsp_out, int *rsp_valid,
+                                         unsigned int *stackword_out, int *stackword_valid);

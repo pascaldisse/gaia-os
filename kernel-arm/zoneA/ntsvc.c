@@ -1859,6 +1859,14 @@ static void nt_log_putdec(u64b v) {
 void nt_dispatch_log_reset(void) { nt_dispatch_log_count = 0; }
 
 void nt_dispatch_log(unsigned long id_arg, void *handler) {
+    // CHALICE C4-64: capture the caller's guest TEB (x18) as this
+    // function's OWN absolute first statement -- same stash-immediately
+    // idiom C4-59's NtSetInformationThread capture established (every
+    // callee below -- rd32/puts/puthex/nt_wow64_live_state_probe itself --
+    // is plain aarch64-elf C, free to clobber x18 as scratch; a read any
+    // later than this first line would silently read garbage, not the
+    // guest TEB).
+    u64b nt_c464_teb; __asm__ volatile("mov %0, x18" : "=r"(nt_c464_teb));
     u64b id = (u64b)id_arg;
     volatile u8 *ctx = nt_exception_context_watch;
     // C4-21 → every floor re-entry after exception delivery; brackets owner.
@@ -1869,6 +1877,41 @@ void nt_dispatch_log(unsigned long id_arg, void *handler) {
         puts(" sp="); puthex(rd64((const u8 *)ctx + 0x100)); puts("\n");
     }
     if (!nt_dispatch_log_enabled) return;
+
+    // CHALICE C4-64: candidate #8 live syscall-window probe (HANDOFF/FEX-MAP
+    // §C4-64) -- one line per svc dispatch, UNCAPPED (placed BEFORE the
+    // NT_DISPATCH_LOG_FIRST_N cap below on purpose, same reasoning C4-59's
+    // own uncapped NtContinue instrumentation used: this atom's target
+    // window sits well past the cap by late boot, C4-59's own receipt).
+    // Gated on nt_wow64_ready (FEX WOW64 runtime/InvalidationTracker proven
+    // constructed, ntfile.c) AND CurrentFrame known (nt_wow64_live_state_
+    // probe's own nonzero return) -- prints NOTHING at all until both hold,
+    // per this atom's own law. Timing note (see HANDOFF §C4-64): fires
+    // NESTED inside WowSyscallHandler::HandleSyscallImpl (Module.cpp:434-
+    // 464), AFTER its ReturnRIP=*(guest stack) read but BEFORE its own
+    // Frame->State.{rip,gregs[RSP]}=... restore write for THIS dispatch --
+    // so each printed line shows the PREVIOUS dispatch's already-committed
+    // restore (rip/rsp) plus the guest stack bytes THIS dispatch's own
+    // ReturnRIP read will consume ([rsp]).
+    if (nt_wow64_ready) {
+        unsigned long c464_rip = 0, c464_rsp = 0;
+        int c464_rip_ok = 0, c464_rsp_ok = 0, c464_sw_ok = 0;
+        unsigned int c464_stackword = 0;
+        unsigned long c464_cf = nt_wow64_live_state_probe(nt_c464_teb,
+            &c464_rip, &c464_rip_ok, &c464_rsp, &c464_rsp_ok,
+            &c464_stackword, &c464_sw_ok);
+        if (c464_cf) {
+            puts("CHALICE C4-64: svc id="); nt_log_putdec(id);
+            if (c464_rip_ok) { puts(" rip="); puthex(c464_rip); }
+            else puts(" rip=UNREADABLE");
+            if (c464_rsp_ok) { puts(" rsp="); puthex(c464_rsp); }
+            else puts(" rsp=UNREADABLE");
+            if (c464_sw_ok) { puts(" [rsp]="); puthex((u64b)c464_stackword); }
+            else puts(" [rsp]=UNMAPPED");
+            puts("\n");
+        }
+    }
+
     nt_dispatch_log_count++;
     int unknown = (handler == 0);
     int unimpl  = (!unknown && handler == (void *)NtStub);
