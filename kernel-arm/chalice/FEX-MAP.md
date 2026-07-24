@@ -1,5 +1,90 @@
 # CHALICE FEX map — Hangover 11.9
 
+## C4-62 — `elr=0x26D0C02B0` identified as FEXCore's own `GuestSignal_SIGSEGV` deliberate self-fault trampoline (real vendored source match, not inference); its consumer is gated on `SynchronousFaultData`, not on this floor's raw ARM64 fault classification, and this floor's existing classification for the fault shape already matches every prior working `NoExecOp` delivery. No fix applied.
+
+**Task**: test whether `elr=0x26D0C02B0` (`mov w1,#0; ldr x1,[x1]`, dfsc=0x06 translation fault, far=0x0, C4-61) is a deliberately-designed FEX-internal trap that a FEX-side handler is supposed to catch, PROVIDED it receives the correct NT status code from this floor — the same bug-class shape as C4-38/39/40's alignment fix (where `BTCpuResetToConsistentStateImpl`'s `HandleUnalignedAccess` gate genuinely required a status code, `STATUS_DATATYPE_MISALIGNMENT`, this floor originally never produced).
+
+**Step 1 — wider disassembly, `elr-128..elr-32` (24 more 32-bit words, none previously captured)**: extended the existing `elr==0x26D0C02B0`-gated diagnostic (`kmain.c`, `sync_try_guest_exception`, C4-61's own addition) with a second dump covering the 96 bytes immediately before C4-61's own `elr-32..elr+64` window, +18 lines. Built (`GAIA_NO_RUN=1 ./build.sh`, `timeout 180`), checkpoint-committed (`01a14c1`), canonical `pe10 fex` re-run FIRST confirming the new print stays silent and `ret=42` is unaffected (`scratch/c4-62_pe10_fex_canonical_prefix_receipt.log`). Temp hello9 swap re-applied (exact C4-55..61 method, `shell.c`/`build.sh` two-line diff, `mkpe32.sh` rebuild), checkpoint-committed (`c2a06c3`), booted (`timeout 240 python3 scratch/pe10_probe.py fex`, receipt `scratch/c4-62_hello9_boot_receipt.log`).
+
+Live capture at the terminal fault, combined with C4-61's own already-captured `elr-32..elr+64` window and disassembled with `aarch64-elf-objdump -D -b binary -m aarch64` (full 192-byte window, `elr-128..elr+64`):
+```
+   elr-128: stp x5, x6, [x28, #48]
+   elr-124: stp x8, x9, [x28, #64]
+   elr-120: stp x10, x11, [x28, #80]
+   elr-116: stp w26, w27, [x28, #16]
+   elr-112: add x0, x28, #0x1c0
+   elr-108: st1 {v16.2d-v19.2d}, [x0], #64
+   elr-104: st1 {v20.2d-v23.2d}, [x0], #64
+   elr-100: hlt #0x0
+   elr-96:  mrs x0, nzcv
+   elr-92:  str w0, [x28, #1032]
+   elr-88:  str x25, [x28, #176]
+   elr-84:  stp x4, x7, [x28, #32]
+   elr-80:  stp x5, x6, [x28, #48]
+   elr-76:  stp x8, x9, [x28, #64]
+   elr-72:  stp x10, x11, [x28, #80]
+   elr-68:  stp w26, w27, [x28, #16]
+   elr-64:  add x0, x28, #0x1c0
+   elr-60:  st1 {v16.2d-v19.2d}, [x0], #64
+   elr-56:  st1 {v20.2d-v23.2d}, [x0], #64
+   elr-52:  brk #0x0
+   elr-48:  mrs x0, nzcv
+   elr-44:  str w0, [x28, #1032]
+   elr-40:  str x25, [x28, #176]
+   elr-36:  stp x4, x7, [x28, #32]
+   elr-32..elr+28: (C4-61's own already-disassembled window: SpillStaticRegs sequence, `mov w1,#0`, `ldr x1,[x1]` <FAULT>, then another SpillStaticRegs sequence starting)
+```
+**Conditional-branch finding, explicit**: the full 40-instruction, 192-byte window (`elr-128..elr+64`) contains ZERO `cbz`/`cbnz`/`b.cond`/`tbz`/`tbnz`/`b`/`bl`/`br` instructions of any kind — every word decodes to a register spill (`stp`/`st1`), a fixed terminal instruction (`hlt #0`, `brk #0`, or the `mov w1,#0`+`ldr x1,[x1]` pair), or `mrs`/`str` instructions belonging to the START of the next block in memory. This rules out the "reached via a conditional branch from earlier code" half of the task's own question: there is no runtime skip/condition anywhere in this local window. The three trap instructions (`hlt`, `brk`, the null-deref) are each the FIXED, unconditional TAIL of their own respective code block, and each block is entered from FAR AWAY via a separate indirect branch (see Step 2), not via straight-line fallthrough from guest code or a local conditional check.
+
+**Step 2 — FEX source search, real match found**: searched the vendored tree (`./FEX`, confirmed present at repo root, `FEX/FEXCore/Source/Interface/Core/Dispatcher/Dispatcher.cpp`). Lines 394-430 emit, in this exact order (confirmed against the LIVE disassembly above, byte-for-byte, not merely by name):
+```cpp
+{
+  // Guest SIGILL handler
+  GuestSignal_SIGILL = GetCursorAddress<uint64_t>();
+  SpillStaticRegs(TMP1);
+  hlt(0);
+}
+{
+  // Guest SIGTRAP handler
+  GuestSignal_SIGTRAP = GetCursorAddress<uint64_t>();
+  SpillStaticRegs(TMP1);
+  brk(0);
+}
+{
+  // Guest Overflow handler
+  GuestSignal_SIGSEGV = GetCursorAddress<uint64_t>();
+  SpillStaticRegs(TMP1);
+  // hlt/udf = SIGILL ; brk = SIGTRAP ; ??? = SIGSEGV
+  // Force a SIGSEGV by loading zero
+  if (CTX->ExitOnHLTEnabled()) { /* ret path, not taken on this floor */ }
+  else {
+    LoadConstant(ARMEmitter::Size::i64Bit, ARMEmitter::Reg::r1, 0);
+    ldr(ARMEmitter::XReg::x1, ARMEmitter::Reg::r1);
+  }
+}
+```
+`LoadConstant(x1,0)` compiles to `mov w1,#0x0` (32-bit write, zero-extends `x1`); `ldr(x1,x1)` compiles to `ldr x1,[x1]` — an exact, instruction-for-instruction match to the fault Step 1 disassembled, including the identical `SpillStaticRegs`-shaped prologue and the identical adjacency to the `hlt`/`brk` siblings, in the identical order. This IS a deliberate fault-as-signal idiom, confirmed against real source, matching the task's own premise precisely.
+
+`GuestSignal_SIGSEGV` is entered ONLY via `IR::Break(FAULT_SIGSEGV)` (`FEX/FEXCore/Source/Interface/Core/JIT/MiscOps.cpp`, `DEF_OP(Break)`, already partially cited in this file's own C4-33 entry): `IR::Break` FIRST writes `CpuStateFrame::SynchronousFaultData` (`FaultToTopAndGeneratedException=1`, plus `Signal`/`TrapNo`/`si_code`/`err_code` taken from the IR op's own `Reason`, a JIT-compile-time constant chosen by the x86 frontend's own emitters — `NoExecOp`/`PermissionRestrictedOp`/`INT n`/`INTO`/`HLT`, per `OpcodeDispatcher.cpp`, already cited by this file's own C4-33 entry) THEN does `ldr(TMP1, STATE, offsetof(CpuStateFrame, Pointers.GuestSignal_SIGSEGV)); br(TMP1);`. The decision to reach this trampoline is made EARLIER, at JIT-compile time, by which `IR::Break` variant the frontend emitted for the ORIGINAL guest instruction — not by any runtime condition inside the trampoline arena itself (consistent with Step 1's own finding of zero local conditional branches).
+
+**The consumer, found**: `FEX::Windows::HandleGuestException` (`FEX/Source/Windows/Common/Exception.h:12-79`) is the real, present-in-source handler this task's step 2 asked for — it reads `CpuStateFrame::SynchronousFaultData` and reconstructs the guest-visible `EXCEPTION_RECORD` from `Fault.Signal`/`Fault.TrapNo`/`Fault.err_code`, entirely independent of whatever native `EXCEPTION_RECORD`/status code this floor supplies as its own `Src` parameter beyond having reached this consume path at all. For `FAULT_SIGSEGV`+`TrapNo==X86_TRAPNO_PF` (the exact `NoExecOp` signature this fault carries, confirmed below): `Dst.NumberParameters=2; Dst.ExceptionInformation[0]=EXCEPTION_EXECUTE_FAULT; Dst.ExceptionInformation[1]=Rip;` and, UNCONDITIONALLY before the switch, `Dst.ExceptionAddress=reinterpret_cast<void*>(Rip);` — `Rip` here is FEX's OWN internally-tracked guest x86 program counter (`State.rip`), not a field this floor's classifier computes or supplies. Unlike `BTCpuResetToConsistentStateImpl`'s `EXCEPTION_DATATYPE_MISALIGNMENT` gate (C4-39, which DID require a specific incoming status code this floor originally never produced), `HandleGuestException` has NO gate on the incoming status code's specific value — it is unconditionally invoked for this whole class of self-generated faults and derives everything it needs from `SynchronousFaultData` alone.
+
+**Cross-check against this floor's own already-successful deliveries, live re-read, no rebuild needed**: this file's own C4-30/31/33 entries already establish that every PRIOR `NoExecOp` self-fault on this floor (`exe_entry`, `kernelbase.dll+0x68BD0`, C4-27's stub page) carried the identical `SynchronousFaultData` fingerprint — `Signal=SIGSEGV(0xB) TrapNo=PF(0xE) si_code=2 err_code=0x15(PROT|USER|INSTR)` — and was delivered correctly end-to-end under this floor's SAME, unconditional `STATUS_ACCESS_VIOLATION`/`params=2` classification (`kmain.c`'s `sync_try_guest_exception`, the generic `ec==0x24||0x25` Data-Abort branch — no `NoExecOp`-specific branch has ever existed there, and none was ever needed). Re-read the ALREADY-ON-DISK `scratch/c4-59_hello9_v2_receipt_full.log`'s own `SynchronousFaultData` print at the terminal `elr=0x26D0C02B0` fault (the SAME fault this atom targets, no new boot needed for this specific check): `raw=0x15020E0B01 FaultToTopAndGeneratedException=1 Signal=0xB TrapNo=0xE si_code=2 err_code=0x15` — BYTE-IDENTICAL to the canonical `NoExecOp` fingerprint. This fault is not a new, unhandled signal class requiring a new classification branch; it is the SAME class this floor's classifier already produces the correct status code for.
+
+**Step 3/4 verdict**: the task's own condition 3 ("a handler that expects THIS kind of fault ... PROVIDED it receives the right NT exception status code from us") is satisfied on the source-match half but not actionable on the "provided the right status code" half, because this floor's status code for this exact fault shape is ALREADY correct — proven by identical prior successful deliveries under the same classification, not merely assumed. There is no narrower `dfsc==0x06 AND far==0 AND elr-in-arena` branch to add: the existing unconditional `STATUS_ACCESS_VIOLATION` branch for non-alignment Data Aborts is not wrong for this fault, and a narrower branch would produce the identical `status`/`params` value this floor already produces — changing nothing observable, since `HandleGuestException`'s `ExceptionAddress`/`ExceptionInformation[1]` are sourced from `Rip` (FEX's own `State.rip`), never from this floor's `status` value. Per the task's own condition-4 spirit (no actionable gap that would change behavior): **no fix applied**.
+
+**`addr=0x0`, explained without reopening C4-58/59**: `HandleGuestException`'s `Rip`-sourced `ExceptionAddress`/`ExceptionInformation[1]` explain the observed `addr=0x0` completely — `Rip`=`State.rip`, which C4-58/59's own live measurement already proved is EXACTLY `0x0` at this precise fault ("the zeroing event", the first and only zero `State.rip` value either boot ever produces, occurring strictly inside the vendored `libwow64fex.dll`'s own native dispatch-loop bookkeeping, between the last successful `NtContinue` resume and this fault, with zero syscall/exception boundary crossing it visible to this floor, per C4-59's own tightest-possible measurement window). No status-code choice in `sync_try_guest_exception` can change `State.rip`'s value — this task's own theory (a misclassification masking a would-be self-heal or a differently-shaped delivery) does not hold for the observed symptom either: a "perfectly" classified record would still report `addr=0x0`, for the same upstream reason C4-58/59 already named and time-boxed as blob-internal.
+
+**hello9 boot outcome, re-tested**: receipt `scratch/c4-62_hello9_boot_receipt.log`. UNCHANGED from every prior atom (C4-56/57/58/59/61): `NtRaiseException code=0xC0000005 addr=0x0`, `FirstChance=FALSE`, `pe10 ret=3221225477`; final `CHALICE C4-25 GUEST CTX` dump shows `Eip=0x47661000 (hello9_x86.exe+0x1000)`, byte-identical to the boot-seeded `exe_entry` value — the guest CPU never advanced. Grepped the full boot transcript for `hello9_x86.c`'s own milestone string (`"hello9: the door opens"`) and for `WriteFile`/`GetStdHandle`: zero occurrences — the milestone is NOT reached, matching C4-58/59's own already-established verdict (guest Eip never leaves `exe_entry`) exactly.
+
+**Revert + canonical reconfirm**: hello9 swap (`shell.c`/`build.sh`) reverted to the exact pre-swap commit (`git checkout 82eec0a -- shell.c build.sh`), confirmed net-zero via `git diff 82eec0a`; `hello9_x86.exe`/`.pdb` removed (untracked, rebuildable via `kernel-arm/chalice/mkpe32.sh`); build-artifact/PE-timestamp churn (`chalice/{fake-ntdll.dll,hello1-7.exe,hello8_x86.exe,mini.dll}`, `zoneA/pehello_bin.c`) reverted before every commit this atom. Canonical `pe10 fex` re-run AFTER the full revert (`scratch/c4-62_pe10_fex_canonical_final_receipt.log`): `CHALICE C4-55: NtTerminateProcess ProcessHandle=0xFFFFFFFF ExitStatus=0x2A` → **`pe10 ret=42` STILL HOLDS**, no regression (the new diagnostic is silent on both canonical boots — before AND after the swap — `elr` never equals `0x26D0C02B0` on the canonical hello8 path).
+
+**Gates, no regression** (`kernel-arm/zoneA/scratch/c4-62_{pe8,pe9,ramfb}_gate.log`): `pe8_gate.py` → `pe8 ret=78`, GATE PASS (one transient `BrokenPipeError` drain-timing flake on first attempt — same flake class C4-56 already documented — clean on rerun). `pe9_gate.py` → both backends `pe9 ret=0`/`pe9 fex ret=0`, GATE PASS. `ramfb_gate.py` → one transient "no serial socket" timing flake on first attempt (no stray qemu process; pure socket-creation race), GATE PASS clean on rerun (7/7 pattern checks OK).
+
+**Commits**: source-only. (1) `kernel-arm/zoneA/kmain.c` (`01a14c1`) — the wider `elr-128..-32` pre-context dump, gated to `elr==0x26D0C02B0`, +18 lines. (2) `kernel-arm/zoneA/{shell.c,build.sh}` (`c2a06c3`) — temp hello9 swap, checkpoint before boot. (3) `kernel-arm/zoneA/{shell.c,build.sh}` (`14b1c7e`) — revert to canonical hello8 wiring, checkpoint after boot, confirmed net-zero vs `82eec0a`. This documentation update (`HANDOFF.md`/`FEX-MAP.md` §C4-62) is the final commit. Receipts on disk: `scratch/c4-62_pe10_fex_canonical_prefix_receipt.log` (pre-swap baseline), `scratch/c4-62_hello9_boot_receipt.log` (the wider-window fault receipt, 62 lines — no full multi-thousand-line transcript preserved this atom; the shared boot prefix is already byte-identical to C4-61's own on-disk `scratch/c4-61_hello9_boot_receipt_full.log`), `scratch/c4-62_pe10_fex_canonical_final_receipt.log` (post-revert reconfirm), `scratch/c4-62_{pe8,pe9,ramfb}_gate.log`. Live 2026-07-24.
+
+---
+
 ## C4-61 — NAMED: the null register at the fatal `elr=0x26D0C02B0` fault (hello9's dead-end crash, C4-57/58/59) is `x1`, zeroed by a hardcoded immediate two instructions before the fault, not by any structure-field load this project has documented offsets for.
 
 **Task**: name what pointer is null at the fault, without re-chasing the already-time-boxed "why does hello9 reach this fault at all" question (C4-58/59's own confirmed-blob-internal verdict, unchanged).
