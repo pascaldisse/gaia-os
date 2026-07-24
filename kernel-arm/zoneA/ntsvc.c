@@ -1908,6 +1908,20 @@ void nt_dispatch_log(unsigned long id_arg, void *handler) {
             else puts(" rsp=UNREADABLE");
             if (c464_sw_ok) { puts(" [rsp]="); puthex((u64b)c464_stackword); }
             else puts(" [rsp]=UNMAPPED");
+            // CHALICE C4-65: extends the C4-64 probe -- also watch the
+            // boot exe's own IAT slot #0 (hardcoded offset 0x205c, this
+            // atom's own hello9-specific diagnostic, cited from C4-64's
+            // static disasm -- NOT the C4-66 fix, which must derive this
+            // generically) live, on EVERY syscall dispatch. Settles
+            // whether C4-57's own binder write (confirmed elsewhere in
+            // this same boot's transcript) actually STICKS through to the
+            // guest's own call, or gets reverted/invalidated by something
+            // in between.
+            u64b c465_bootexe_base = 0, c465_bootexe_size = 0;
+            if (nt_find_boot_exe(&c465_bootexe_base, &c465_bootexe_size)) {
+                u32b c465_iat0 = *(volatile u32b *)(c465_bootexe_base + 0x205c);
+                puts(" c465_iat0="); puthex((u64b)c465_iat0);
+            }
             puts("\n");
         }
     }

@@ -140,6 +140,10 @@ int nt_vm_region_query(unsigned long addr, unsigned long *base_out, unsigned lon
 // two pools. NtQueryVirtualMemory/NtFreeVirtualMemory use nt_arena_contains/
 // nt_arena_query/nt_arena_release to answer honestly for arena addresses.
 int nt_arena_contains(unsigned long addr);
+
+// CHALICE C4-65: exposed C4-57 helper -- locates the sole is_dll==0 image
+// registry entry (the boot exe). Returns 1 + base/size on success.
+int nt_find_boot_exe(unsigned long *base_out, unsigned long *size_out);
 void nt_fault_region(const char *label, unsigned long addr);
 int nt_fault_read32(unsigned long addr, unsigned int *word_out);
 unsigned char *nt_arena_reserve(unsigned long size);

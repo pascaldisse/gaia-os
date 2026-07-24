@@ -1518,7 +1518,11 @@ static void nt_iat_bind_walk(u64b exe_base, u64b exe_size, u64b k32base, u64b k3
 // ntboot.c) -- the ONLY registry entry ever registered with is_dll==0 on
 // a wow64 boot (every DLL, incl. ntdll/ntdll32/kernel32/kernelbase/wow64.
 // dll/the CPU backend, registers with is_dll==1).
-static int nt_find_boot_exe(u64b *base_out, u64b *size_out) {
+// CHALICE C4-65: was static (C4-57's own private helper); exposed so
+// ntsvc.c's per-syscall diagnostic (C4-64 probe extension) can locate the
+// SAME boot-exe registry entry the IAT binder below reads from, to watch
+// the live IAT-slot content across the whole boot rather than one snapshot.
+int nt_find_boot_exe(u64b *base_out, u64b *size_out) {
     for (int i = 0; i < NT_IMG_MAX; i++) {
         if (nt_images[i].used && !nt_images[i].is_dll) {
             *base_out = nt_images[i].base;
