@@ -1,9 +1,0 @@
-screendump: 640x480, 921600 pixel bytes
-OK   top-left corner white: got=(255, 255, 255) want~=(255, 255, 255)
-OK   top-right corner white: got=(255, 255, 255) want~=(255, 255, 255)
-OK   bot-left corner white: got=(255, 255, 255) want~=(255, 255, 255)
-OK   bot-right corner white: got=(255, 255, 255) want~=(255, 255, 255)
-OK   red bar: got=(255, 0, 0) want~=(255, 0, 0)
-OK   green bar: got=(0, 255, 0) want~=(0, 255, 0)
-OK   blue bar: got=(0, 0, 255) want~=(0, 0, 255)
-GATE PASS (ramfb pattern correct)
