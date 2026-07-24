@@ -368,6 +368,171 @@ int sync_try_arena_demand_commit(u64 esr, u64 elr, u64 far) {
     return 1;
 }
 
+// CHALICE C4-68 — hardware write-watchpoint on FEXCore's own
+// CpuStateFrame::State.rip (CurrentFrame+0x18, the C4-59/61/63-established
+// offset), armed the moment CurrentFrame first becomes known (ntsvc.c's
+// nt_dispatch_log, reusing C4-64's own "CurrentFrame known" gate -- see
+// nt_dbg_arm_watchpoint below), to name the exact host instruction that
+// zeros it (the C4-58-through-C4-67 "zeroing event", already proven
+// upstream of every floor-satisfiable candidate this thread has named).
+// ARMv8 DBGWVR0_EL1/DBGWCR0_EL1. This floor is EL1-only -- boot.S's vector
+// table never uses a lower-EL entry, every exception (kernel C, FEX's own
+// native code, the guest's own JIT'd x86) is delivered at the SAME EL1,
+// curEL-SPx vectors -- so the watchpoint is configured EL1-only:
+// {HMC=0, SSC=0b00, PAC=0b01} per ARM ARM D2.10.1's control-field table
+// (== Linux arch/arm64/kernel/hw_breakpoint.c's own ARM_BREAKPOINT_EL1
+// encoding), LSC=0b10 (store-only, matches the task's own "write-
+// watchpoint" spec), BAS=0xFF (whole aligned doubleword -- CurrentFrame+
+// 0x18 is 8-aligned, matches CoreState.h's own alignas(8) on this field).
+// MDSCR_EL1.MDE (global monitor-debug enable) AND .KDE (EL1 debug enable,
+// required in addition to MDE for a PAC=EL1-only watchpoint to actually
+// fire while the PE is running AT EL1 -- same Linux convention) both set.
+#define C468_DBGWCR_VAL 0x1FF3ULL // E=1 PAC=01(EL1) LSC=10(store) BAS=0xFF HMC=0 SSC=00
+static u64 c468_watch_addr;    // CurrentFrame+0x18, latched once; 0=unarmed
+static int c468_step_pending;  // mid step-over-the-culprit-instruction dance
+static u64 c468_hit_count;
+static u64 c468_zero_readback_count;
+// Snapshot of the CULPRIT instruction's own elr + x0-x30, taken at the
+// INITIAL watchpoint hit (before the step-over dance re-executes it) --
+// this is what a "post-step read-back==0" full dump actually wants to
+// show (the instruction that did the zeroing), not the step-back trap's
+// own elr (which has already advanced to the NEXT instruction).
+static u64 c468_saved_elr;
+static u64 c468_saved_regs[31];
+
+// Called from ntsvc.c's nt_dispatch_log, the SAME "CurrentFrame known" gate
+// C4-64's own probe already uses (nt_wow64_ready && nt_wow64_live_state_
+// probe returns nonzero) -- arms exactly once, the FIRST time this boot
+// ever learns CurrentFrame, never before (per this atom's own design law).
+// Idempotent past the first call, so the caller needs no latch of its own.
+void nt_dbg_arm_watchpoint(unsigned long current_frame) {
+    if (c468_watch_addr || !current_frame) return;
+    c468_watch_addr = current_frame + 0x18; // CpuStateFrame::State.rip
+    asm volatile("msr dbgwvr0_el1, %0" :: "r"(c468_watch_addr));
+    asm volatile("msr dbgwcr0_el1, %0" :: "r"((u64)C468_DBGWCR_VAL));
+    u64 mdscr;
+    asm volatile("mrs %0, mdscr_el1" : "=r"(mdscr));
+    mdscr |= (1ULL << 15) | (1ULL << 13); // MDE | KDE
+    asm volatile("msr mdscr_el1, %0" :: "r"(mdscr));
+    asm volatile("isb");
+    puts("CHALICE C4-68: watchpoint ARMED addr="); puthex(c468_watch_addr);
+    puts(" (CurrentFrame="); puthex(current_frame); puts(")\n");
+}
+
+// Full x0-x30 + 64-byte code-window dump at the SAVED culprit elr/regs --
+// same shape as C4-61's own elr==0x26D0C02B0-gated dump, so the two
+// atoms' receipts are directly diffable.
+static void c468_full_dump(void) {
+    puts("CHALICE C4-68 FULL REGS @culprit elr="); puthex(c468_saved_elr); puts(":\n");
+    for (int i = 0; i <= 28; i += 4) {
+        puts("  x"); putdec(i); puts("="); puthex(c468_saved_regs[i]);
+        if (i + 1 <= 28) { puts(" x"); putdec(i+1); puts("="); puthex(c468_saved_regs[i+1]); }
+        if (i + 2 <= 28) { puts(" x"); putdec(i+2); puts("="); puthex(c468_saved_regs[i+2]); }
+        if (i + 3 <= 28) { puts(" x"); putdec(i+3); puts("="); puthex(c468_saved_regs[i+3]); }
+        puts("\n");
+    }
+    puts("  x29(fp)="); puthex(c468_saved_regs[29]); puts(" x30(lr)="); puthex(c468_saved_regs[30]); puts("\n");
+    puts("CHALICE C4-68 CODE WINDOW @culprit elr..+64:");
+    for (long w = 0; w < 64; w += 4) {
+        u64 a = c468_saved_elr + w; u32 word;
+        puts(" ");
+        if (nt_fault_read32(a, &word)) puthex(word);
+        else puts("????????");
+    }
+    puts("\n");
+}
+
+// CHALICE C4-68 — the watchpoint (EC 0x34/0x35) + software-step (EC 0x32/
+// 0x33) synchronous-exception handler. Called FIRST in sync_entry (boot.S),
+// ahead of every other sync_try_* triage function -- these two ESR classes
+// are ARM64-native debug events, never SVC/data-abort/undefined, so there
+// is zero overlap with any other handler's own ec gate; ordering is chosen
+// purely to keep this atom's own logic isolated and easy to reason about.
+// `regs` = pointer to the pushed SAVEALL_SYNC frame (x0-x30), same
+// convention sync_try_fex_linux_hint/sync_try_guest_exception already use
+// -- untouched by this handler (unlike sync_try_guest_exception's own
+// guest-stack CONTEXT write), so it's safe to read directly, no snapshot
+// needed except the deliberate cross-exception c468_saved_* stash above.
+// Returns 1 (handled -- boot.S's `cbnz x0,2f` path: RESTOREALL_SYNC; eret
+// to the CURRENT ELR_EL1, unmodified) or 0 (not this atom's ESR class).
+int sync_try_watchpoint(u64 esr, u64 elr, u64 far, u64 *regs) {
+    u64 ec = (esr >> 26) & 0x3f;
+    if (ec == 0x34 || ec == 0x35) {          // Watchpoint, lower/current EL
+        c468_hit_count++;
+        unsigned int pre_lo = 0, pre_hi = 0;
+        int pre_ok = nt_fault_read32(far, &pre_lo) && nt_fault_read32(far + 4, &pre_hi);
+        u64 pre_val = pre_ok ? (((u64)pre_hi << 32) | pre_lo) : ~0ULL;
+
+        // Stash the culprit instruction's own PC + full GPR file NOW,
+        // before the step-over dance below re-executes it -- this is what
+        // a later "post-step==0" full dump needs (see c468_full_dump).
+        c468_saved_elr = elr;
+        for (int i = 0; i < 31; i++) c468_saved_regs[i] = regs[i];
+
+        if (c468_hit_count <= 200) {
+            puts("CHALICE C4-68 WATCHPOINT #"); puthex(c468_hit_count);
+            puts(" elr="); puthex(elr); puts(" far="); puthex(far);
+            puts(" x28="); puthex(regs[28]);
+            puts(" pre-write-val="); if (pre_ok) puthex(pre_val); else puts("UNREADABLE");
+            nt_fault_region("elr", elr);
+            puts("\n");
+        }
+
+        // Step-over dance (task design step 2): disable this watchpoint,
+        // arm one software step, eret back to the SAME elr (ELR_EL1 is
+        // unmodified -- this is the instruction that already generated
+        // the watchpoint) so it re-executes exactly once under single-
+        // step, then re-traps via the EC 0x32/0x33 branch below, where the
+        // watchpoint is re-armed.
+        asm volatile("msr dbgwcr0_el1, %0" :: "r"(0ULL)); // E=0, disable
+        u64 mdscr;
+        asm volatile("mrs %0, mdscr_el1" : "=r"(mdscr));
+        mdscr |= (1ULL << 0); // MDSCR_EL1.SS
+        asm volatile("msr mdscr_el1, %0" :: "r"(mdscr));
+        u64 spsr;
+        asm volatile("mrs %0, spsr_el1" : "=r"(spsr));
+        spsr |= (1ULL << 21); // PSTATE.SS
+        asm volatile("msr spsr_el1, %0" :: "r"(spsr));
+        asm volatile("isb");
+        c468_step_pending = 1;
+        return 1;
+    }
+    if ((ec == 0x32 || ec == 0x33) && c468_step_pending) { // Software Step
+        c468_step_pending = 0;
+        unsigned int post_lo = 0, post_hi = 0;
+        int post_ok = nt_fault_read32(c468_watch_addr, &post_lo) &&
+                      nt_fault_read32(c468_watch_addr + 4, &post_hi);
+        u64 post_val = post_ok ? (((u64)post_hi << 32) | post_lo) : ~0ULL;
+        int is_zero = post_ok && post_val == 0;
+        if (is_zero) c468_zero_readback_count++;
+
+        if (c468_hit_count <= 200 || is_zero) {
+            puts("CHALICE C4-68 STEP-BACK #"); puthex(c468_hit_count);
+            puts(" post-write-val="); if (post_ok) puthex(post_val); else puts("UNREADABLE");
+            puts(" zero_total="); puthex(c468_zero_readback_count);
+            puts("\n");
+        }
+        if (is_zero) {
+            // Rate-cap-bypass: this is the exact event C4-68 exists to
+            // catch -- full detail, unconditionally, every single time.
+            c468_full_dump();
+        }
+
+        // Re-arm: watchpoint back on, single-step back off. PSTATE.SS was
+        // already cleared to 0 by hardware on taking THIS exception (ARM
+        // ARM D2.12.3) -- do not set it again, or every future instruction
+        // would trap.
+        asm volatile("msr dbgwcr0_el1, %0" :: "r"((u64)C468_DBGWCR_VAL));
+        u64 mdscr2;
+        asm volatile("mrs %0, mdscr_el1" : "=r"(mdscr2));
+        mdscr2 &= ~(1ULL << 0); // clear MDSCR_EL1.SS
+        asm volatile("msr mdscr_el1, %0" :: "r"(mdscr2));
+        asm volatile("isb");
+        return 1;
+    }
+    return 0;
+}
+
 // CHALICE C4-18 — native ARM64 user-exception stack.
 // Measured stock ntdll!KiUserExceptionDispatcher (RVA 0x66c40):
 //   add x0, sp, #0x3b0 ; mov x1, sp ; bl dispatch_exception

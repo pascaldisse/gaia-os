@@ -182,6 +182,18 @@ sync_entry:
     mov     x21, sp
     ldr     x20, =sync_exception_stack
     add     sp, x20, #4, lsl #12
+    // CHALICE C4-68: watchpoint (EC 0x34/0x35) + software-step (EC 0x32/
+    // 0x33) -- native ARM64 debug-exception classes, disjoint from every
+    // other ec this function checks (SVC=0x15, data-abort=0x24/0x25), so
+    // ordering first is purely for isolation, not correctness. x3 = regs
+    // frame ptr (x21), same convention sync_try_fex_linux_hint/_guest_
+    // exception already use.
+    mrs     x0, esr_el1
+    mrs     x1, elr_el1
+    mrs     x2, far_el1
+    mov     x3, x21
+    bl      sync_try_watchpoint
+    cbnz    x0, 2f
     // Advisory SVC -> demand-commit are transparent, ordered before NT SEH.
     mrs     x0, esr_el1
     mrs     x1, elr_el1

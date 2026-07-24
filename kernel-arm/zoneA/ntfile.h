@@ -262,3 +262,12 @@ unsigned long nt_wow64_live_state_probe(unsigned long teb,
                                          unsigned long *rip_out, int *rip_valid,
                                          unsigned long *rsp_out, int *rsp_valid,
                                          unsigned int *stackword_out, int *stackword_valid);
+
+// CHALICE C4-68: arms a one-shot ARMv8 write-watchpoint on
+// CpuStateFrame::State.rip (current_frame+0x18) the FIRST time
+// CurrentFrame becomes known this boot -- idempotent past that first call,
+// so callers (ntsvc.c's nt_dispatch_log, the same "CurrentFrame known"
+// gate C4-64's own probe already uses) need no latch of their own.
+// Defined kmain.c (owns all ARM64 debug-register/exception-vector
+// plumbing); see kmain.c's own C4-68 block for the full design writeup.
+void nt_dbg_arm_watchpoint(unsigned long current_frame);

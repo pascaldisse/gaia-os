@@ -1900,6 +1900,10 @@ void nt_dispatch_log(unsigned long id_arg, void *handler) {
         unsigned long c464_cf = nt_wow64_live_state_probe(nt_c464_teb,
             &c464_rip, &c464_rip_ok, &c464_rsp, &c464_rsp_ok,
             &c464_stackword, &c464_sw_ok);
+        // CHALICE C4-68: arm the write-watchpoint on THIS exact CurrentFrame
+        // the first time it's known -- same gate, one line, idempotent past
+        // the first call (see kmain.c's nt_dbg_arm_watchpoint).
+        if (c464_cf) nt_dbg_arm_watchpoint(c464_cf);
         if (c464_cf) {
             puts("CHALICE C4-64: svc id="); nt_log_putdec(id);
             if (c464_rip_ok) { puts(" rip="); puthex(c464_rip); }
