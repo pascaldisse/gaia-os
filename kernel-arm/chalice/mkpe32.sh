@@ -1,8 +1,12 @@
 #!/bin/sh
-# CHALICE C4-5 — build the two i386 (Machine 0x14C) PE32 guest artifacts:
+# CHALICE C4-5/C4-67 — build the i386 (Machine 0x14C) PE32 guest artifacts:
 #   hello8_x86.exe — zero-import toolchain probe (ret=42), C4-1
 #   hello9_x86.exe — real kernel32 import table (GetStdHandle/WriteFile,
 #                    "hello9: the door opens\n", ret=9), the C4-5 done-line
+#   hello9d_x86.exe — C4-67 V1: E8 direct same-image call, ret=51
+#   hello9c_x86.exe — C4-67 V2: FF15 own-image .data-slot call, ret=52
+#   hello9b_x86.exe — C4-67 V3: register-indirect call through a real
+#                      bound cross-image IAT slot (GetStdHandle), ret=53
 # Deliberately a SEPARATE script from mkpe.sh (collision law: mkpe.sh is
 # owned by the parallel kernel lane; this file only ever builds *_x86).
 # Same conventions: zig cc as an i386-windows-gnu (lld, mingw-mode)
@@ -26,6 +30,12 @@ CFLAGS32="${CFLAGS32:--target $TARGET32 -ffreestanding -nostdlib -fuse-ld=lld -O
 
 "$ZIG" cc $CFLAGS32 -Wl,-e,"$ENTRY" -o hello8_x86.exe hello8_x86.c
 "$ZIG" cc $CFLAGS32 -Wl,-e,"$ENTRY" -o hello9_x86.exe hello9_x86.c -lkernel32
+"$ZIG" cc $CFLAGS32 -Wl,-e,"$ENTRY" -o hello9d_x86.exe hello9d_x86.c
+"$ZIG" cc $CFLAGS32 -Wl,-e,"$ENTRY" -o hello9c_x86.exe hello9c_x86.c
+"$ZIG" cc $CFLAGS32 -Wl,-e,"$ENTRY" -o hello9b_x86.exe hello9b_x86.c -lkernel32
 
 echo "hello8_x86.exe: $(wc -c < hello8_x86.exe | tr -d ' ') bytes"
 echo "hello9_x86.exe: $(wc -c < hello9_x86.exe | tr -d ' ') bytes"
+echo "hello9d_x86.exe: $(wc -c < hello9d_x86.exe | tr -d ' ') bytes"
+echo "hello9c_x86.exe: $(wc -c < hello9c_x86.exe | tr -d ' ') bytes"
+echo "hello9b_x86.exe: $(wc -c < hello9b_x86.exe | tr -d ' ') bytes"
