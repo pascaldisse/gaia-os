@@ -362,6 +362,43 @@ long pe_find_named_export(unsigned long baseL, unsigned long size_of_imageL,
     return -1;
 }
 
+// CHALICE C4-66: ordinal-form sibling of pe_find_named_export, above --
+// same header dispatch (is_pe32 magic check, same data-dir offsets), but
+// resolves via the export directory's own Base/NumberOfFunctions fields
+// (AddressOfFunctions[ordinal - Base]) instead of the name table, for
+// IAT thunks that import by ordinal (raw thunk value's bit31 set) rather
+// than by name.
+long pe_find_export_by_ordinal(unsigned long baseL, unsigned long size_of_imageL,
+                                unsigned long ordinalL, unsigned long *out_addr) {
+    const u8 *base = (const u8 *)(u64b)baseL;
+    (void)size_of_imageL;
+    u32b e_lfanew = rd32(base + DOS_E_LFANEW);
+    const u8 *pe = base + e_lfanew;
+    const u8 *coff = pe + 4;
+    const u8 *opt = coff + COFF_HDR_SIZE;
+    u16b magic = rd16(opt + OPT_MAGIC);
+    int is_pe32 = (magic == PE32_MAGIC);
+    u32b num_dirs = rd32(opt + (is_pe32 ? OPT_NUMBER_OF_DIRS32 : OPT_NUMBER_OF_DIRS));
+    if (num_dirs < 1) return -3;
+    const u8 *dirs = opt + (is_pe32 ? OPT_DATA_DIRS32 : OPT_DATA_DIRS);
+    u32b exp_rva  = rd32(dirs + 0);
+    u32b exp_size = rd32(dirs + 4);
+    if (!exp_rva) return -3;
+    const u8 *exp = base + exp_rva;
+    u32b ord_base       = rd32(exp + 16);   // Base
+    u32b nfuncs          = rd32(exp + 20);  // NumberOfFunctions
+    u32b addr_functions = rd32(exp + 28);
+    u32b ordinal = (u32b)ordinalL;
+    if (ordinal < ord_base) return -1;
+    u32b idx = ordinal - ord_base;
+    if (idx >= nfuncs) return -1;
+    u32b func_rva = rd32(base + addr_functions + idx * 4);
+    if (!func_rva) return -1;
+    if (func_rva >= exp_rva && func_rva < exp_rva + exp_size) return -2;   // forwarder, unsupported
+    *out_addr = (u64b)base + func_rva;
+    return 0;
+}
+
 // CHALICE C3c-2h: raw (unmapped) PE section finder -- locates a section by
 // its 8-byte on-disk Name field directly in the FILE bytes (no PeMapImage,
 // no relocation, no allocator). Matches wine's own load_apiset_dll

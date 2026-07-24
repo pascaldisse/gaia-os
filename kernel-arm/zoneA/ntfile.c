@@ -1431,59 +1431,74 @@ static void nt_wow64_maybe_notify_map_view(const char *name, u64b base, u64b siz
 
 static int nt_iat_bind_done;
 
-// Tries kernel32.dll first (real Windows' own common case for these two
-// names), falls back to kernelbase.dll (real export owner on modern
-// Windows/Wine, kernel32.dll often just forwards -- forwarders return -2
-// from pe_find_named_export, C4-51's own established convention, treated
-// here as "not found on this DLL", not chased further).
-static long nt_iat_resolve_i386(u64b k32base, u64b k32size, u64b kbbase, u64b kbsize,
-                                 const char *name, u64b *out_addr) {
-    unsigned long addr = 0;
-    if (k32base && pe_find_named_export(k32base, k32size, name, &addr) == 0) {
-        *out_addr = (u64b)addr;
-        return 0;
+// CHALICE C4-66 (Step 2b): case-insensitive BASENAME search of the live
+// image registry -- an import descriptor's own DLL name ("KERNEL32.dll",
+// possibly mixed-case per the real PE file) is matched against each
+// registry entry's own trailing path component (registry names carry a
+// synthetic "syswow64/" prefix, C4-49's own convention; bare-mapped
+// images like the boot EXE have no prefix at all) -- so "KERNEL32.dll"
+// matches a registered "syswow64/kernel32.dll" entry without either side
+// needing to know about the other's naming convention. No fixed name
+// list -- resolves against WHATEVER happens to be mapped right now.
+static int nt_image_find_by_basename(const char *dllname, u64b *base_out, u64b *size_out) {
+    for (int i = 0; i < NT_IMG_MAX; i++) {
+        if (!nt_images[i].used) continue;
+        const char *rn = nt_images[i].name;
+        const char *rbase = rn;
+        for (const char *p = rn; *p; p++) if (*p == '/') rbase = p + 1;
+        if (nt_streq_ci(rbase, dllname)) {
+            *base_out = nt_images[i].base;
+            *size_out = nt_images[i].size;
+            return 1;
+        }
     }
-    if (kbbase && pe_find_named_export(kbbase, kbsize, name, &addr) == 0) {
-        *out_addr = (u64b)addr;
-        return 0;
-    }
-    return -1;
+    return 0;
 }
 
-static void nt_iat_bind_walk(u64b exe_base, u64b exe_size, u64b k32base, u64b k32size,
-                              u64b kbbase, u64b kbsize) {
-    const u8 *base = (const u8 *)exe_base;
+// CHALICE C4-57 (generalized, C4-66 Step 2b): walks ONE already-mapped
+// PE32 (i386) image's own Import Directory (IMAGE_IMPORT_DESCRIPTOR
+// array, IMAGE_THUNK_DATA32/IMAGE_IMPORT_BY_NAME shapes -- 4-byte
+// thunks) and binds every thunk it can resolve. Originally hardcoded to
+// the boot EXE + a kernel32-then-kernelbase guess (C4-57); C4-66
+// generalizes both axes per its own task: (1) ANY mapped image, not just
+// the boot EXE -- caller loops the registry, this function only cares
+// about the one image handed to it; (2) the import's target DLL is
+// resolved EXACTLY, by the descriptor's own name against the live
+// registry (nt_image_find_by_basename, above), not guessed; (3) ordinal
+// imports (raw thunk bit31 set) are now resolved too, via the new
+// pe_find_export_by_ordinal (pemod.c) sibling of the existing
+// pe_find_named_export. Non-PE32 images (native ARM64 wow64-support
+// DLLs -- wow64.dll/wow64win.dll/win32u.dll/the CPU backend, all real on
+// this floor) are silently skipped by the magic check, same as before --
+// no separate arch flag needed, no hardcoded name list to exclude them.
+static void nt_iat_bind_image(u64b img_base, u64b img_size) {
+    const u8 *base = (const u8 *)img_base;
     u32b e_lfanew = rd32(base + C57_DOS_E_LFANEW);
     const u8 *opt = base + e_lfanew + C57_OPT_MAGIC_OFF;
     u16b magic = (u16b)(opt[0] | (opt[1] << 8));
-    if (magic != C57_PE32_MAGIC) {
-        puts("CHALICE C4-57: boot exe is not PE32 -- IAT bind skipped\n");
-        return;
-    }
+    if (magic != C57_PE32_MAGIC) return;   // not i386/PE32 -- e.g. a native ARM64 wow64-support DLL
     u32b num_dirs = rd32(opt + C57_OPT_NUMDIRS32);
-    if (num_dirs <= C57_IMAGE_DIR_IMPORT) {
-        puts("CHALICE C4-57: boot exe has no Import Directory -- nothing to bind\n");
-        return;
-    }
+    if (num_dirs <= C57_IMAGE_DIR_IMPORT) return;
     const u8 *dirs = opt + C57_OPT_DATADIRS32;
     u32b irva = rd32(dirs + C57_IMAGE_DIR_IMPORT * 8);
     u32b isz  = rd32(dirs + C57_IMAGE_DIR_IMPORT * 8 + 4);
-    if (!irva || !isz) {
-        puts("CHALICE C4-57: boot exe Import Directory empty -- nothing to bind\n");
-        return;
-    }
+    if (!irva || !isz) return;   // no Import Directory -- nothing to bind
 
+    puts("CHALICE C4-66: binding IAT for image base="); puthex(img_base); puts("\n");
     int bound = 0, failed = 0;
     const u8 *desc = base + irva;
     for (;;) {
-        if ((u64b)(desc - base) + C57_IMPDESC_ENTRY_SIZE > exe_size) break;
+        if ((u64b)(desc - base) + C57_IMPDESC_ENTRY_SIZE > img_size) break;
         u32b oft   = rd32(desc + C57_IMPDESC_OFT);
         u32b nrva  = rd32(desc + C57_IMPDESC_NAME);
         u32b ft    = rd32(desc + C57_IMPDESC_FT);
         if (!oft && !nrva && !ft) break;   // null terminator
 
         const char *dllname = (const char *)(base + nrva);
-        puts("CHALICE C4-57: import DLL="); puts(dllname); puts("\n");
+        u64b tgt_base = 0, tgt_size = 0;
+        int have_target = nt_image_find_by_basename(dllname, &tgt_base, &tgt_size);
+        puts("CHALICE C4-66: import DLL="); puts(dllname);
+        puts(have_target ? " (mapped)\n" : " (NOT mapped -- skipped)\n");
 
         u32b thunk_rva = oft ? oft : ft;
         const u8 *thunk = base + thunk_rva;
@@ -1491,25 +1506,34 @@ static void nt_iat_bind_walk(u64b exe_base, u64b exe_size, u64b k32base, u64b k3
         for (u32b j = 0; ; j++) {
             u32b tval = rd32(thunk + j * 4);
             if (!tval) break;
-            if (tval & 0x80000000UL) {
-                puts("CHALICE C4-57: ordinal import unsupported, slot skipped\n");
-                failed++;
-                continue;
-            }
-            const char *fname = (const char *)(base + tval + 2);   // skip Hint(u16)
             u64b addr = 0;
-            if (nt_iat_resolve_i386(k32base, k32size, kbbase, kbsize, fname, &addr) == 0) {
+            long rc = -1;
+            if (have_target) {
+                if (tval & 0x80000000UL) {
+                    rc = pe_find_export_by_ordinal(tgt_base, tgt_size, tval & 0xFFFFUL, (unsigned long *)&addr);
+                } else {
+                    const char *fname = (const char *)(base + tval + 2);   // skip Hint(u16)
+                    rc = pe_find_named_export(tgt_base, tgt_size, fname, (unsigned long *)&addr);
+                }
+            }
+            if (rc == 0) {
                 wr32(iat + j * 4, (u32b)addr);
-                puts("CHALICE C4-57: bound "); puts(fname); puts(" -> "); puthex(addr); puts("\n");
+                if (!(tval & 0x80000000UL)) {
+                    puts("CHALICE C4-66: bound "); puts((const char *)(base + tval + 2));
+                    puts(" -> "); puthex(addr); puts("\n");
+                } else {
+                    puts("CHALICE C4-66: bound ordinal "); puthex((u64b)(tval & 0xFFFFUL));
+                    puts(" -> "); puthex(addr); puts("\n");
+                }
                 bound++;
             } else {
-                puts("CHALICE C4-57: UNRESOLVED import "); puts(fname); puts("\n");
                 failed++;
             }
         }
         desc += C57_IMPDESC_ENTRY_SIZE;
     }
-    puts("CHALICE C4-57: IAT bind done bound="); puthex((u64b)bound);
+    puts("CHALICE C4-66: IAT bind done base="); puthex(img_base);
+    puts(" bound="); puthex((u64b)bound);
     puts(" failed="); puthex((u64b)failed); puts("\n");
 }
 
@@ -1600,8 +1624,28 @@ static void nt_iat_bind_maybe(void) {
     if (!nt_find_boot_exe(&exebase, &exesize)) return;
     nt_iat_bind_done = 1;   // one-shot regardless of outcome below
     puts("CHALICE C4-57: both syswow64 kernel32/kernelbase mapped -- binding boot exe IAT\n");
-    nt_iat_bind_walk(exebase, exesize, k32base, k32size, kbbase, kbsize);
+    nt_iat_bind_image(exebase, exesize);
     nt_c466_diag(k32base, k32size, kbbase);   // CHALICE C4-66: diagnostic, see above
+
+    // CHALICE C4-66 FIX (Step 2b, gated on the diagnostic above measuring
+    // kernel32.dll's OWN internal IAT slot for kernelbase!GetStdHandle as
+    // genuinely unbound -- not a correct kernelbase code VA, so the STOP
+    // LAW at C4-65's own stop condition does NOT apply here): C4-57's
+    // binder only ever bound the BOOT EXE's own Import Directory --
+    // nothing on this floor ever bound kernel32.dll's or kernelbase.dll's
+    // OWN imports from each other/ntdll, real gaps a genuine Windows
+    // loader would always close. Generalize to every OTHER
+    // currently-mapped image at this SAME one-shot bind event -- no fixed
+    // name list, no fixed count: loops the live registry, nt_iat_bind_
+    // image's own PE32 magic check silently skips anything that isn't a
+    // real i386 image (native ARM64 wow64-support DLLs), and its own
+    // Import-Directory-empty check silently skips anything with nothing
+    // to bind (e.g. ntdll.dll typically has none).
+    for (int ci = 0; ci < NT_IMG_MAX; ci++) {
+        if (!nt_images[ci].used) continue;
+        if (nt_images[ci].base == exebase) continue;   // boot exe already bound above
+        nt_iat_bind_image(nt_images[ci].base, nt_images[ci].size);
+    }
 }
 
 long NtMapViewOfSection(void *SectionHandle, void *ProcessHandle, void **BaseAddress,

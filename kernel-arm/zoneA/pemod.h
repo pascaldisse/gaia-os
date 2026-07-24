@@ -97,6 +97,16 @@ long PeMapImage(const unsigned char *img, unsigned long len, const char *tag, Pe
 long pe_find_named_export(unsigned long base, unsigned long size_of_image,
                            const char *name, unsigned long *out_addr);
 
+// CHALICE C4-66: ordinal-form sibling of pe_find_named_export -- same
+// walk/error contract (0=found, -1=not found/out-of-range, -2=forwarder,
+// -3=no export directory), but indexes AddressOfFunctions directly via
+// the export directory's own Base field (ordinal - Base), no name-table
+// scan. Needed for i386 IAT thunks that import by ordinal (bit31 of the
+// raw thunk value set) rather than by name -- pe_find_named_export alone
+// cannot resolve those.
+long pe_find_export_by_ordinal(unsigned long base, unsigned long size_of_image,
+                                unsigned long ordinal, unsigned long *out_addr);
+
 // CHALICE C3c-2h: raw (unmapped) PE section finder -- walks an
 // UNMAPPED file's own section table (DOS/NT headers, no PeMapImage/
 // allocator involved) for an 8-byte section Name (e.g. ".apiset\0"),
