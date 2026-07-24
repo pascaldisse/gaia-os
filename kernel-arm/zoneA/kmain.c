@@ -625,6 +625,22 @@ u64 sync_try_guest_exception(u64 esr, u64 elr, u64 far, u64 sp_orig, u64 *regs) 
             else puts("????????");
         }
         puts("\n");
+
+        // CHALICE C4-62: wider PRE-elr context -- C4-61's own window only
+        // went back to elr-32 (8 words); dump elr-128..elr-32 as well (24
+        // MORE words, none previously captured) so the full elr-128..elr
+        // range can be disassembled and checked for a conditional branch
+        // (cbz/cbnz/b.cond/tbz/tbnz) landing on the elr-32 boundary --
+        // measurement-only, same elr==0x26D0C02B0 gate, no control-flow
+        // change.
+        puts("CHALICE C4-62 WIDER PRE WINDOW @elr-128..-32:");
+        for (long w = -128; w < -32; w += 4) {
+            u64 a = elr + w; u32 word;
+            puts(" ");
+            if (nt_fault_read32(a, &word)) puthex(word);
+            else puts("????????");
+        }
+        puts("\n");
     }
 
     // CHALICE C4-22: donor-grounded TLS probe -- FEX TEB64.TlsSlots @ 0x1480
