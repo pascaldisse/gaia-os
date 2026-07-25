@@ -1,0 +1,15 @@
+reference receipt /Users/pascaldisse/projects/gaia-os/kernel-arm/zoneA/scratch/c4-68_v2_receipt_full.log: T=2212 (C4-64 probe occurrences boot->fault)
+[attempt 1] T=2212 margin=25 arm_target=2187 total_timeout=5400 watched_timeout=3600 boot_to_marker_timeout=1740
+[attempt 1] launching build.sh: gdb tcp::52872, serial /Users/pascaldisse/projects/gaia-os/kernel-arm/zoneA/scratch/c4-68c5-serial.sock
+[attempt 1] gdb-remote attached, CPU paused at reset -- full-speed boot, counting C4-64 probe lines
+[attempt 1] live-read watchpoint addr from boot's own ARMED print: 0x270001158
+[attempt 1] late-arm count reached: 2221 >= target 2187 (T=2212 margin=25)
+[attempt 1] vCPU interrupted at late-arm point (count=2221)
+[attempt 1] write watchpoint LATE-ARMED at 0x270001158 size=8 count=2221/2212 margin=25 -- resuming
+[attempt 1] total watchpoint hits: 0 fault_seen_in_serial=True
+=== SUMMARY ===
+attempt 1: armed=True armed_at_count=2221 hit_count=0 fault_seen=True last_values=[]
+  hits_log=/Users/pascaldisse/projects/gaia-os/kernel-arm/zoneA/scratch/c4-68c5_watch_hits.log
+  serial_log_full=/Users/pascaldisse/projects/gaia-os/kernel-arm/zoneA/scratch/c4-68c5_v2_watch_receipt_full.log
+  qemu_log=/Users/pascaldisse/projects/gaia-os/kernel-arm/zoneA/scratch/c4-68c5_qemu_launch.log
+FINAL: any_watchpoint_hits=False

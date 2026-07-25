@@ -1,0 +1,4 @@
+# CHALICE C4-68C4 watch hits -- addr=0x270001158 size=8 count-based late-arm T=2212 margin=25 arm_target=2187 armed_at_count=2221
+# non-watchpoint stop #1 reason=5 pc=0x000000004020c778
+# TOTAL HITS: 0
+# LAST 10 VALUES: []
