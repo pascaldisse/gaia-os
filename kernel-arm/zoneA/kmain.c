@@ -460,6 +460,44 @@ static void c468_full_dump(void) {
     puts("\n");
 }
 
+// CHALICE C4-68C6 FLOOR STALL -- deterministic replacement for the
+// count-based late-arm mechanism (C4-68C4/C5 harvest, commit b52afb8):
+// serial-line counting overshot the reference T by 9 counts (boot variance
+// +-30, ~5-guest-instruction margin to the real write) -- a coin flip, not
+// a fix. Instead of racing a marker, STALL the guest for a fixed, generous
+// real-wall-clock window at the EXACT id=80 "last-protect" gate (ntfile.c
+// NtProtectVirtualMemory, BaseAddress==boot exe .text page, NewProtect==
+// 0x20 PAGE_EXECUTE/protect-down from the earlier RWX at the same address --
+// empirically THE single call matching both conditions in a full boot-to-
+// fault transcript, c4-68c5_v2_watch_receipt_full.log:12323, ~37 lines
+// before the C4-30 fault) -- the driver arms its watchpoint DURING the
+// stall window, so the arm/interrupt round-trip has ~45s of margin instead
+// of a handful of instructions: no race possible either direction.
+// Compile-time gated (-DC468_STALL, build.sh injects it ONLY when env
+// GAIA_C468_STALL=1) so canonical/gates never pay this cost -- a plain
+// no-op return when undefined. Duration parametrized via
+// C468_STALL_SECONDS (default 45, override via -D at build time), never
+// hardcoded per iron law. CNTPCT_EL0/CNTFRQ_EL0-based (real elapsed time),
+// NOT a blind spin count -- correct regardless of host load/QEMU TCG speed.
+#ifndef C468_STALL_SECONDS
+#define C468_STALL_SECONDS 45
+#endif
+void c468_maybe_stall(void) {
+#ifdef C468_STALL
+    puts("CHALICE C4-68C6 STALL "); putdec((u64)C468_STALL_SECONDS); puts("s\n");
+    u64 freq;
+    asm volatile("mrs %0, cntfrq_el0" : "=r"(freq));
+    u64 start;
+    asm volatile("mrs %0, cntpct_el0" : "=r"(start));
+    u64 target = start + freq * (u64)C468_STALL_SECONDS;
+    u64 now;
+    do {
+        asm volatile("mrs %0, cntpct_el0" : "=r"(now));
+    } while (now < target);
+    puts("CHALICE C4-68C6 RELEASE\n");
+#endif
+}
+
 // CHALICE C4-68 FALLBACK — verify-early result: canonical hello8 AND the
 // V2 (hello9c) repro both show the watchpoint correctly configured
 // (WRPs=3, every debug-reg write reads back exactly as written) yet ZERO

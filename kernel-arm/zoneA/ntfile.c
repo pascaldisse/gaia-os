@@ -1908,6 +1908,27 @@ long NtProtectVirtualMemory(void *ProcessHandle, void **BaseAddress, unsigned lo
         *OldProtect = old_img ? 0x40 /* PAGE_EXECUTE_READWRITE */ : 0x04 /* PAGE_READWRITE */;
     }
 
+    // CHALICE C4-68C6: floor stall at the exact "id=80 last-protect" event
+    // this whole C4-68 thread has chased -- BaseAddress inside the boot
+    // exe's own image AND NewProtect==0x20 (PAGE_EXECUTE, protect-down from
+    // the earlier RWX at the same address, C4-53's own OldProtect
+    // save/restore idiom) is, empirically (c4-68c5_v2_watch_receipt_full.log
+    // :12323, the ONLY line matching both conditions in a full boot-to-fault
+    // transcript -- the two EARLIER same-BaseAddress calls during loader
+    // relocation are NewProtect=0x04/0x40, not 0x20), the single syscall
+    // dispatch immediately preceding the zero-write + C4-30 fault -- no
+    // re-arm-on-every-call ambiguity needed, fires exactly once per boot.
+    // No-op unless built with -DC468_STALL (kmain.c's c468_maybe_stall).
+    {
+        u64b c468c6_exe_base = 0, c468c6_exe_size = 0;
+        if (nt_find_boot_exe(&c468c6_exe_base, &c468c6_exe_size) &&
+            (u64b)*BaseAddress >= c468c6_exe_base &&
+            (u64b)*BaseAddress < c468c6_exe_base + c468c6_exe_size &&
+            NewProtect == 0x20 /* PAGE_EXECUTE */) {
+            c468_maybe_stall();
+        }
+    }
+
     nt_wow64_maybe_notify_protect((u64b)*BaseAddress, (u64b)*RegionSize, NewProtect, nt_c453_teb);
     return STATUS_SUCCESS;
 }

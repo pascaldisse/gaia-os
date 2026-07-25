@@ -4,6 +4,14 @@ set -e
 cd "$(dirname "$0")"
 
 CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
+# CHALICE C4-68C6: floor-stall watchpoint mechanism (kmain.c c468_maybe_stall,
+# armed at ntfile.c NtProtectVirtualMemory's id=80 last-protect gate) is a
+# plain no-op unless -DC468_STALL is present -- canonical/gates never pay
+# this cost, only opt in via GAIA_C468_STALL=1. Duration overridable via
+# GAIA_C468_STALL_SECONDS (default 45, iron law: never hardcoded here).
+if [ -n "${GAIA_C468_STALL:-}" ]; then
+    CFLAGS="$CFLAGS -DC468_STALL -DC468_STALL_SECONDS=${GAIA_C468_STALL_SECONDS:-45}"
+fi
 # CHALICE C4-28 fix note: tried -mstrict-align here to stop the compiler
 # fusing adjacent l1_table/l2_dev_table stores into unaligned-relative-to-
 # device-memory stp pairs (see kmain.c mmu_on comments) -- REVERTED, it

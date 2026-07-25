@@ -277,3 +277,10 @@ void nt_dbg_arm_watchpoint(unsigned long current_frame);
 // (NtProtectVirtualMemory) dispatch, the task's own "last-protect gate".
 // A no-op if CurrentFrame isn't known yet. Defined kmain.c.
 void nt_dbg_arm_stepwindow(void);
+
+// CHALICE C4-68C6: floor stall at the exact id=80 last-protect event
+// (NtProtectVirtualMemory, BaseAddress==boot exe .text page, protect-down)
+// -- gives a rig-level watchpoint driver a wide, race-free arming window.
+// A plain no-op unless built with -DC468_STALL (build.sh, GAIA_C468_STALL=1).
+// Duration: C468_STALL_SECONDS (default 45). Defined kmain.c.
+void c468_maybe_stall(void);
