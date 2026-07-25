@@ -1,72 +1,67 @@
 #!/usr/bin/env python3
-# CHALICE C4-68C4 -- COUNT-BASED late-arm (final watchpoint atom). Same
-# rig-level QEMU gdbstub / lldb SBWatchpoint mechanism as C4-68C/C2/C3 (8-byte
-# WRITE watchpoint on FEXCore's own CpuStateFrame::State.rip,
-# CurrentFrame+0x18, default 0x270001158) -- NOT the guest DBGWCR/PSTATE.SS
-# mechanism (C4-68/68B, proven undelivered under QEMU TCG).
+# CHALICE C4-68C6 -- FLOOR-STALL late-arm (final watchpoint atom, this run).
+# Same rig-level QEMU gdbstub / lldb SBWatchpoint mechanism as every prior
+# C4-68C* sub-run (8-byte WRITE watchpoint on FEXCore's own
+# CpuStateFrame::State.rip, CurrentFrame+0x18, default 0x270001158) -- NOT
+# the guest DBGWCR/PSTATE.SS mechanism (C4-68/68B, proven undelivered under
+# QEMU TCG). This file has been edited IN PLACE across every C4-68C* sub-run
+# (c2/c3/c4/c5/c6) -- see git log for the per-run diffs, not separate files.
 #
-# PRIOR TWO LATE-ARM ATTEMPTS, both 0 hits, MEASURED (not guessed):
-#   c4-68c2: marker = last-shaped id=80 NtProtectVirtualMemory BaseAddress
-#     print (ntfile.c C4-60) -- PROVEN TOO LATE: that line prints AFTER the
-#     syscall completes, the zero-write follows within ~5 instructions, the
-#     arm/interrupt/WatchAddress round-trip loses the race every time.
-#   c4-68c3: marker = one-shot CHALICE C4-57 print ("binding boot exe IAT"),
-#     line 5207/12389 (~42% of a full boot) -- race WON cleanly (watchpoint
-#     armed, confirmed live) but the watched window opened was ~7100 lines
-#     wide; QEMU TCG's own global per-block memory-write check only advanced
-#     ~1400 of those lines in the full 600s WATCHED_TIMEOUT budget (measured
-#     rate: ~0.43s/watched-line) -- reaching the fault from there would need
-#     ~50min, impossible in any single run.
+# WHY C6 EXISTS (c5 harvest, commit b52afb8): c4/c5's own COUNT-based
+# late-arm (count C4-64 "svc id=" probe lines live, interrupt+arm at
+# T-margin) measured a 9-count OVERSHOOT past the reference T=2212 on its
+# single detached final run (armed_at_count=2221) -- the async gdb
+# interrupt/arm round-trip has enough jitter that count arming at
+# single-syscall granularity is a coin flip, not a fix (same class of
+# failure c4-68c2's marker-based race already proved, just smaller). 0
+# hits, fault reached (class b: watchpoint armed too late, missed the
+# write).
 #
-# THIS ATOM -- data-driven COUNT-based late-arm, no fixed marker string:
-#   1. From a reference full V2 receipt (scratch/c4-68_v2_receipt_full.log,
-#      full boot to fault, WITH the C4-64 per-syscall probe lines), count
-#      total occurrences of the C4-64 probe print ("CHALICE C4-64: svc
-#      id=") from boot to the fault line (elr=0x26D0C02B0) -- call it T.
-#      Computed live from the reference file every run (never hardcoded),
-#      T=2212 as of this atom's own reference receipt.
-#   2. Drive the SAME boot at full speed (unwatched), tailing the live
-#      serial transcript and counting the SAME probe print live; the moment
-#      the live count reaches T-MARGIN, interrupt the vCPU and late-arm the
-#      watchpoint, then resume. MARGIN=100 by default -- ~100 syscalls of
-#      margin vs the single-digit-instruction latency the c4-68c2 race
-#      lost by, so the watched slice should be only ~100-300 transcript
-#      lines (~1-3 min at the c4-68c3-measured watched rate), not ~7100.
-#   3. AUTO-RETRY (max 2 runs total, each under its own 900s TOTAL_TIMEOUT):
-#      if attempt 1 ends with 0 hits AND the fault trampoline
-#      (elr=0x26D0C02B0) appeared on the live serial transcript, that means
-#      the boot reached the fault but the watchpoint was armed too LATE
-#      (after the write) -- retry with a BIGGER margin (400, arms EARLIER).
-#      If attempt 1 ends with 0 hits and NO fault appeared on serial, that
-#      means the watched window opened too EARLY and the run hit
-#      WATCHED_TIMEOUT mid-slice before reaching the fault -- retry with a
-#      SMALLER margin (50, arms LATER/closer to the fault).
-#   4. Hit handling unchanged from c4-68c2/c3: every watchpoint stop logs
-#      pc+new_value, auto-continues; the first value==0 hit additionally
-#      dumps full x0-x30/fp/lr/sp/pc/cpsr registers + a 256B disassembly
-#      window around pc, and the loop keeps watching until the fault
-#      trampoline appears on serial (early-stop, no need to burn the rest
-#      of WATCHED_TIMEOUT). The last 10 hit values before any zero are also
-#      recorded (the legit restore pattern breaking down is part of the
-#      prize per this atom's own task).
+# THIS ATOM -- deterministic FLOOR STALL, no more racing anything:
+#   kernel-arm/zoneA (commit before this driver, floor-stall commit)
+#   ntfile.c's NtProtectVirtualMemory now calls kmain.c's c468_maybe_stall()
+#   at the EXACT id=80 "last-protect" gate this whole C4-68 thread has
+#   chased (BaseAddress==boot exe .text page, NewProtect==0x20 PAGE_EXECUTE
+#   /protect-down -- empirically the ONE call matching both conditions in a
+#   full boot-to-fault transcript, c4-68c5_v2_watch_receipt_full.log:12323)
+#   -- when built with -DC468_STALL (build.sh, GAIA_C468_STALL=1 env), the
+#   guest prints "CHALICE C4-68C6 STALL 45s" then busy-waits ~45 REAL
+#   wall-clock seconds (CNTPCT_EL0-based) before printing "CHALICE C4-68C6
+#   RELEASE" and proceeding. Arm trigger for THIS driver = the STALL marker
+#   line itself: the instant it appears on serial, interrupt the vCPU and
+#   arm the watchpoint -- the guest is provably still inside (or about to
+#   enter) the busy-wait for the next ~45s, so the arm/interrupt round-trip
+#   (measured sub-second every prior run) has enormous margin either
+#   direction. No count, no fixed-string-position marker, no race.
+#
+# Hit handling unchanged in spirit from c4-68c2..c5: every watchpoint stop
+# logs pc+new_value, auto-continues; the first value==0 hit additionally
+# dumps full x0-x30/fp/lr/sp/pc/cpsr registers + a 256-BYTE disassembly
+# window around pc (widened from c5's 192B per this atom's own task spec),
+# and the loop keeps watching until the fault trampoline
+# (elr=0x26D0C02B0) appears on the live serial transcript (early-stop, no
+# need to burn the rest of WATCHED_TIMEOUT). The last 10 hit values before
+# any zero are also recorded.
+#
+# LIVE SERIAL TEE (new this run, fixes c5's blindness): the full serial
+# transcript is now flushed to the receipt file LINE-BY-LINE as it arrives
+# (line-buffered), not just written once at the very end -- `tail -f` the
+# receipt file mid-run to watch boot/stall/arm/release/hits live.
 #
 # No hardcoded watch address blind either -- read live from this boot's own
 # "CHALICE C4-68: watchpoint ARMED addr=0x..." print if it appears before
-# our own late-arm point; falls back to the fixed 0x270001158 default (every
-# c4-68* receipt on disk so far has shown this address, deterministic
+# our own late-arm point; falls back to the fixed 0x270001158 default
+# (every c4-68* receipt on disk so far has shown this address, deterministic
 # allocator, no ASLR) only if that print is somehow missed.
 #
 # No hardcoded port (IRON LAW) -- fresh free TCP port each attempt. Never
 # /tmp -- all sockets/logs live under zoneA/scratch/. Vendored FEX/ tree
 # read-only, not touched by this script (it only drives QEMU + reads serial
 # + reads/writes guest memory via the gdb-remote protocol).
-# C4-68C5 (this run): single attempt, no auto-retry, margin=25 (arm_target
-# ~T-25=2187 vs c4-68c4's measured armed_at_count 2157/2169 of T=2212 --
-# overshoot during interrupt lands ~2195-2200, ~12-17 watched syscalls to
-# the fault at the measured deep-region rate of ~45-50s/syscall-line, i.e.
-# roughly 10-15 watched minutes). watched_timeout=3600, total_timeout=5400
-# (budget covers a much worse overshoot than measured). Receipts prefix
-# c4-68c5_*. Launched detached (nohup/setsid) so it survives lane death.
+#
+# Receipts prefix c4-68c6_*. watched_timeout=1800, total_timeout=3600
+# (env-overridable, see bottom). Launch DETACHED (nohup/setsid) so it
+# survives lane death, per this atom's own task law.
 import os, sys, re, socket, subprocess, threading, time, signal
 
 ZONEA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -74,31 +69,13 @@ SCRATCH = os.path.join(ZONEA, "scratch")
 WATCH_ADDR_DEFAULT = int(sys.argv[1], 0) if len(sys.argv) > 1 else 0x270001158
 WATCH_SIZE = 8
 
-REFERENCE_RECEIPT = os.path.join(SCRATCH, "c4-68_v2_receipt_full.log")
-C464_RE = re.compile(rb"CHALICE C4-64: svc id=")
-# fault trampoline address, every c4-68* receipt on disk so far.
-FAULT_RE = re.compile(rb"elr=0x0*26D0C02B0")
+FAULT_RE = re.compile(rb"elr=0x0*26D0C02B0")           # C4-30 fault trampoline
 ARMED_RE = re.compile(rb"CHALICE C4-68: watchpoint ARMED addr=0x([0-9A-Fa-f]+)")
+STALL_RE = re.compile(rb"CHALICE C4-68C6 STALL")       # this atom's arm trigger
+RELEASE_RE = re.compile(rb"CHALICE C4-68C6 RELEASE")   # informational only
 
 NON_WP_STOP_CAP = 50
-
-
-def compute_T():
-    """Count C4-64 probe occurrences from boot to the fault line in the
-    reference full V2 receipt. Computed live every run -- never hardcoded."""
-    with open(REFERENCE_RECEIPT, "rb") as f:
-        data = f.read()
-    total = 0
-    for line in data.split(b"\n"):
-        if FAULT_RE.search(line):
-            break
-        if C464_RE.search(line):
-            total += 1
-    return total
-
-
-T = compute_T()
-print(f"reference receipt {REFERENCE_RECEIPT}: T={T} (C4-64 probe occurrences boot->fault)")
+STALL_SECONDS = int(os.environ.get("GAIA_C468_STALL_SECONDS", "45"))
 
 
 def read_val(process, addr):
@@ -122,8 +99,11 @@ def read_regs(thread):
 def dump_disasm(process, pc, label):
     import lldb
     e = lldb.SBError()
+    # CHALICE C4-68C6: 256-byte window (widened from c5's 192B) -- pc-64..
+    # pc+192, per this atom's own task spec ("full regs + 256B window").
     lo = max(0, pc - 64)
-    data = process.ReadMemory(lo, 192, e)
+    WINDOW = 256
+    data = process.ReadMemory(lo, WINDOW, e)
     if not e.Success() or data is None:
         return f"disasm read failed at 0x{lo:x}: {e}"
     raw_path = os.path.join(SCRATCH, f"{label}_zerowrite_window.bin")
@@ -145,10 +125,10 @@ def dump_disasm(process, pc, label):
     return out
 
 
-def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
-    boot_to_marker_timeout = max(60, total_timeout - watched_timeout - 60)
-    label = "c4-68c5"
-    serial_sock = os.path.join(SCRATCH, "c4-68c5-serial.sock")
+def run_attempt(attempt_no, total_timeout=3600, watched_timeout=1800):
+    marker_wait_timeout = max(60, total_timeout - watched_timeout - 60)
+    label = "c4-68c6"
+    serial_sock = os.path.join(SCRATCH, "c4-68c6-serial.sock")
     hits_log = os.path.join(SCRATCH, f"{label}_watch_hits.log")
     serial_log_full = os.path.join(SCRATCH, f"{label}_v2_watch_receipt_full.log")
     serial_log_short = os.path.join(SCRATCH, f"{label}_v2_watch_receipt.log")
@@ -157,10 +137,9 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
         if os.path.exists(p):
             os.remove(p)
 
-    arm_target = max(1, T - margin)
-    print(f"[attempt {attempt_no}] T={T} margin={margin} arm_target={arm_target} "
+    print(f"[attempt {attempt_no}] STALL_SECONDS={STALL_SECONDS} "
           f"total_timeout={total_timeout} watched_timeout={watched_timeout} "
-          f"boot_to_marker_timeout={boot_to_marker_timeout}")
+          f"marker_wait_timeout={marker_wait_timeout}")
 
     _s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     _s.bind(("127.0.0.1", 0))
@@ -171,8 +150,15 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
     env["GAIA_SERIAL"] = f"unix:{serial_sock},server=on,wait=off"
     env["GAIA_DISPLAY"] = "none"
     env["GAIA_GDB_PORT"] = str(GDB_PORT)
+    # CHALICE C4-68C6: the whole point of this run -- build with the floor
+    # stall compiled IN (build.sh only injects -DC468_STALL when this is
+    # set, canonical/gates unaffected otherwise).
+    env["GAIA_C468_STALL"] = "1"
+    env["GAIA_C468_STALL_SECONDS"] = str(STALL_SECONDS)
 
-    print(f"[attempt {attempt_no}] launching build.sh: gdb tcp::{GDB_PORT}, serial {serial_sock}")
+    print(f"[attempt {attempt_no}] launching build.sh: GAIA_C468_STALL=1 "
+          f"GAIA_C468_STALL_SECONDS={STALL_SECONDS}, gdb tcp::{GDB_PORT}, "
+          f"serial {serial_sock}")
     qemu_log_f = open(qemu_log, "w")
     proc = subprocess.Popen(["./build.sh"], cwd=ZONEA, env=env,
                              stdout=qemu_log_f, stderr=subprocess.STDOUT)
@@ -180,7 +166,8 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
     result = dict(hit_count=0, fault_seen=False, ok=False, last_values=[],
                   hits_log=hits_log, serial_log_full=serial_log_full,
                   serial_log_short=serial_log_short, qemu_log=qemu_log,
-                  armed=False, armed_at_count=0, watch_addr=None)
+                  armed=False, watch_addr=None, stall_seen=False,
+                  release_seen=False)
 
     def cleanup_proc():
         try:
@@ -210,7 +197,7 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
     dbg = lldb.SBDebugger.Create()
     dbg.SetAsync(True)
     target = dbg.CreateTargetWithFileAndArch(None, "aarch64")
-    listener = lldb.SBListener(f"c468c4-{attempt_no}")
+    listener = lldb.SBListener(f"c468c6-{attempt_no}")
     cerr = lldb.SBError()
     process = None
     for _ in range(100):
@@ -223,11 +210,36 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
         cleanup_proc()
         return result
     print(f"[attempt {attempt_no}] gdb-remote attached, CPU paused at reset -- "
-          f"full-speed boot, counting C4-64 probe lines")
+          f"full-speed boot, tailing serial for the STALL marker")
 
     stop_flag = threading.Event()
     transcript = bytearray()
     transcript_lock = threading.Lock()
+
+    # CHALICE C4-68C6: LIVE SERIAL TEE -- line-buffered flush to
+    # serial_log_full as bytes arrive, not just a single write at the end
+    # (c5's blindness: no mid-run visibility into the transcript at all).
+    tee_f = open(serial_log_full, "w", buffering=1)
+    tee_leftover = bytearray()
+    tee_lock = threading.Lock()
+
+    def tee_write(chunk):
+        with tee_lock:
+            tee_leftover.extend(chunk)
+            if b"\n" in tee_leftover:
+                text = tee_leftover.decode(errors="replace")
+                lines = text.split("\n")
+                tee_leftover.clear()
+                tee_leftover.extend(lines[-1].encode(errors="replace"))
+                for ln in lines[:-1]:
+                    tee_f.write(ln + "\n")
+                tee_f.flush()
+
+    def tee_final_flush():
+        with tee_lock:
+            if tee_leftover:
+                tee_f.write(tee_leftover.decode(errors="replace"))
+                tee_f.flush()
 
     def serial_driver():
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -243,6 +255,7 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
                         break
                     with transcript_lock:
                         transcript.extend(chunk)
+                    tee_write(chunk)
                 except socket.timeout:
                     pass
         drain(6)
@@ -257,8 +270,7 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
 
     watch_addr = None
     marker_seen = False
-    marker_deadline = time.time() + boot_to_marker_timeout
-    last_count = 0
+    marker_deadline = time.time() + marker_wait_timeout
     while time.time() < marker_deadline:
         with transcript_lock:
             buf = bytes(transcript)
@@ -268,36 +280,29 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
                 watch_addr = int(m.group(1), 16)
                 print(f"[attempt {attempt_no}] live-read watchpoint addr from boot's own "
                       f"ARMED print: 0x{watch_addr:x}")
-        cnt = buf.count(b"CHALICE C4-64: svc id=")
-        last_count = cnt
-        if cnt >= arm_target:
+        if not result["stall_seen"] and STALL_RE.search(buf):
+            result["stall_seen"] = True
             marker_seen = True
-            print(f"[attempt {attempt_no}] late-arm count reached: {cnt} >= target {arm_target} "
-                  f"(T={T} margin={margin})")
+            print(f"[attempt {attempt_no}] STALL marker observed on serial -- "
+                  f"guest is inside/entering its {STALL_SECONDS}s busy-wait, "
+                  f"arming now (no race)")
             break
         if not th_serial.is_alive():
             break
         time.sleep(0.02)
     else:
-        print(f"[attempt {attempt_no}] FAIL: count target not reached within boot_to_marker budget "
-              f"(last count={last_count})")
+        print(f"[attempt {attempt_no}] FAIL: STALL marker not observed within "
+              f"marker_wait_timeout ({marker_wait_timeout}s)")
 
     if not marker_seen:
-        print(f"[attempt {attempt_no}] FAIL: late-arm count target not reached, last count={last_count}")
         stop_flag.set()
+        tee_final_flush()
         with transcript_lock:
             txt = bytes(transcript)
-        with open(serial_log_full, "w") as f:
-            f.write(txt.decode(errors="replace"))
         result["fault_seen"] = FAULT_RE.search(txt) is not None
         process.Kill()
         cleanup_proc()
         return result
-
-    if watch_addr is None:
-        watch_addr = WATCH_ADDR_DEFAULT
-        print(f"[attempt {attempt_no}] boot's own ARMED print not seen yet -- "
-              f"using default watch addr 0x{watch_addr:x}")
 
     process.SendAsyncInterrupt()
     stopped = False
@@ -312,7 +317,12 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
               f"state={process.GetState()}")
         cleanup_proc()
         return result
-    print(f"[attempt {attempt_no}] vCPU interrupted at late-arm point (count={last_count})")
+    print(f"[attempt {attempt_no}] vCPU interrupted during the {STALL_SECONDS}s stall window")
+
+    if watch_addr is None:
+        watch_addr = WATCH_ADDR_DEFAULT
+        print(f"[attempt {attempt_no}] boot's own ARMED print not seen yet -- "
+              f"using default watch addr 0x{watch_addr:x}")
 
     werr = lldb.SBError()
     wp = target.WatchAddress(watch_addr, WATCH_SIZE, False, True, werr)
@@ -321,15 +331,13 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
         cleanup_proc()
         return result
     result["armed"] = True
-    result["armed_at_count"] = last_count
     result["watch_addr"] = watch_addr
-    print(f"[attempt {attempt_no}] write watchpoint LATE-ARMED at 0x{watch_addr:x} size={WATCH_SIZE} "
-          f"count={last_count}/{T} margin={margin} -- resuming")
+    print(f"[attempt {attempt_no}] write watchpoint LATE-ARMED at 0x{watch_addr:x} "
+          f"size={WATCH_SIZE} during STALL window -- resuming")
 
     hits_f = open(hits_log, "w")
-    hits_f.write(f"# CHALICE C4-68C4 watch hits -- addr=0x{watch_addr:x} size={WATCH_SIZE} "
-                 f"count-based late-arm T={T} margin={margin} arm_target={arm_target} "
-                 f"armed_at_count={last_count}\n")
+    hits_f.write(f"# CHALICE C4-68C6 watch hits -- addr=0x{watch_addr:x} size={WATCH_SIZE} "
+                 f"floor-stall late-arm STALL_SECONDS={STALL_SECONDS}\n")
     hits_f.flush()
 
     watch_start = time.time()
@@ -343,6 +351,13 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
     ev = lldb.SBEvent()
     while (time.time() - watch_start < watched_timeout
            and time.time() < marker_deadline + watched_timeout + 30):
+        if not result["release_seen"]:
+            with transcript_lock:
+                buf_r = bytes(transcript[-2048:])
+            if RELEASE_RE.search(buf_r):
+                result["release_seen"] = True
+                print(f"[attempt {attempt_no}] guest RELEASE observed -- "
+                      f"stall window over, watchpoint armed throughout")
         if zero_seen and not fault_seen:
             with transcript_lock:
                 buf_tail = bytes(transcript[-4096:])
@@ -380,7 +395,7 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
                               "x26", "x27", "x28", "fp", "lr", "sp", "pc", "cpsr"):
                         if k in regs:
                             hits_f.write(f"#   {k}={regs[k]}\n")
-                    hits_f.write("# disasm window pc-64..pc+128:\n")
+                    hits_f.write("# disasm window pc-64..pc+192 (256B):\n")
                     for dl in dump_disasm(process, pc, label).splitlines():
                         hits_f.write("#   " + dl + "\n")
                     hits_f.flush()
@@ -415,10 +430,9 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
     hits_f.write(f"# LAST 10 VALUES: {[hex(v) if v is not None else None for v in last_values]}\n")
     hits_f.close()
 
+    tee_final_flush()
     with transcript_lock:
         txt = bytes(transcript)
-    with open(serial_log_full, "w") as f:
-        f.write(txt.decode(errors="replace"))
     with open(serial_log_short, "w") as f:
         f.write("\n".join(txt.decode(errors="replace").splitlines()[-80:]))
 
@@ -432,25 +446,25 @@ def run_attempt(attempt_no, margin, total_timeout=900, watched_timeout=600):
 
     fault_in_serial = FAULT_RE.search(txt) is not None
     print(f"[attempt {attempt_no}] total watchpoint hits: {hit_count} "
-          f"fault_seen_in_serial={fault_in_serial}")
+          f"fault_seen_in_serial={fault_in_serial} stall_seen={result['stall_seen']} "
+          f"release_seen={result['release_seen']}")
 
     result.update(hit_count=hit_count, fault_seen=fault_in_serial, ok=True,
                   last_values=last_values)
     return result
 
 
-# ---------------- single-attempt driver (c4-68c5, no auto-retry) ----------------
-MARGIN1 = int(os.environ.get("C468C5_MARGIN", "25"))
-TOTAL_TIMEOUT1 = int(os.environ.get("C468C5_TOTAL_TIMEOUT", "5400"))
-WATCHED_TIMEOUT1 = int(os.environ.get("C468C5_WATCHED_TIMEOUT", "3600"))
+# ---------------- single-attempt driver (c4-68c6, floor-stall arm) ----------------
+TOTAL_TIMEOUT1 = int(os.environ.get("C468C6_TOTAL_TIMEOUT", "3600"))
+WATCHED_TIMEOUT1 = int(os.environ.get("C468C6_WATCHED_TIMEOUT", "1800"))
 results = []
-r1 = run_attempt(1, MARGIN1, total_timeout=TOTAL_TIMEOUT1, watched_timeout=WATCHED_TIMEOUT1)
+r1 = run_attempt(1, total_timeout=TOTAL_TIMEOUT1, watched_timeout=WATCHED_TIMEOUT1)
 results.append(r1)
 
 print("=== SUMMARY ===")
 for i, r in enumerate(results, 1):
-    print(f"attempt {i}: armed={r['armed']} armed_at_count={r['armed_at_count']} "
-          f"hit_count={r['hit_count']} fault_seen={r['fault_seen']} "
+    print(f"attempt {i}: stall_seen={r['stall_seen']} release_seen={r['release_seen']} "
+          f"armed={r['armed']} hit_count={r['hit_count']} fault_seen={r['fault_seen']} "
           f"last_values={[hex(v) if v is not None else None for v in r['last_values']]}")
     print(f"  hits_log={r['hits_log']}")
     print(f"  serial_log_full={r['serial_log_full']}")
