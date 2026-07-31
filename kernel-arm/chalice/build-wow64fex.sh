@@ -24,14 +24,18 @@
 #                       default: ~/projects/gaia-os/FEX
 #   BUILD_ROOT          Out-of-tree working dir (source clone + build dir
 #                        both live here). default: ~/projects/fex-wow64-build
-#   TOOLCHAIN_DIR        llvm-mingw install root (expects bin/<triple>-clang
-#                        et al inside). default: ~/projects/toolchains/llvm-mingw
-#   TOOLCHAIN_URL         Official llvm-mingw release tarball to fetch if
-#                        TOOLCHAIN_DIR is missing and no aarch64-w64-mingw32-clang
-#                        is already on PATH. default: llvm-mingw 20260616
-#                        ucrt-macos-universal release.
-#   BUILD_TYPE           CMake build type. default: RelWithDebInfo (keeps
-#                        debug symbols -- this is the whole point of the atom).
+#   BUILD_MODE            official-container (default) runs the exact Linux
+#                         toolchain/release family used by Hangover 11.9;
+#                         host uses TOOLCHAIN_DIR directly.
+#   TOOLCHAIN_DIR         llvm-mingw install root. Default is the pinned
+#                         bylaws 20240929 Ubuntu release retained locally.
+#   TOOLCHAIN_URL         Pinned upstream tarball, fetched only by host mode.
+#   BUILD_TYPE            CMake type. default Release: faithful to Hangover.
+#   DEBUG_INFO            1 (default): append -g to Release C/C++ flags;
+#                         never strip the resulting DLL.
+#   CONTAINER_RUNTIME     Container CLI for official-container. default docker.
+#   CONTAINER_IMAGE       Repro runner image tag. default gaia-wow64fex-20240929.
+#   CONTAINER_DOCKERFILE  Runner recipe. default chalice/Dockerfile.wow64fex-official.
 #   JOBS                 Parallel build jobs. default: nproc/sysctl hw.ncpu.
 #   CONFIGURE_TIMEOUT     Seconds. default 300.
 #   BUILD_TIMEOUT         Seconds. default 1800.
@@ -76,16 +80,42 @@ set -euo pipefail
 
 VENDORED_FEX_DIR="${VENDORED_FEX_DIR:-$HOME/projects/gaia-os/FEX}"
 BUILD_ROOT="${BUILD_ROOT:-$HOME/projects/fex-wow64-build}"
-TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$HOME/projects/toolchains/llvm-mingw}"
-TOOLCHAIN_URL="${TOOLCHAIN_URL:-https://github.com/mstorsjo/llvm-mingw/releases/download/20260616/llvm-mingw-20260616-ucrt-macos-universal.tar.xz}"
-BUILD_TYPE="${BUILD_TYPE:-RelWithDebInfo}"
+BUILD_MODE="${BUILD_MODE:-official-container}"
+TOOLCHAIN_DIR="${TOOLCHAIN_DIR:-$HOME/projects/toolchains/llvm-mingw-20240929-ucrt-ubuntu-20.04-x86_64}"
+TOOLCHAIN_URL="${TOOLCHAIN_URL:-https://github.com/bylaws/llvm-mingw/releases/download/20240929/llvm-mingw-20240929-ucrt-ubuntu-20.04-x86_64.tar.xz}"
+BUILD_TYPE="${BUILD_TYPE:-Release}"
+DEBUG_INFO="${DEBUG_INFO:-1}"
 JOBS="${JOBS:-$(command -v nproc >/dev/null 2>&1 && nproc || sysctl -n hw.ncpu)}"
 CONFIGURE_TIMEOUT="${CONFIGURE_TIMEOUT:-300}"
 BUILD_TIMEOUT="${BUILD_TIMEOUT:-1800}"
 MINGW_TRIPLE="${MINGW_TRIPLE:-aarch64-w64-mingw32}"
+CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
+CONTAINER_IMAGE="${CONTAINER_IMAGE:-gaia-wow64fex-20240929}"
+CONTAINER_DOCKERFILE="${CONTAINER_DOCKERFILE:-$VENDORED_FEX_DIR/../kernel-arm/chalice/Dockerfile.wow64fex-official}"
 
 SRC_DIR="$BUILD_ROOT/src"
-BIN_DIR="$BUILD_ROOT/build"
+BIN_DIR="$BUILD_ROOT/build-${BUILD_MODE}"
+CMAKE_SOURCE_DIR="$SRC_DIR"
+CMAKE_INSTALL_PREFIX="$BIN_DIR/install"
+if [ "$BUILD_MODE" = official-container ]; then
+  CMAKE_SOURCE_DIR=/work/src
+  CMAKE_INSTALL_PREFIX="/work/$(basename "$BIN_DIR")/install"
+fi
+CMAKE_ARGS=(
+  "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
+  "-DENABLE_JEMALLOC_GLIBC_ALLOC=False"
+  "-DENABLE_ASSERTIONS=False"
+  "-DCMAKE_TOOLCHAIN_FILE=$CMAKE_SOURCE_DIR/Data/CMake/toolchain_mingw.cmake"
+  "-DENABLE_LTO=False"
+  "-DMINGW_TRIPLE=$MINGW_TRIPLE"
+  "-DTUNE_CPU=none"
+  "-DBUILD_TESTING=False"
+  "-DCMAKE_INSTALL_PREFIX=$CMAKE_INSTALL_PREFIX"
+)
+if [ "$DEBUG_INFO" = 1 ]; then
+  # Official Release semantics + DWARF; no RelWithDebInfo flag drift.
+  CMAKE_ARGS+=("-DCMAKE_C_FLAGS_RELEASE=-O3 -DNDEBUG -g" "-DCMAKE_CXX_FLAGS_RELEASE=-O3 -DNDEBUG -g")
+fi
 
 echo "== CHALICE C4-69B build-wow64fex.sh =="
 echo "VENDORED_FEX_DIR=$VENDORED_FEX_DIR (read-only, never written)"
@@ -98,24 +128,28 @@ if [ ! -d "$VENDORED_FEX_DIR" ]; then
   exit 1
 fi
 
-# --- 1. Toolchain: llvm-mingw aarch64 cross ---------------------------------
-if command -v "${MINGW_TRIPLE}-clang" >/dev/null 2>&1; then
-  echo "Found ${MINGW_TRIPLE}-clang already on PATH: $(command -v ${MINGW_TRIPLE}-clang)"
-elif [ -x "$TOOLCHAIN_DIR/bin/${MINGW_TRIPLE}-clang" ]; then
-  echo "Using existing toolchain at $TOOLCHAIN_DIR"
-  export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-else
-  echo "No ${MINGW_TRIPLE}-clang found -- fetching official llvm-mingw release into $TOOLCHAIN_DIR"
-  mkdir -p "$(dirname "$TOOLCHAIN_DIR")"
-  TARBALL="$(dirname "$TOOLCHAIN_DIR")/$(basename "$TOOLCHAIN_URL")"
-  timeout 600 curl -sL --fail -o "$TARBALL" "$TOOLCHAIN_URL"
-  EXTRACT_DIR="$(dirname "$TOOLCHAIN_DIR")/$(basename "$TARBALL" .tar.xz)"
-  timeout 300 tar xJf "$TARBALL" -C "$(dirname "$TOOLCHAIN_DIR")"
-  rm -f "$TARBALL"
-  ln -sfn "$EXTRACT_DIR" "$TOOLCHAIN_DIR"
-  export PATH="$TOOLCHAIN_DIR/bin:$PATH"
-fi
-"${MINGW_TRIPLE}-clang" --version
+# --- 1. Toolchain: exact official Linux container or explicit host ---------
+case "$BUILD_MODE" in
+  official-container)
+    echo "Official runner: bylaws llvm-mingw 20240929, Ubuntu 22.04, Hangover Release flags"
+    ;;
+  host)
+    if [ -x "$TOOLCHAIN_DIR/bin/${MINGW_TRIPLE}-clang" ]; then
+      echo "Using explicit host toolchain at $TOOLCHAIN_DIR"
+      export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+    else
+      echo "No host ${MINGW_TRIPLE}-clang -- fetching $TOOLCHAIN_URL" >&2
+      mkdir -p "$(dirname "$TOOLCHAIN_DIR")"
+      TARBALL="$(dirname "$TOOLCHAIN_DIR")/$(basename "$TOOLCHAIN_URL")"
+      timeout 600 curl -sL --fail -o "$TARBALL" "$TOOLCHAIN_URL"
+      timeout 300 tar xJf "$TARBALL" -C "$(dirname "$TOOLCHAIN_DIR")"
+      rm -f "$TARBALL"
+      export PATH="$TOOLCHAIN_DIR/bin:$PATH"
+    fi
+    "${MINGW_TRIPLE}-clang" --version
+    ;;
+  *) echo "FATAL: BUILD_MODE must be official-container or host" >&2; exit 2 ;;
+esac
 
 # --- 2. Out-of-tree source clone (never touches VENDORED_FEX_DIR) ----------
 mkdir -p "$BUILD_ROOT"
@@ -138,26 +172,24 @@ timeout 300 git -C "$SRC_DIR" submodule update --init --depth 1 -- \
   External/range-v3 \
   Source/Common/cpp-optparse
 
-# --- 4. Configure (out-of-tree build dir) ----------------------------------
+# --- 4. Configure/build out-of-tree; official recipe uses CMake + make -----
 rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
-timeout "$CONFIGURE_TIMEOUT" cmake -S "$SRC_DIR" -B "$BIN_DIR" \
-  -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
-  -DCMAKE_TOOLCHAIN_FILE="$SRC_DIR/Data/CMake/toolchain_mingw.cmake" \
-  -DMINGW_TRIPLE="$MINGW_TRIPLE" \
-  -G Ninja \
-  -DENABLE_LTO=False \
-  -DENABLE_ASSERTIONS=True \
-  -DBUILD_TESTING=False \
-  -DTUNE_CPU=none \
-  -DCMAKE_DISABLE_FIND_PACKAGE_fmt=ON \
-  -DCMAKE_DISABLE_FIND_PACKAGE_xxHash=ON \
-  -DCMAKE_DISABLE_FIND_PACKAGE_range-v3=ON \
-  -DCMAKE_DISABLE_FIND_PACKAGE_unordered_dense=ON \
-  -DCMAKE_INSTALL_PREFIX="$BIN_DIR/install"
-
-# --- 5. Build the wow64fex target only --------------------------------------
-timeout "$BUILD_TIMEOUT" ninja -C "$BIN_DIR" wow64fex -j"$JOBS"
+case "$BUILD_MODE" in
+  official-container)
+    timeout 900 "$CONTAINER_RUNTIME" build -t "$CONTAINER_IMAGE" -f "$CONTAINER_DOCKERFILE" "$(dirname "$CONTAINER_DOCKERFILE")"
+    timeout "$CONFIGURE_TIMEOUT" "$CONTAINER_RUNTIME" run --rm --user "$(id -u):$(id -g)" \
+      -v "$BUILD_ROOT:/work" "$CONTAINER_IMAGE" \
+      cmake -S /work/src -B "/work/$(basename "$BIN_DIR")" "${CMAKE_ARGS[@]}"
+    timeout "$BUILD_TIMEOUT" "$CONTAINER_RUNTIME" run --rm --user "$(id -u):$(id -g)" \
+      -v "$BUILD_ROOT:/work" "$CONTAINER_IMAGE" \
+      make -C "/work/$(basename "$BIN_DIR")" -j"$JOBS" wow64fex
+    ;;
+  host)
+    timeout "$CONFIGURE_TIMEOUT" cmake -S "$SRC_DIR" -B "$BIN_DIR" "${CMAKE_ARGS[@]}"
+    timeout "$BUILD_TIMEOUT" cmake --build "$BIN_DIR" --target wow64fex --parallel "$JOBS"
+    ;;
+esac
 
 DLL="$BIN_DIR/Bin/libwow64fex.dll"
 if [ ! -f "$DLL" ]; then

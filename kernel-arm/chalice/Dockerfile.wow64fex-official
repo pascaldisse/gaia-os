@@ -1,0 +1,22 @@
+# CHALICE C4-72 — narrow runner for Hangover hangover-11.9 fex-pe.
+# Source: AndreRH/hangover@hangover-11.9 .packaging/ubuntu2204/fexpe/Dockerfile
+# plus its foundation Dockerfile.  The official build selects the bylaws
+# llvm-mingw 20240929 Ubuntu toolchain; this runner preserves that toolchain,
+# Ubuntu 22.04 base and CMake/make path while source/build data stay mounted
+# out-of-tree from the read-only vendored FEX tree.
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates cmake make ninja-build curl git build-essential python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+ARG LLVM_MINGW_DATE=20240929
+ARG LLVM_MINGW_NAME=llvm-mingw-${LLVM_MINGW_DATE}-ucrt-ubuntu-20.04-x86_64
+RUN curl -fsSL --retry 3 \
+      https://github.com/bylaws/llvm-mingw/releases/download/${LLVM_MINGW_DATE}/${LLVM_MINGW_NAME}.tar.xz \
+      -o /opt/${LLVM_MINGW_NAME}.tar.xz \
+    && tar -xJf /opt/${LLVM_MINGW_NAME}.tar.xz -C /opt \
+    && rm /opt/${LLVM_MINGW_NAME}.tar.xz \
+    && mv /opt/${LLVM_MINGW_NAME} /opt/bylaws-${LLVM_MINGW_NAME}
+ENV PATH=/opt/bylaws-llvm-mingw-20240929-ucrt-ubuntu-20.04-x86_64/bin:$PATH
