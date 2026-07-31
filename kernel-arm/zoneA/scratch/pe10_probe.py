@@ -9,7 +9,10 @@
 import os, socket, subprocess, sys, time, signal
 
 ZONEA = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SOCK = "/tmp/gaia-pe10-probe.sock"
+PROBE_DIR = os.environ.get("GAIA_PE10_PROBE_DIR", os.path.dirname(os.path.abspath(__file__)))
+os.makedirs(PROBE_DIR, exist_ok=True)
+SOCK = os.environ.get("GAIA_PE10_PROBE_SOCKET", os.path.join(PROBE_DIR, "gaia-pe10-probe.sock"))
+OUT_PATH = os.environ.get("GAIA_PE10_PROBE_LOG", os.path.join(PROBE_DIR, "gaia-pe10-probe.log"))
 
 if os.path.exists(SOCK):
     os.remove(SOCK)
@@ -68,7 +71,7 @@ except subprocess.TimeoutExpired:
     proc.wait()
 
 txt = transcript.decode(errors="replace")
-out_path = "/tmp/gaia-pe10-probe.log"
+out_path = OUT_PATH
 with open(out_path, "w") as f:
     f.write(txt)
 print(f"transcript saved: {out_path} ({len(txt)} bytes)")
