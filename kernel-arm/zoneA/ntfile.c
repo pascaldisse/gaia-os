@@ -94,12 +94,14 @@ static int nt_blob_lookup(const char *basename, const unsigned char **out_bytes,
 // (nt_territory_alloc, below), shared with VM arenas and image maps.
 // C4-71: the capacity is a build-time knob, not a loader-specific patch.
 // build.sh defaults it to 64MiB: enough for the 42MiB symbol DLL plus 22MiB
-// headroom, while several full-sized per-fetch bump allocations still fit
-// the ~944MiB LOW territory over an ordinary boot. FsRead copies at most
-// this many bytes; `got` is the sole later copy/map length, and the
-// page-rounded trim calculation below uses this same capacity. Case-
-// insensitive: fs.c's on-disk names are lowercase (mkdisk.py convention);
-// this fallback lowercases any-case PE-side path components before FsRead.
+// headroom. Crucially, it is a ceiling, NOT every lookup's allocation size:
+// FsSize supplies the exact disk entry size before allocating, so absent
+// Config.json-style probes consume no territory and small files do not burn
+// 64MiB apiece. FsRead copies at most the exact checked size; `got` remains
+// the sole later copy/map length and the page-rounded trim calculation uses
+// that exact allocation. Case-insensitive: fs.c's on-disk names are
+// lowercase (mkdisk.py convention); this fallback lowercases any-case
+// PE-side path components before the metadata/read operations.
 // =====================================================================
 #ifndef NT_FS_FALLBACK_MAX
 #define NT_FS_FALLBACK_MAX (64UL * 1024 * 1024)
@@ -116,25 +118,19 @@ static int nt_blob_lookup_fs(const char *basename, const unsigned char **out_byt
     }
     lower[n] = 0;
 
-    unsigned char *buf = nt_territory_alloc(NT_FS_FALLBACK_MAX);
+    long file_size = FsSize(lower);
+    if (file_size <= 0 || (u64b)file_size > NT_FS_FALLBACK_MAX) return 0;
+    unsigned char *buf = nt_territory_alloc((u64b)file_size);
     if (!buf) return 0;
-    long got = FsRead(lower, buf, NT_FS_FALLBACK_MAX);
-    // CHALICE C-hello7 (continuation #3): nt_territory_free is now a no-op
-    // (receipt at its definition, ntfile.c below -- the C3c-2r free-list
-    // reuse pool was reverted per monad ruling). These two calls (miss +
-    // unused-tail trim) are kept as harmless dead-weight API usage, not
-    // functioning reclaim -- the per-fetch waste they used to shrink (up to
-    // NT_FS_FALLBACK_MAX=16MB per FS fetch regardless of real file size,
-    // ~7-9 fetches/boot) no longer needs trimming: it's well under the
-    // ~890MB territory for a SINGLE boot's own use, and cross-boot
-    // accumulation (the actual exhaustion this atom chased) is now handled
-    // by nt_territory_mark/_release_since bracketing nt_boot_process
-    // (ntboot.c), which wipes this boot's ENTIRE territory footprint --
-    // fetch waste included -- once the boot's PE has run to completion.
-    if (got <= 0) { nt_territory_free(buf, NT_FS_FALLBACK_MAX); return 0; }
+    long got = FsRead(lower, buf, (u64b)file_size);
+    // CHALICE C-hello7 (continuation #3): nt_territory_free is a no-op
+    // accounting stub; this remains a harmless API-symmetry call. The exact
+    // FsSize allocation means successful reads have no deliberate tail
+    // reservation to trim, and a failed read releases no bump space either.
+    if (got <= 0) { nt_territory_free(buf, (u64b)file_size); return 0; }
     {
         u64b used_pages = ((u64b)got + (4096ULL - 1)) & ~(4096ULL - 1);
-        u64b total_pages = (NT_FS_FALLBACK_MAX + (4096ULL - 1)) & ~(4096ULL - 1);
+        u64b total_pages = ((u64b)file_size + (4096ULL - 1)) & ~(4096ULL - 1);
         if (used_pages < total_pages)
             nt_territory_free(buf + used_pages, total_pages - used_pages);
     }

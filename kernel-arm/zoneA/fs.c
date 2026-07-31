@@ -96,6 +96,13 @@ int FsWrite(const char *name, const void *buf, u64 len) {
     return BlkRW(dsec, secbuf, 1);
 }
 
+long FsSize(const char *name) {
+    if (!fs_ok) return -1;
+    CDirEnt e; u64 dsec; int di;
+    if (fs_find(name, &e, &dsec, &di)) return -1;
+    return (long)e.size;
+}
+
 long FsRead(const char *name, void *buf, u64 maxlen) {
     if (!fs_ok) return -1;
     CDirEnt e; u64 dsec; int di;

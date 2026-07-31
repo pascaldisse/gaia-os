@@ -69,5 +69,6 @@ int NetHttpGet(u32 ip, const char *host, const char *path);
 int FsMount(void);
 int FsFormat(u64 disk_secs);
 int FsWrite(const char *name, const void *buf, u64 len);
+long FsSize(const char *name);
 long FsRead(const char *name, void *buf, u64 maxlen);
 void FsLs(void);
