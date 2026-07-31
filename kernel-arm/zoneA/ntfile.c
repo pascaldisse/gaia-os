@@ -82,26 +82,28 @@ static int nt_blob_lookup(const char *basename, const unsigned char **out_bytes,
 // big to embed as xxd byte arrays in the kernel image (~20MB combined,
 // SLICE3-SPEC Atom 3C) -- they instead live on the RedSea-spirit disk
 // (kernel-arm/chalice/mkdisk.py bakes them in at build time, lowercase
-// names). On a manifest miss, do a whole-file FsRead into a buffer sized
-// generously above any real stock DLL (largest observed: kernelbase.dll
-// ~9MB, wine 11.9 aarch64-windows) then store the SAME way a manifest hit
-// would (bytes pointer + exact length FsRead reports, name = a lowercase
-// copy so nt_handle_alloc's `name` field stays valid for the handle's
-// lifetime, matching the manifest path's static-lifetime-string contract).
+// names). On a manifest miss, do a whole-file FsRead into a staging buffer,
+// then store the SAME way a manifest hit would (bytes pointer + exact length
+// FsRead reports, name = a lowercase copy so nt_handle_alloc's `name` field
+// stays valid for the handle's lifetime, matching the manifest path's
+// static-lifetime-string contract).
 // CHALICE C3c-2g: this buffer (+ the small namebuf) used to come from
-// mem.c's 64MB MAlloc heap -- one NT_FS_FALLBACK_MAX (16MB) allocation PER
-// open, and the stock loader opens kernelbase.dll+kernel32.dll+more in one
-// run, so 2-4 opens alone exhausted the *entire* 64MB heap on their own
-// (independent of the VM-arena sink in ntsvc.c). Routed to the same
-// DLL-territory bump allocator (nt_territory_alloc, below) the VM arena and
-// image maps now share -- 0.75GB of headroom easily absorbs load-time's
-// few dozen MB of raw file bytes, no reclaim needed (same bump-only
-// simplification already accepted for the VM arena and PeMapImage's maps).
-// Case-insensitive: fs.c's own on-disk names are lowercase (mkdisk.py
-// convention); this fallback lowercases the query basename before FsRead
-// so any-case PE-side path components (e.g. "C:\...\NTDLL.DLL") still hit.
+// mem.c's 64MB MAlloc heap -- one allocation PER open, and the stock loader
+// opens kernelbase.dll+kernel32.dll+more in one run, so 2-4 opens alone
+// exhausted the entire heap. Routed to the DLL-territory bump allocator
+// (nt_territory_alloc, below), shared with VM arenas and image maps.
+// C4-71: the capacity is a build-time knob, not a loader-specific patch.
+// build.sh defaults it to 64MiB: enough for the 42MiB symbol DLL plus 22MiB
+// headroom, while several full-sized per-fetch bump allocations still fit
+// the ~944MiB LOW territory over an ordinary boot. FsRead copies at most
+// this many bytes; `got` is the sole later copy/map length, and the
+// page-rounded trim calculation below uses this same capacity. Case-
+// insensitive: fs.c's on-disk names are lowercase (mkdisk.py convention);
+// this fallback lowercases any-case PE-side path components before FsRead.
 // =====================================================================
-#define NT_FS_FALLBACK_MAX (16UL * 1024 * 1024)   // headroom over largest stock DLL (~9MB)
+#ifndef NT_FS_FALLBACK_MAX
+#define NT_FS_FALLBACK_MAX (64UL * 1024 * 1024)
+#endif
 
 static int nt_blob_lookup_fs(const char *basename, const unsigned char **out_bytes, u64b *out_len,
                               const char **out_name) {

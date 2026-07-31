@@ -4,6 +4,15 @@ set -e
 cd "$(dirname "$0")"
 
 CFLAGS="--target=aarch64-none-elf -ffreestanding -nostdlib -O2 -Wall"
+# CHALICE C4-71: FS fallback staging ceiling. 64MiB admits C4-69B's
+# 42MiB DWARF DLL with 22MiB headroom while keeping the existing LOW
+# territory's several-FS-fetch boot budget below exhaustion. Override only
+# with a decimal byte count; ntfile.c owns the matching source default.
+NT_FS_FALLBACK_MAX_BYTES="${GAIA_NT_FS_FALLBACK_MAX_BYTES:-$((64 * 1024 * 1024))}"
+case "$NT_FS_FALLBACK_MAX_BYTES" in
+    ''|*[!0-9]*) echo "GAIA_NT_FS_FALLBACK_MAX_BYTES must be decimal bytes" >&2; exit 2 ;;
+esac
+CFLAGS="$CFLAGS -DNT_FS_FALLBACK_MAX=${NT_FS_FALLBACK_MAX_BYTES}UL"
 # CHALICE C4-68C6: floor-stall watchpoint mechanism (kmain.c c468_maybe_stall,
 # armed at ntfile.c NtProtectVirtualMemory's id=80 last-protect gate) is a
 # plain no-op unless -DC468_STALL is present -- canonical/gates never pay
