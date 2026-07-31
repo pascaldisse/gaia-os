@@ -206,6 +206,13 @@ echo "== BUILD OK =="
 echo "DLL: $DLL"
 ls -la "$DLL"
 file "$DLL"
-"${MINGW_TRIPLE}-objdump" -h "$DLL" | grep -i debug || true
+case "$BUILD_MODE" in
+  official-container)
+    timeout 60 "$CONTAINER_RUNTIME" run --platform "$CONTAINER_PLATFORM" --rm --user "$(id -u):$(id -g)" \
+      -v "$BUILD_ROOT:/work" "$CONTAINER_IMAGE" \
+      "${MINGW_TRIPLE}-objdump" -h "/work/$(basename "$BIN_DIR")/Bin/libwow64fex.dll" | grep -i debug || true
+    ;;
+  host) "${MINGW_TRIPLE}-objdump" -h "$DLL" | grep -i debug || true ;;
+esac
 echo "sha256: $(shasum -a 256 "$DLL" | awk '{print $1}')"
 echo "source revision: $SRC_REV"
