@@ -105,12 +105,14 @@ if [ "$BUILD_MODE" = official-container ]; then
   CMAKE_INSTALL_PREFIX="/work/$(basename "$BIN_DIR")/install"
 fi
 CMAKE_ARGS=(
+  # Put the cache input before the toolchain file: CMake 3.22 otherwise
+  # first enters the toolchain with MINGW_TRIPLE still empty on a fresh tree.
+  "-DMINGW_TRIPLE=$MINGW_TRIPLE"
   "-DCMAKE_BUILD_TYPE=$BUILD_TYPE"
   "-DENABLE_JEMALLOC_GLIBC_ALLOC=False"
   "-DENABLE_ASSERTIONS=False"
   "-DCMAKE_TOOLCHAIN_FILE=$CMAKE_SOURCE_DIR/Data/CMake/toolchain_mingw.cmake"
   "-DENABLE_LTO=False"
-  "-DMINGW_TRIPLE=$MINGW_TRIPLE"
   "-DTUNE_CPU=none"
   "-DBUILD_TESTING=False"
   "-DCMAKE_INSTALL_PREFIX=$CMAKE_INSTALL_PREFIX"
