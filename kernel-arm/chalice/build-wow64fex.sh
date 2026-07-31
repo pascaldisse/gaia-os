@@ -35,6 +35,8 @@
 #                         never strip the resulting DLL.
 #   CONTAINER_RUNTIME     Container CLI for official-container. default docker.
 #   CONTAINER_IMAGE       Repro runner image tag. default gaia-wow64fex-20240929.
+#   CONTAINER_PLATFORM    Runner platform; default linux/amd64 because the
+#                         official pinned compiler binaries are x86_64 Linux.
 #   CONTAINER_DOCKERFILE  Runner recipe. default chalice/Dockerfile.wow64fex-official.
 #   JOBS                 Parallel build jobs. default: nproc/sysctl hw.ncpu.
 #   CONFIGURE_TIMEOUT     Seconds. default 300.
@@ -91,6 +93,7 @@ BUILD_TIMEOUT="${BUILD_TIMEOUT:-1800}"
 MINGW_TRIPLE="${MINGW_TRIPLE:-aarch64-w64-mingw32}"
 CONTAINER_RUNTIME="${CONTAINER_RUNTIME:-docker}"
 CONTAINER_IMAGE="${CONTAINER_IMAGE:-gaia-wow64fex-20240929}"
+CONTAINER_PLATFORM="${CONTAINER_PLATFORM:-linux/amd64}"
 CONTAINER_DOCKERFILE="${CONTAINER_DOCKERFILE:-$VENDORED_FEX_DIR/../kernel-arm/chalice/Dockerfile.wow64fex-official}"
 
 SRC_DIR="$BUILD_ROOT/src"
@@ -177,11 +180,11 @@ rm -rf "$BIN_DIR"
 mkdir -p "$BIN_DIR"
 case "$BUILD_MODE" in
   official-container)
-    timeout 900 "$CONTAINER_RUNTIME" build -t "$CONTAINER_IMAGE" -f "$CONTAINER_DOCKERFILE" "$(dirname "$CONTAINER_DOCKERFILE")"
-    timeout "$CONFIGURE_TIMEOUT" "$CONTAINER_RUNTIME" run --rm --user "$(id -u):$(id -g)" \
+    timeout 900 "$CONTAINER_RUNTIME" build --platform "$CONTAINER_PLATFORM" -t "$CONTAINER_IMAGE" -f "$CONTAINER_DOCKERFILE" "$(dirname "$CONTAINER_DOCKERFILE")"
+    timeout "$CONFIGURE_TIMEOUT" "$CONTAINER_RUNTIME" run --platform "$CONTAINER_PLATFORM" --rm --user "$(id -u):$(id -g)" \
       -v "$BUILD_ROOT:/work" "$CONTAINER_IMAGE" \
       cmake -S /work/src -B "/work/$(basename "$BIN_DIR")" "${CMAKE_ARGS[@]}"
-    timeout "$BUILD_TIMEOUT" "$CONTAINER_RUNTIME" run --rm --user "$(id -u):$(id -g)" \
+    timeout "$BUILD_TIMEOUT" "$CONTAINER_RUNTIME" run --platform "$CONTAINER_PLATFORM" --rm --user "$(id -u):$(id -g)" \
       -v "$BUILD_ROOT:/work" "$CONTAINER_IMAGE" \
       make -C "/work/$(basename "$BIN_DIR")" -j"$JOBS" wow64fex
     ;;

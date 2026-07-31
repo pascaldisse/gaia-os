@@ -4,7 +4,9 @@
 # llvm-mingw 20240929 Ubuntu toolchain; this runner preserves that toolchain,
 # Ubuntu 22.04 base and CMake/make path while source/build data stay mounted
 # out-of-tree from the read-only vendored FEX tree.
-FROM ubuntu:22.04
+# Official bylaws 20240929 binaries are Linux x86_64; force the same ABI on
+# Apple-Silicon Docker rather than mixing an ARM64 userspace with them.
+FROM --platform=linux/amd64 ubuntu:22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
