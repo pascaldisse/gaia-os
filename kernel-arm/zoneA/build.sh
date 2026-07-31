@@ -105,17 +105,17 @@ aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o nt
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 
-# CHALICE C3c Atom 3C-1: grow disk.img to fit the 3 stock DLLs (+headroom)
-# and populate the RedSea-spirit FS with them directly (host-side,
-# ../chalice/mkdisk.py speaks fs.c's on-disk layout -- no QEMU boot needed
-# to populate, and the gate never runs QEMU by hand). 64MB comfortably fits
-# ntdll+kernel32+kernelbase (~20MB combined, wine 11.9 aarch64-windows)
-# with ample headroom. "Keep existing contents": mkdisk.py only grows
-# (truncate, zero-fill new tail) and reuses an already-valid FS rather than
-# reformatting. Falls back to the old signature-only 4MB disk if
+# CHALICE C3c/C4-70: grow disk.img and populate its RedSea-spirit FS
+# directly (host-side; ../chalice/mkdisk.py speaks fs.c's on-disk layout).
+# GAIA_DISK_MIN_SIZE_BYTES is the policy knob. 128MiB is required when the
+# 42,377,216-byte DWARF-bearing libwow64fex.dll replaces the 4MiB stock blob:
+# this append-only FS preserves the old allocation and needs 173,158 sectors,
+# exceeding 64MiB's 131,072 sectors. mkdisk.py only grows/reuses existing FS.
+# Falls back to the old signature-only 4MB disk if
 # ../chalice/stock/ isn't populated yet (fetch-stock-dlls.sh not run) --
 # keeps earlier slice-2/3A/3B gates buildable from a fresh clone.
 STOCK_DIR=../chalice/stock
+DISK_MIN_SIZE_BYTES="${GAIA_DISK_MIN_SIZE_BYTES:-$((128 * 1024 * 1024))}"
 # CHALICE C3c-2h: apisetschema.dll joins the populate set -- holds the
 # .apiset section PEB->ApiSetMap points at (import-name resolution for
 # api-ms-win-*/api-set imports, ntboot.c nt_wire_apiset).
@@ -161,7 +161,7 @@ if [ -s "$STOCK_DIR/ntdll.dll" ] && [ -s "$STOCK_DIR/kernel32.dll" ] && [ -s "$S
     if [ -s "$I386_DIR/ntdll.dll" ] && [ -s "$I386_DIR/kernel32.dll" ] && [ -s "$I386_DIR/kernelbase.dll" ]; then
         WOW64_ARGS="$WOW64_ARGS syswow64/ntdll.dll=$I386_DIR/ntdll.dll syswow64/kernel32.dll=$I386_DIR/kernel32.dll syswow64/kernelbase.dll=$I386_DIR/kernelbase.dll"
     fi
-    python3 ../chalice/mkdisk.py disk.img $((64*1024*1024)) \
+    python3 ../chalice/mkdisk.py disk.img "$DISK_MIN_SIZE_BYTES" \
         ntdll.dll="$STOCK_DIR/ntdll.dll" \
         kernel32.dll="$STOCK_DIR/kernel32.dll" \
         kernelbase.dll="$STOCK_DIR/kernelbase.dll" \
