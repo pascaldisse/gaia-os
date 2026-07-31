@@ -246,7 +246,7 @@ static void run_cmd(const char *line) {
         if (streq(arg, "fex")) nt_wow64_set_backend_override("libwow64fex.dll");
         nt_dispatch_log_enabled = 1;
         profile_armed = 1;
-        nt_boot_process("hello8_x86.exe", "ntdll.dll", 1, "pe10");  // C4-70 canonical probe; V2 is not run unless this passes
+        nt_boot_process("hello8_x86.exe", "ntdll.dll", 1, "pe10");
         profile_armed = 0;
         nt_dispatch_log_enabled = 0;
         nt_wow64_set_backend_override(0);
