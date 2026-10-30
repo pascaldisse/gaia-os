@@ -53,6 +53,7 @@ static void cmd_help(void) {
     puts("  pe8        run CHALICE hello7 (widened KERNEL32.dll surface) over STOCK wine ntdll.dll (slice3 Atom 3C-2r)\n");
     puts("  pe9 [fex]  CHALICE C4-2: map wow64.dll + CPU backend (default wowbox64, 'fex'=libwow64fex) into DLL territory\n");
     puts("  pe10 [fex] CHALICE C4-5/12: nt_boot_process w/ hello8_x86.exe (i386) as main image -- boot-path measure; 'fex' A/B-overrides the CPU backend to libwow64fex.dll\n");
+    puts("  clip [text] | clip > <f> | clip < <f>  clipboard (pbcopy/pbpaste)\n");
     puts("  ip         network info\n");
     puts("  ping <a.b.c.d>  ICMP echo x3 (gw is 10.0.2.2)\n");
     puts("  dns <name> resolve via 10.0.2.3\n");
@@ -300,6 +301,47 @@ static void run_cmd(const char *line) {
         u32 ip;
         if (NetDns(name, &ip)) puts("dns: no answer\n");
         else NetHttpGet(ip, name, path);
+        return;
+    }
+    // clip — the GAIA-OS pasteboard (clip.c). macOS pbcopy/pbpaste analogue:
+    //   clip            -> print contents in quotes  (pbpaste)
+    //   clip <text>     -> replace contents          (pbcopy)
+    //   clip > <name>   -> contents into a file      (pbpaste > name)
+    //   clip < <name>   -> file into contents        (pbcopy < name)
+    // > and < are tested BEFORE the bare 'clip ' prefix, since both start
+    // with "clip " and the prefix test would otherwise swallow them.
+    if (streq(line, "clip")) {
+        const char *c = ClipGet();
+        puts("clip(\""); puts(c); puts("\") ");
+        putdec(ClipLen()); puts(" bytes\n");
+        return;
+    }
+    if (line[0] == 'c' && line[1] == 'l' && line[2] == 'i' && line[3] == 'p' && line[4] == ' ') {
+        const char *arg = line + 5;
+        if (arg[0] == '>' && arg[1] == ' ') {            // clip > <name>
+            const char *p = arg + 2;
+            char name[39]; int i = 0;
+            while (*p && *p != ' ' && i < 38) name[i++] = *p++;
+            name[i] = 0;
+            if (!i) { puts("clip: need a file name\n"); return; }
+            if (FsWrite(name, ClipGet(), ClipLen())) puts("clip: write failed\n");
+            else { puts("clip: wrote "); putdec(ClipLen()); puts(" bytes to "); puts(name); puts("\n"); }
+            return;
+        }
+        if (arg[0] == '<' && arg[1] == ' ') {            // clip < <name>
+            const char *p = arg + 2;
+            char name[39]; int i = 0;
+            while (*p && *p != ' ' && i < 38) name[i++] = *p++;
+            name[i] = 0;
+            if (!i) { puts("clip: need a file name\n"); return; }
+            static char cbuf[4097];
+            long n = FsRead(name, cbuf, 4096);
+            if (n < 0) { puts("clip: no such file\n"); return; }
+            cbuf[n] = 0;
+            putdec(ClipSet(cbuf)); puts(" bytes clipped from "); puts(name); puts("\n");
+            return;
+        }
+        putdec(ClipSet(arg)); puts(" bytes clipped\n");    // clip <text>
         return;
     }
     if (streq(line, "reboot")) {

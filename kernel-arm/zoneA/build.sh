@@ -110,7 +110,8 @@ clang $CFLAGS -c fs.c -o fs.o
 clang $CFLAGS -c hc.c -o hc.o
 clang $CFLAGS -c net.c -o net.o
 clang $CFLAGS -c tcp.c -o tcp.o
-aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o ntfile.o ntboot.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o -o gaia-os.elf
+clang $CFLAGS -c clip.c -o clip.o
+aarch64-elf-ld -T linker.ld boot.o ctx.o kmain.o mem.o task.o shell.o zcmod.o ntdisp.o ntsvc.o ntfile.o ntboot.o pemod.o pehello_bin.o virtio.o fw_cfg.o fs.o hc.o net.o tcp.o clip.o -o gaia-os.elf
 aarch64-elf-objcopy -O binary gaia-os.elf gaia-os.img
 echo "built: $(ls -la gaia-os.img | awk '{print $5}') bytes"
 

@@ -72,3 +72,9 @@ int FsWrite(const char *name, const void *buf, u64 len);
 long FsSize(const char *name);
 long FsRead(const char *name, void *buf, u64 maxlen);
 void FsLs(void);
+
+// clip.c — clipboard, ring 0, one static buffer (pbcopy/pbpaste analogue)
+u64 ClipSet(const char *s);
+const char *ClipGet(void);
+u64 ClipLen(void);
+int ClipAppend(const char *s);
